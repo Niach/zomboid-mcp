@@ -1,0 +1,5 @@
+name=ZMCP Dev (exec watcher)
+id=ZMCPDev
+description=Dev only: runs ~/Zomboid/Lua/zmcp_dev_exec.lua whenever it changes, writes zmcp_dev_result.txt
+versionMin=42.0
+modversion=0.1

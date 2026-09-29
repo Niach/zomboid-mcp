@@ -1,3 +1,19 @@
+# DIRECTION UPDATE (2026-09-30, owner): scripting-first
+- **Core capability:** Claude writes Lua and runs it live, through `run_lua` MCP tools:
+  - `run_lua_server`, run in the server/host Lua state
+  - `run_lua_client`, run on all clients or one player's client
+  - persistent script modules (install/list/remove, auto-reload on join/restart)
+- **Knowledge:** a large Claude skill, the "Zomboid engine handbook":
+  - the full map of Lua-reachable engine functions (generated from the ZOM-3 index into categorized markdown references)
+  - guides for 2D overlays and screen apps, runtime textures, 3D static models, 3D moving entities, world/tiles, items, zombies (incl. passive puppet actors), vehicles, weather/time, players, and scenes (coroutines)
+  - tested code snippets
+  - every gotcha from `docs/ENGINE_NOTES.md`
+- **Curated MCP tools:** only the best, most-used operations stay as tools (status/players, texture/model upload, spawn item/vehicle/zombies, world sprite, 3D object static/moving, falling items, weather/time, `server_console`). Everything else is done by scripting.
+- **Both static and moving 3D objects are first-class:**
+  - Static: a runtime `ModelScript` on a world item (verified, no flicker).
+  - Moving: needs a dynamic carrier (ZOM-11), because animated world items flicker due to chunk FBO caching.
+- **Dropped:** Guardian and Reborn (ZOM-5 cancelled), and all easter eggs.
+
 # Zomboid MCP — "Claude hacks the simulation"
 
 ## Context
