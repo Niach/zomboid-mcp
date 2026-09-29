@@ -16,11 +16,11 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **Game version:** 42.21.0. The server uses a 3 GB heap and a 5 GB container. It autosaves every minute.
 
 ## Execution model
-- Server `OnTick` fires about 10×/s **only while players are online**. With `PauseEmpty=true` an empty server is paused (`f:0`), and neither `OnTick` nor `EveryOneMinute` fire. `OnTickEvenPaused` is used as the fallback in `Bridge.lua`; verify it actually fires while empty.
+- Server `OnTick` fires about 10×/s **only while players are online**. With `PauseEmpty=true` an empty server is paused (the `f:` frame counter in the log stops), and **no Lua event fires**: not `OnTick`, not `EveryOneMinute`, and not `OnTickEvenPaused` (verified 2026-09-29: the event exists, a handler registered while paused never ran). Server console commands still work while paused, and `reloadlua <file>` runs Lua then; `Bridge.lua` uses `reloadlua ZomboidMCP/ZMCPPoll.lua` as the paused path (see `docs/PROTOCOL.md`).
 - `OnPlayerUpdate` and `OnZombieUpdate` do **not** fire on the dedicated server.
 - `loadstring` works (server and client). `require` of a file that was not loaded at startup did **not** work, so load new files by reading them and running them through `loadstring` (`run_file`).
 - The `reloadlua <file>` console command re-runs an **already loaded** file (matched by suffix). Make every file re-runnable: store handlers in a table and `Events.X.Remove` them before re-adding.
-- `getFileWriter(name, create, append)` / `getFileReader(name, create)` are text I/O inside the Lua cache dir. `getFileOutput(name)` returns a **binary** `DataOutputStream` (`writeByte`) in the same dir; close it with `endFileOutput()`.
+- `getFileWriter(name, create, append)` / `getFileReader(name, create)` are text I/O inside the Lua cache dir. `getFileWriter` **returns nil for names ending in `.lua` or `.jsonl` and for names without an extension**; `.txt`, `.json`, `.log` and `.lua.txt` work. `getFileReader` reads any name (also `.lua`), and throws for a missing file (pcall it). `fileExists(path)` needs the **absolute** path (`getMyDocumentFolder() .. "/Lua/" .. name`; `getMyDocumentFolder()` is `/home/steam/Zomboid` on the server); relative names return false. There is no delete/list/rename. `loadstring(code, chunkname)` accepts the chunk name. `getFileOutput(name)` returns a **binary** `DataOutputStream` (`writeByte`) in the same dir; close it with `endFileOutput()`.
 - `getMyDocumentFolder()` returns the `~/Zomboid` path and `getFileSeparator()` the path separator. `getTexture(absPath)` / `Texture.getSharedTexture(absPath)` should load a PNG from an absolute path. This is **unverified**: the spike is in `spikes/texture_spike.lua`.
 
 ## Authority (who owns what in MP)
@@ -55,7 +55,7 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **Workshop uploads:** SteamCMD `workshop_build_item` with `"visibility" "3"` produced a **private** item, and the dedicated server then answered no joins (`GettingServerInfo` hang). Use `visibility 0` (public).
 - **SteamCMD** logging in with the owner's account **kicks their desktop Steam** ("lost connection"). Never run SteamCMD while the owner is playing. Always use the isolated HOME: `env HOME=$ZMCP_STEAMCMD_HOME $ZMCP_STEAMCMD +login $ZMCP_STEAM_USER ...`.
 - **Heap:** 2 GB of heap ran out of memory during a save with 35 mods. It's 3 GB now, and the host has only about 1.2 GB spare. Avoid holding big data (for example textures) in Lua or ModData on the server; keep it in files.
-- **Kahlua:** there's no `io` library, no `bit` operations (use arithmetic), and `os.date` works. Overloaded Java methods are chosen by argument count. `tostring()` with no arguments throws.
+- **Kahlua:** there's no `io` library, no `bit` operations (use arithmetic), and `os.date` works. Overloaded Java methods are chosen by argument count. `tostring()` with no arguments throws. Strings are Java strings (`string.char(256)` works, `string.byte` returns UTF-16 units). Pattern matching: an escaped char such as `%]` does **not** start a range inside a set (`[%]-~]` is not "] to ~"), so avoid ranges that begin with an escaped char (`Json.lua` escapes in two passes because of this).
 
 ## Live server rules for sessions
 - **Allowed:**
@@ -84,3 +84,24 @@ Tested in single-player 42.21 on Linux with the `dev/ZMCPDev` exec watcher:
 - **Owner preference:** world sprites are drawn **always on top** (no wall occlusion needed).
 - **Performance:** a 22 KB PNG (≈29 KB base64) decodes instantly. Keep textures ≤ 256×256 and ≤ 100 KB where possible (network chunks of ~3000 characters).
 - **Dev tip:** `dev/ZMCPDev` is a local-only mod (copy it to `~/Zomboid/mods/`). It runs `~/Zomboid/Lua/zmcp_dev_exec.lua` every time the file changes and writes `zmcp_dev_result.txt`. Draw hooks go in `ZMCPDev.hooks[name] = function(ui) ... end`. This gives a live single-player test loop without restarts. Note: `OnTick` doesn't run while the game is paused.
+
+## Runtime 3D models: VERIFIED 2026-09-30 (static)
+Tested live with the owner in single-player (see ZOM-11 for details):
+- **Files:** write the `.x` mesh (text) and the `.png` into a path containing `media/`, e.g. `~/Zomboid/Lua/media/<name>.x`. The model loader uses a mesh name verbatim only when it contains `media/` and an extension.
+- **Registration:**
+  ```lua
+  ms = ModelScript.new()
+  ms:setModule(getScriptManager():getModule("Base"))
+  ms:InitLoadPP(name)
+  ms:Load(name, "{ mesh = <abs>.x, texture = <abs>.png, scale = N, }")
+  getScriptManager():addModelScript(ms)
+  ```
+  Leaving out `setModule` makes `addModelScript` throw an NPE.
+- **Display:** a carrier world item, e.g. `sq:AddWorldInventoryItem("Base.TirePiece", ox, oy, oz)`, then `item:setWorldStaticModel(name)`.
+- **Model space is Y-up for world items.** An XY-plane disc stands upright, and `setWorldYRotation` rolls it like a wheel. The origin is at ground level, so lift it or put the mesh bottom at y=0.
+- **Static objects render perfectly. Animating them flickers:** B42 chunk FBO caching (`PerformanceSettings.fboRenderChunk`) plus the `WorldItemAtlas` get invalidated on every offset or rotation change. Moving 3D needs a dynamic carrier (ZOM-11).
+- **Not usable:** `ScriptManager.ParseScript` parses item scripts but doesn't finalize them ("Couldn't find item"), and `ScriptBucket` isn't exposed. Use vanilla carrier items plus `ModelScript`.
+
+## Coordination
+- Only one agent may drive the owner's running game (`dev/ZMCPDev`) at a time. Ask the owner or coordinator first.
+- A crashing render hook spams errors every frame and breaks the game, so always `pcall` hooks and remove them on error.
