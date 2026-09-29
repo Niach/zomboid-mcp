@@ -1,0 +1,29 @@
+#!/bin/bash
+# Control the Zomboid server on hetzner-1.
+#   pz status                 guardian status (JSON)
+#   pz cmd "<guardian cmd>"   heal|cure|calm|clear|rescue|fillmags|refuel|repair|god <user> ...; give <user> <Item> <n>;
+#                             killarea x y z r; auto on|off; eval <lua>
+#   pz console "<cmd>"        raw server console (additem, addvehicle, servermsg, teleportto, createhorde, lightning, ...)
+#   pz events [n]             last guardian events
+#   pz reload                 hot-reload VappsGuardian.lua after `pz push`
+#   pz push                   upload server-lua/vapps/*.lua
+#   pz run file.lua           execute a local Lua file on the live server
+#   pz client <id> file.lua   push client-side Lua (effects/UI/sprites) live to all players
+[ -f ~/.config/zomboid-mcp/local.env ] && . ~/.config/zomboid-mcp/local.env
+H=$ZMCP_SSH
+C=$ZMCP_CONTAINER
+V=$ZMCP_VOLUME
+DIR=$(dirname "$(readlink -f "$0")")
+case "$1" in
+  status) ssh $H "cat $V/Lua/vapps_status.json" ;;
+  cmd) shift; printf '%s\n' "$*" | ssh $H "cat >> $V/Lua/vapps_cmd.txt"; sleep 3; ssh $H "tail -3 $V/Lua/vapps_events.log" ;;
+  console) shift; printf '%s\n' "$*" | ssh $H "N=\$(wc -l < $V/server-console.txt); docker exec -i $C sh -c 'cat > /tmp/pz-console'; sleep 2; tail -n +\$N $V/server-console.txt | grep -vE 'AnimState|Property Name|Ragdoll|Saving took' | cut -c1-220" ;;
+  events) ssh $H "tail -${2:-15} $V/Lua/vapps_events.log" ;;
+  push) scp -q "$DIR"/server-lua/vapps/*.lua $H:$ZMCP_DEV_LUA_MOUNT/vapps/ && echo pushed ;;
+  run) # execute a local Lua file on the live server (also for first-time loading of new files)
+    scp -q "$2" $H:$V/Lua/vapps_run.lua && "$0" cmd "eval local r=getFileReader('vapps_run.lua',false) local t={} local l=r:readLine() while l do t[#t+1]=l l=r:readLine() end r:close() local f,e=loadstring(table.concat(t,'\n')) if not f then return 'compile: '..tostring(e) end local r=f() return tostring(r)" ;;
+  client) # push a client-side Lua module live to all players: pz client <id> file.lua
+    scp -q "$3" $H:$V/Lua/vapps_client_$2.lua && "$0" cmd "eval return VappsPush.pushFile('$2','vapps_client_$2.lua')" ;;
+  reload) for f in ${2:-VappsGuardian.lua}; do "$0" console "reloadlua $f"; done ;;
+  *) sed -n 2,13p "$0" ;;
+esac

@@ -1,0 +1,71 @@
+# Engine notes: Project Zomboid Build 42.21 (verified live on our server)
+
+> Deployment specifics (SSH target, container, paths, Steam account) live in `~/.config/zomboid-mcp/local.env` on the dev machine (see `docs/local.env.example`). `$ZMCP_*` below refers to those variables.
+
+Everything below was verified live on our dedicated server or in the 42.21 client code. Read this before writing Lua for the mod.
+
+## Environment
+- **Dedicated server:** hetzner-1, `$ZMCP_SSH`. It runs in Docker (Coolify service `$ZMCP_COOLIFY_SERVICE`, container `$ZMCP_CONTAINER`, image `danixu86/project-zomboid-dedicated-server`).
+  - Data volume: `$ZMCP_VOLUME` (= `/home/steam/Zomboid` in the container).
+  - Lua cache dir: `<volume>/Lua/`, the only place `getFileWriter`/`getFileReader`/`getFileOutput` can reach.
+  - Bind mount for hot-reloadable server Lua: host `/opt/zomboid-lua/vapps` → `/home/steam/pz-dedicated/media/lua/server/vapps` (read-only). It currently holds the old prototype Guardian/Push/Reborn files and will become `ZomboidMCP`.
+  - `DoLuaChecksum=false` is set in `Server/zomboid.ini`, so the server may run Lua that clients don't have.
+  - Server console: write lines to the FIFO `/tmp/pz-console` inside the container (`docker exec <c> sh -c 'echo CMD > /tmp/pz-console'`). The output goes to `<volume>/server-console.txt`, not to `docker logs`.
+  - `tools/pz` wraps all of this (`status`, `cmd`, `console`, `events`, `run`, `client`, `push`, `reload`).
+- **Local client (Mint PC):** PZ at `~/.steam/steam/steamapps/common/ProjectZomboid/projectzomboid/`. Vanilla Lua is in `media/lua`, the Java is `projectzomboid.jar` (use `javap -cp projectzomboid.jar -public <class>` for signatures). The client log is `~/Zomboid/console.txt`.
+- **Game version:** 42.21.0. The server uses a 3 GB heap and a 5 GB container. It autosaves every minute.
+
+## Execution model
+- Server `OnTick` fires about 10×/s **only while players are online**. With `PauseEmpty=true` an empty server is paused (`f:0`), and neither `OnTick` nor `EveryOneMinute` fire. `OnTickEvenPaused` is used as the fallback in `Bridge.lua`; verify it actually fires while empty.
+- `OnPlayerUpdate` and `OnZombieUpdate` do **not** fire on the dedicated server.
+- `loadstring` works (server and client). `require` of a file that was not loaded at startup did **not** work, so load new files by reading them and running them through `loadstring` (`run_file`).
+- The `reloadlua <file>` console command re-runs an **already loaded** file (matched by suffix). Make every file re-runnable: store handlers in a table and `Events.X.Remove` them before re-adding.
+- `getFileWriter(name, create, append)` / `getFileReader(name, create)` are text I/O inside the Lua cache dir. `getFileOutput(name)` returns a **binary** `DataOutputStream` (`writeByte`) in the same dir; close it with `endFileOutput()`.
+- `getMyDocumentFolder()` returns the `~/Zomboid` path and `getFileSeparator()` the path separator. `getTexture(absPath)` / `Texture.getSharedTexture(absPath)` should load a PNG from an absolute path. This is **unverified**: the spike is in `spikes/texture_spike.lua`.
+
+## Authority (who owns what in MP)
+- **Server-authoritative, synced to everyone:**
+  - `zombie:setAttackedBy(p); zombie:Kill(p)` (a no-argument `Kill` does not exist; `Kill(nil)` works)
+  - `inv:AddItem(type)` + `sendAddItemToContainer(inv, item)`
+  - `square:AddWorldInventoryItem(type, 0, 0, 0)`
+  - `IsoObject.new(square, sprite, name)` + `square:transmitAddObjectToSquare(obj, -1)`; remove with `square:transmitRemoveItemFromSquare(obj)`
+  - `addVehicleDebug(script, IsoDirections.S, nil, square)`
+  - `vehicle:repair()`
+  - Gas tank: `part:setContainerContentAmount(cap)` + `vehicle:transmitPartModData(part)`
+  - `addZombiesInOutfit(x, y, z, n, outfit|nil, femaleChance)`
+  - `getClimateManager():transmitServerStartRain(f)` / `transmitServerStopWeather()` / `transmitServerTriggerStorm(f)` / `transmitServerTriggerLightning(x, y, strike, light, rumble)`
+  - `playServerSound(name, square)`
+  - Traits: `p:getCharacterTraits():add/remove(CharacterTrait.X)` (appeared to work)
+  - `addXpNoMultiplier(p, Perks.X, xp)` with `perk:getTotalXpForLevel(n)`
+  - `p:setGodMod(on, true)` + `sendPlayerExtraInfo(p)` (this is what the `godmodeplayer` console command does)
+  - `getGameTime():setTimeOfDay(h)`
+- **Client-authoritative (the server only sees a copy):**
+  - Body damage and infection: the server-side cure was overwritten by the client every second. Heal and cure must run **on the client** (through the client mod). The vanilla admin path (`bodyPart:RestoreToFullHealth()` + `syncBodyPart(bp, 0xFFFFFFFFFFF)` on the server) is acceptable, but was not proven for infection.
+  - Player position (teleport through the client), appearance (`getHumanVisual():setHairModel/setBeardModel/setHairColor` + `sendHumanVisual(p)`, not verified on the client), and moodles/stats (`stats:set(CharacterStat.X, v)` + `sendPlayerStatsChange(p)`, not verified).
+- **Server → client:** `sendServerCommand([player,] module, command, table)`, received on the client by `Events.OnServerCommand(module, command, args)`. Table values should be flat strings or numbers. Chunk large payloads (about 3000 characters per message).
+- **Client → server:** `sendClientCommand(player, module, command, table)`, received on the server by `Events.OnClientCommand(module, command, player, args)`.
+
+## Useful facts
+- `getOnlinePlayers()` works on the server; `getPlayerFromUsername` returned nil. `PerkFactory.PerkList`, `Perks.<Name>`, and `CharacterTrait.<CONST>` (upper snake case; see `javap zombie.scripting.objects.CharacterTrait`).
+- Hair styles are listed in `media/hairStyles/hairStyles.xml`, beards in `beardStyles.xml`.
+- Client drawing: in a full-screen `ISUIElement`, call `self.javaObject:setConsumeMouseEvents(false)` so clicks pass through. Draw with `drawLine2`, `drawRect`, `drawTextureScaled`, and `isoToScreenX/Y(playerNum, x, y, z)` for world → screen. Zoom is `getCore():getZoom(0)`. Keybinds: `PZAPI.ModOptions:create(...):addKeyBind(...)`. Mouse → world: `screenToIsoX/Y(0, mx, my, z)`.
+- There are no human NPCs in B42 MP. Only players, zombies and animals exist.
+
+## Pitfalls we hit
+- **Workshop uploads:** SteamCMD `workshop_build_item` with `"visibility" "3"` produced a **private** item, and the dedicated server then answered no joins (`GettingServerInfo` hang). Use `visibility 0` (public).
+- **SteamCMD** logging in with the owner's account **kicks their desktop Steam** ("lost connection"). Never run SteamCMD while the owner is playing. Always use the isolated HOME: `env HOME=$ZMCP_STEAMCMD_HOME $ZMCP_STEAMCMD +login $ZMCP_STEAM_USER ...`.
+- **Heap:** 2 GB of heap ran out of memory during a save with 35 mods. It's 3 GB now, and the host has only about 1.2 GB spare. Avoid holding big data (for example textures) in Lua or ModData on the server; keep it in files.
+- **Kahlua:** there's no `io` library, no `bit` operations (use arithmetic), and `os.date` works. Overloaded Java methods are chosen by argument count. `tostring()` with no arguments throws.
+
+## Live server rules for sessions
+- **Allowed:**
+  - Read-only inspection
+  - `tools/pz status/events`
+  - Non-destructive `tools/pz run` / `lua_eval` tests
+  - Pushing to `/opt/zomboid-lua` + `reloadlua`
+- **Needs the owner's OK, because players are usually online:**
+  - Server restarts
+  - Compose or `zomboid.ini` changes
+  - SteamCMD / Workshop uploads
+  - Spawning hordes
+  - Anything that affects a player's character
