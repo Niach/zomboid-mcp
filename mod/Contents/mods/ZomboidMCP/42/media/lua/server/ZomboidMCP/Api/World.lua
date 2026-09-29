@@ -2,7 +2,7 @@
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -41,34 +41,16 @@ local function weatherInfo()
 end
 Z.weatherInfo = weatherInfo
 
--- The bridge (Bridge.lua) registers a plain `status` (heartbeat data). This one adds weather and loaded counts on top
--- of it; the original function is kept across Api reloads.
-local prev = Z.tools.status
-if prev and not prev.api then Z.bridgeStatus = prev.fn end
-U.def("status", {
-    desc = "Server snapshot: bridge heartbeat (version, paused, players with position/health, time, tools) plus weather and loaded zombie/vehicle counts.",
-    authority = "server", args = {},
-}, function()
-    local res = Z.bridgeStatus and U.try(Z.bridgeStatus) or {}
-    if type(res) ~= "table" then res = {} end
-    res.version = res.version or Z.version
-    res.time = res.time or timeInfo()
-    if not res.players then
-        local players = {}
-        for _, p in ipairs(Z.players()) do players[#players + 1] = U.playerSummary(p) end
-        res.players = players
-    end
-    res.weather = U.try(weatherInfo)
-    res.zombiesLoaded = U.try(function() return getCell():getZombieList():size() end)
-    res.vehiclesLoaded = U.try(function() return getCell():getVehicles():size() end)
-    return res
+-- Extends the bridge's own `status` tool (Bridge.lua) with weather and loaded counts.
+Z.tool("status", "Server snapshot: the bridge heartbeat (version, bootId, paused, players with position/health, time, tools, scripts) plus weather and loaded zombie/vehicle counts.", function()
+    local doc = Z.statusDoc()
+    doc.weather = U.try(weatherInfo)
+    doc.zombiesLoaded = U.try(function() return getCell():getZombieList():size() end)
+    doc.vehiclesLoaded = U.try(function() return getCell():getVehicles():size() end)
+    return doc
 end)
-Z.tools.status.api = true
 
-U.def("players_list", {
-    desc = "Online players with username, character name, position, health, access level and vehicle.",
-    authority = "server", args = {},
-}, function()
+Z.tool("players_list", "Online players with username, character name, position, health, access level and vehicle.", function()
     local out = {}
     for _, p in ipairs(Z.players()) do out[#out + 1] = U.playerSummary(p) end
     return out
@@ -166,13 +148,7 @@ local function statsOf(p)
     return out
 end
 
-U.def("player_info", {
-    desc = "Full picture of one online player: position, health/infection, traits, skills, inventory summary, equipped and worn items, moodles and stats (moodles/stats are the server's copy of client state; may lag).",
-    authority = "server", args = {
-        { "player", "string", false, "username or character name (optional when exactly one player is online)" },
-        { "inventory_limit", "number", false, "max distinct item types in the inventory summary (default 60)" },
-    },
-}, function(a)
+Z.tool("player_info", "Full picture of one online player: position, health/infection, traits, skills, inventory summary, equipped and worn items, moodles and stats (moodles/stats are the server's copy of client state; may lag).", function(a)
     local p = Z.player(U.optStr(a, "player"))
     local bd = p:getBodyDamage()
     local d = p:getDescriptor()
@@ -202,16 +178,7 @@ end)
 
 local WHAT = { "zombies", "objects", "items", "vehicles", "players", "all" }
 
-U.def("world_query", {
-    desc = "List what is in a square area around x,y,z (only loaded squares near players). what = zombies|objects|items|vehicles|players|all. Objects include sprite names (floors skipped unless include_floor).",
-    authority = "server", args = {
-        { "x", "number", true, "center tile x" }, { "y", "number", true, "center tile y" }, { "z", "number", false, "level (default 0)" },
-        { "radius", "number", false, "tiles (default 10, max 40; zombies up to 80)" },
-        { "what", "string", false, "zombies|objects|items|vehicles|players|all (default all)" },
-        { "limit", "number", false, "max entries per category (default 200)" },
-        { "include_floor", "boolean", false, "include floor tiles in objects (default false)" },
-    },
-}, function(a)
+Z.tool("world_query", "List what is in a square area around x,y,z (only loaded squares near players). what = zombies|objects|items|vehicles|players|all. Objects include sprite names (floors skipped unless include_floor).", function(a)
     local x, y, z = U.pos(a)
     local what = U.oneOf(a, "what", WHAT, "all")
     local radius = U.int(a, "radius", 10, 0, 80)

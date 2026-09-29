@@ -2,7 +2,7 @@
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -60,14 +60,7 @@ local function findVehicle(a)
     return best
 end
 
-U.def("spawn_vehicle", {
-    desc = "Spawn a vehicle at x,y,z facing dir (addVehicleDebug; server-side, synced). Needs free flat ground; ask the owner before spawning near players.",
-    authority = "server", args = {
-        { "script", "string", true, "vehicle script, e.g. Base.CarNormal (docs/recipes/vehicle_types.md)" },
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "dir", "string", false, "N|NE|E|SE|S|SW|W|NW (default S)" },
-    },
-}, function(a)
+Z.tool("spawn_vehicle", "Spawn a vehicle at x,y,z facing dir (addVehicleDebug; server-side, synced). Needs free flat ground; ask the owner before spawning near players.", function(a)
     local script = U.str(a, "script")
     local x, y, z = U.pos(a)
     local dirName = string.upper(U.str(a, "dir", "S"))
@@ -92,16 +85,7 @@ U.def("spawn_vehicle", {
     return info
 end)
 
-U.def("vehicle_fix", {
-    desc = "Repair and/or refuel a vehicle: the player's current vehicle, or the nearest to the player / to x,y,z (server-side, synced).",
-    authority = "server", args = {
-        { "player", "string", false, "username: their vehicle or nearest to them" },
-        { "x", "number", false, "tile x (instead of player)" }, { "y", "number", false, "tile y" }, { "z", "number", false, "level" },
-        { "radius", "number", false, "search radius in tiles (default 12, max 40)" },
-        { "repair", "boolean", false, "repair all parts (default true)" },
-        { "refuel", "boolean", false, "fill the gas tank (default true)" },
-    },
-}, function(a)
+Z.tool("vehicle_fix", "Repair and/or refuel a vehicle: the player's current vehicle, or the nearest to the player / to x,y,z (server-side, synced).", function(a)
     local v = findVehicle(a)
     local doRepair, doRefuel = U.bool(a, "repair", true), U.bool(a, "refuel", true)
     local before = { engineQuality = U.try(function() return v:getEngineQuality() end), parts = partList(v) }

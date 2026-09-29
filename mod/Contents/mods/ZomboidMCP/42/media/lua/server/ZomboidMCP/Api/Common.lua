@@ -1,12 +1,11 @@
 -- Shared helpers for the Zomboid MCP tool modules (Api/*.lua): argument validation, Java list iteration,
--- item/object summaries and a tool registry with argument specs.
--- Server only. Re-runnable (hot reload).
+-- item/object/player summaries and square scans. Server only. Re-runnable (hot reload).
+-- Tools register with ZMCP.tool(name, desc, fn); argument schemas live in the MCP catalogue (mcp/zmcp_catalog.py).
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 
 local Z = ZMCP
 Z.util = Z.util or {}
-Z.specs = Z.specs or {}           -- name -> { desc, args = { {name, type, required, desc}, ... }, authority }
 local U = Z.util
 
 ---------------------------------------------------------------- argument validation
@@ -211,18 +210,3 @@ function U.scanSquares(x, y, z, radius, fn)
     end
     return missing
 end
-
----------------------------------------------------------------- tool registry with specs
--- U.def("name", { desc = "...", authority = "server|client|mixed", args = { {"x", "number", true, "tile x"}, ... } }, fn)
-function U.def(name, spec, fn)
-    local args = {}
-    for _, a in ipairs(spec.args or {}) do
-        args[#args + 1] = { name = a[1], type = a[2], required = a[3] and true or false, desc = a[4] }
-    end
-    Z.specs[name] = { desc = spec.desc, authority = spec.authority or "server", args = args }
-    Z.tool(name, spec.desc, fn)
-end
-
-Z.tool("tools_specs", "Tool argument specs registered by the Api modules (name -> {desc, authority, args}).", function()
-    return Z.specs
-end)

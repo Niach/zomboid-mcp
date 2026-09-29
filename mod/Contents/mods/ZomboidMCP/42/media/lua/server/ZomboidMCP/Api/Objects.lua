@@ -3,7 +3,7 @@
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 if not (ZMCP and ZMCP.tileSheets) then pcall(require, "ZomboidMCP/Api/TileSheets") end
 if not (ZMCP and ZMCP.tileSheets) then error("ZomboidMCP/Api/TileSheets.lua must be loaded first") end
 
@@ -53,14 +53,7 @@ local function placeOne(x, y, z, sprite, name)
         index = U.try(function() return obj:getObjectIndex() end), spriteSource = how }
 end
 
-U.def("place_object", {
-    desc = "Place a tile object (any vanilla/mod sprite) on a loaded square: IsoObject.new + transmitAddObjectToSquare (server-side, synced). Ask the owner before building near players.",
-    authority = "server", args = {
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "sprite", "string", true, "sprite name, e.g. walls_exterior_wooden_01_2 (docs/recipes/sprite_search.md)" },
-        { "name", "string", false, "object name (optional, e.g. 'Campfire')" },
-    },
-}, function(a)
+Z.tool("place_object", "Place a tile object (any vanilla/mod sprite) on a loaded square: IsoObject.new + transmitAddObjectToSquare (server-side, synced). Ask the owner before building near players.", function(a)
     local x, y, z = U.pos(a)
     local res = placeOne(x, y, z, U.str(a, "sprite"), U.optStr(a, "name"))
     Z.event("place_object", res)
@@ -78,16 +71,7 @@ local function listObjects(sq)
     return out
 end
 
-U.def("remove_object", {
-    desc = "Remove a tile object from a square by sprite name or object index (transmitRemoveItemFromSquare; server-side, synced). Without sprite/index it just lists the square's objects. Floors need force=true.",
-    authority = "server", args = {
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "sprite", "string", false, "sprite name to remove (first match)" },
-        { "index", "number", false, "object index on the square (from world_query/remove_object listing)" },
-        { "all", "boolean", false, "remove every object matching sprite (default false)" },
-        { "force", "boolean", false, "allow removing the floor (default false)" },
-    },
-}, function(a)
+Z.tool("remove_object", "Remove a tile object from a square by sprite name or object index (transmitRemoveItemFromSquare; server-side, synced). Without sprite/index it just lists the square's objects. Floors need force=true.", function(a)
     local x, y, z = U.pos(a)
     local sq = Z.square(x, y, z)
     local sprite, index = U.optStr(a, "sprite"), a.index
@@ -120,13 +104,7 @@ U.def("remove_object", {
     return { x = sq:getX(), y = sq:getY(), z = z, removed = removed, objects = listObjects(sq) }
 end)
 
-U.def("build_structure", {
-    desc = "Place many tile objects in one call: objects = [{x, y, z, sprite, name?}, ...] (max 500). Per-entry errors are collected, the rest is still placed. Ask the owner before building near players.",
-    authority = "server", args = {
-        { "objects", "object[]", true, "list of {x, y, z?, sprite, name?}" },
-        { "stop_on_error", "boolean", false, "abort at the first failing entry (default false)" },
-    },
-}, function(a)
+Z.tool("build_structure", "Place many tile objects in one call: objects = [{x, y, z, sprite, name?}, ...] (max 500). Per-entry errors are collected, the rest is still placed. Ask the owner before building near players.", function(a)
     local list = U.tbl(a, "objects")
     if #list == 0 then error("objects must be a non-empty list") end
     if #list > 500 then error("max 500 objects per call") end

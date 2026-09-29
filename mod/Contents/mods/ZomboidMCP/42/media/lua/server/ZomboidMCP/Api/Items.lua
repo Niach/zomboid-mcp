@@ -2,22 +2,14 @@
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
 
-U.def("spawn_item", {
-    desc = "Drop items on the ground at x,y,z (server-side, synced). scatter spreads them over a radius of tiles. Only loaded squares (near players).",
-    authority = "server", args = {
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "type", "string", true, "full item type, e.g. Base.Banana" },
-        { "count", "number", false, "1..200 (default 1)" },
-        { "scatter", "number", false, "radius in tiles to spread items over (default 0, max 20)" },
-    },
-}, function(a)
+Z.tool("spawn_item", "Drop items on the ground at x,y,z (server-side, synced). scatter spreads them over a radius of tiles. Only loaded squares (near players).", function(a)
     local x, y, z = U.pos(a)
-    local itemType = U.str(a, "type")
+    local itemType = U.str(a, "item")
     local count = U.int(a, "count", 1, 1, 200)
     local scatter = U.int(a, "scatter", 0, 0, 20)
     local script = getScriptManager():FindItem(itemType)

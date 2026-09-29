@@ -1,0 +1,8 @@
+name=Zomboid MCP
+id=ZomboidMCP
+description=Claude hacks the simulation: a live scripting bridge for Claude (or any MCP client) with runtime textures, world sprites, 3D models, falling items, overlays and screen apps pushed to every player. The MCP server ships inside the mod (mcp/zomboid_mcp.py, Python 3 stdlib) with the "zomboid engine handbook" skill (skill/).
+poster=poster.png
+icon=icon.png
+url=https://github.com/Niach/zomboid-mcp
+versionMin=42.0
+modversion=0.3.0

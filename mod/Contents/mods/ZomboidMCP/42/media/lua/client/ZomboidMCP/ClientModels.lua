@@ -91,6 +91,11 @@ function M.tryRegisterWaiting()
     end
 end
 
+function M.clear(id)
+    if id then M.list[tostring(id)] = nil; M.waiting[tostring(id)] = nil
+    else M.list = {}; M.waiting = {} end
+end
+
 function M.info()
     local out = {}
     for id, m in pairs(M.list) do out[#out + 1] = id .. "=" .. m.name .. (m.ok and "" or " (failed)") end

@@ -1,16 +1,15 @@
--- Zomboid MCP: visual tools (server side). Pushes code, textures, sprites, falling items and overlays to
--- every player's client mod (client/ZomboidMCP/Client.lua) through sendServerCommand("zmcp", cmd, args).
--- Protocol: docs/CLIENT_PROTOCOL.md. Builds only on the public ZMCP API of Bridge.lua.
+-- Zomboid MCP: visual tools (server side). Pushes code, textures, 3D models, sprites, falling items and
+-- overlays to every player's client mod (client/ZomboidMCP/Client.lua) through sendServerCommand("zmcp", cmd, args).
+-- Protocol: docs/PROTOCOL.md part 2. Builds only on the public ZMCP API of Bridge.lua.
 --
--- Persistent state (small) lives in ModData "ZomboidMCP".visuals = { textures, sprites, cmodules } so late
--- joiners get everything again when their client says "hello". Texture data stays in files in the Lua
--- cache dir (zmcp_tex_<id>.b64), never in ModData or Lua memory (server heap), and is streamed in chunks.
+-- Persistent state (small) lives in ModData "ZomboidMCP".visuals = { textures, models, sprites, cscripts } so
+-- late joiners get everything again when their client says "hello". Texture/model data stays in files in the
+-- Lua cache dir (zmcp_tex_<id>.b64, zmcp_model_<id>.*.b64), never in ModData or Lua memory (server heap), and
+-- is streamed in chunks.
 --
--- Tools: run_lua_client (alias client_exec), client_results, clients_list, module_client_install/remove/list,
---        texture_upload, texture_pixel, texture_list, texture_remove,
---        model_upload, model_list, model_remove, model_place,
---        world_sprite, world_sprite_remove, world_sprite_list,
---        falling_items, overlay_draw, overlay_clear, clear_visuals, notify, halo, capture_input, visuals_status
+-- Tools: run_lua_client, client_results, capture_input, texture_upload, texture_pixel, model_upload, model_place,
+--        world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
+--        plus the client side of script_install/list/remove (ZMCP.scriptSides.client).
 if isClient() then return end
 if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Visuals.lua") end
 
@@ -18,14 +17,14 @@ local Z = ZMCP
 local J = ZMCPJson
 Z.visuals = Z.visuals or {}
 local V = Z.visuals
-V.version = "0.3.0"
+V.version = ZMCP.version
 V.CHUNK = 3000            -- characters per sendServerCommand (see docs/ENGINE_NOTES.md)
 V.PER_TICK = 12           -- queued messages sent per tick (~10 ticks/s)
 V.MAX_B64 = 1200000       -- refuse textures above this many base64 characters (~900 KB PNG)
 V.queue = V.queue or {}   -- outgoing { player, cmd, args }
 V.results = V.results or {}   -- exec id -> { to = {users}, sent, results = { [user] = { ok, res, ms, t } } }
 V.resultOrder = V.resultOrder or {}
-V.clients = V.clients or {}   -- user -> { version, t, textures = {id -> {ok, w, h}} }
+V.clients = V.clients or {}   -- user -> { version, t, textures = {id -> {ok, w, h}}, models = {id -> {ok, name}} }
 V.pendingSpawns = V.pendingSpawns or {}
 V.seq = V.seq or 0
 V.handlers = V.handlers or {}
@@ -42,7 +41,7 @@ local function store()
     local vis = s.visuals
     if type(vis.textures) ~= "table" then vis.textures = {} end
     if type(vis.sprites) ~= "table" then vis.sprites = {} end
-    if type(vis.cmodules) ~= "table" then vis.cmodules = {} end
+    if type(vis.cscripts) ~= "table" then vis.cscripts = {} end
     if type(vis.models) ~= "table" then vis.models = {} end
     return vis
 end
@@ -136,18 +135,18 @@ function V.sendSprite(id, player)
     if sp then V.enqueue("sprite", sp, player) end
 end
 
-function V.sendModule(name, player)
-    local m = store().cmodules[name]
+function V.sendScript(name, player)
+    local m = store().cscripts[name]
     if not m then return 0 end
     local src = Z.readFile(m.file)
-    if not src then Z.event("client_module_error", { name = name, error = "file missing: " .. m.file }); return 0 end
-    return V.enqueueChunked("exec", { id = "mod:" .. name, module = name }, "code", src, player)
+    if not src then Z.event("script_error", { name = name, side = "client", error = "file missing: " .. m.file }); return 0 end
+    return V.enqueueChunked("exec", { id = "script:" .. name, module = name }, "code", src, player)
 end
 
 -- everything a (late-joining) client needs, in dependency order
 function V.sendAllTo(player)
     local s = store()
-    local n = { textures = 0, modules = 0, sprites = 0 }
+    local n = { textures = 0, scripts = 0, sprites = 0 }
     for id in pairs(s.textures) do
         local ok, err = pcall(V.sendTexture, id, player)
         if ok then n.textures = n.textures + 1 else print("[ZomboidMCP] resend texture " .. id .. ": " .. tostring(err)) end
@@ -157,7 +156,7 @@ function V.sendAllTo(player)
         local ok, err = pcall(V.sendModel, id, player)
         if ok then n.models = n.models + 1 else print("[ZomboidMCP] resend model " .. id .. ": " .. tostring(err)) end
     end
-    for name in pairs(s.cmodules) do V.sendModule(name, player); n.modules = n.modules + 1 end
+    for name in pairs(s.cscripts) do V.sendScript(name, player); n.scripts = n.scripts + 1 end
     for id in pairs(s.sprites) do V.sendSprite(id, player); n.sprites = n.sprites + 1 end
     return n
 end
@@ -247,20 +246,18 @@ Z.tickHooks.visuals = function(t)
 end
 
 ---------------------------------------------------------------- tools: code
-local function runLuaClient(a)
-    if type(a.code) ~= "string" or a.code == "" then error("args.code (string) required") end
+Z.tool("run_lua_client", "Run Lua on every player's client (or args.player only). args: {code, player?, id?}. Returns {id, to}; each client answers with the chunk's return value (tables JSON-encoded) or error: poll client_results {id} until done, or watch client_exec_result events. Client script API: ZMCPClient.on(name, 'render'|'tick'|'keyDown'|'keyUp'|'keyHeld'|'mouseDown'|'mouseUp'|'mouseMove'|'mouseWheel', fn), ZMCPClient.off(name), ZMCPClient.capture(true) for screen apps, ZMCPClient.tex/sprites/draw/models, ZMCPClient.send(cmd, args), ZMCPJson, plus the whole vanilla client Lua API.", function(a)
+    local code = Z.argText(a, "code")
     local player = optPlayer(a.player)
     local id = a.id and checkId(tostring(a.id), "id") or nextId("c")
     local to = {}
     if player then to[1] = userOf(player) else for _, p in ipairs(Z.players()) do to[#to + 1] = userOf(p) end end
     V.track(id, to)
-    local chunks = V.enqueueChunked("exec", { id = id }, "code", a.code, player)
-    return { id = id, chunks = chunks, to = arr(to), note = "poll client_results {id} (done=true when every client answered); events client_exec_result" }
-end
-Z.tool("run_lua_client", "Run Lua on every player's client (or args.player only). args: {code, player?, id?}. Returns {id, to}; each client answers with the chunk's return value (tables JSON-encoded) or error: poll client_results {id} until done, or watch client_exec_result events. Script API on the client: ZMCPClient.on(name, 'render'|'tick'|'keyDown'|'keyUp'|'keyHeld'|'mouseDown'|'mouseUp'|'mouseMove'|'mouseWheel', fn), ZMCPClient.off(name), ZMCPClient.capture(true) for screen apps, ZMCPClient.tex/sprites/draw/models, ZMCPClient.send(cmd, args), ZMCPJson, plus the whole vanilla client Lua API.", runLuaClient)
-Z.tool("client_exec", "Alias of run_lua_client.", runLuaClient)
+    local chunks = V.enqueueChunked("exec", { id = id }, "code", code, player)
+    return { id = id, chunks = chunks, to = arr(to) }
+end)
 
-Z.tool("client_results", "Results of run_lua_client / client modules: args {id} -> {to, results = {user = {ok, res, ms}}, pending, done}. Without id: the status of every kept id (last 50).", function(a)
+Z.tool("client_results", "Results of run_lua_client / client scripts: args {id} -> {to, results = {user = {ok, res, ms}}, pending, done}. Without id: the status of every kept id (last 50).", function(a)
     if a.id then return V.resultStatus(tostring(a.id)) or error("unknown script id " .. tostring(a.id)) end
     local out = {}
     for _, id in ipairs(V.resultOrder) do out[#out + 1] = V.resultStatus(id) end
@@ -268,70 +265,58 @@ Z.tool("client_results", "Results of run_lua_client / client modules: args {id} 
 end)
 
 Z.tool("capture_input", "Screen apps: make every client's (or args.player's) overlay swallow mouse events and sit above the UI (on=true), or release it. args: {on, player?}. Scripts can also call ZMCPClient.capture(true) themselves.", function(a)
-    V.enqueue("capture", { on = a.on ~= false and a.on ~= 0 and a.on ~= "false" }, optPlayer(a.player))
-    return { on = a.on ~= false }
+    local on = a.on ~= false and a.on ~= 0 and a.on ~= "false"
+    V.enqueue("capture", { on = on }, optPlayer(a.player))
+    return { on = on }
 end)
 
-Z.tool("clients_list", "Players whose Zomboid MCP client has said hello (or answered ping) this session: {user: {version, t, textures}}.", function()
-    V.enqueue("ping", {})
-    return V.clients
-end)
-
-Z.tool("module_client_install", "Install a persistent CLIENT module: args {name, code} (the server writes zmcp_cmod_<name>.lua) or {name, file}. It runs now on every client and again for every player who joins. Convention: register draw code as ZMCPClient.renderHooks[name] so module_client_remove can drop it.", function(a)
-    local name = checkId(a.name, "name")
-    local file = "zmcp_cmod_" .. name .. ".lua"
-    if type(a.code) == "string" then Z.writeFile(file, a.code)
-    elseif type(a.file) == "string" then
-        file = a.file
-        if not Z.readFile(file) then error("file not found in Lua dir: " .. file) end
-    else error("args.code or args.file required") end
-    store().cmodules[name] = { file = file, installed = Z.now() }
-    local to = {}
-    for _, p in ipairs(Z.players()) do to[#to + 1] = userOf(p) end
-    V.track("mod:" .. name, to)
-    local chunks = V.sendModule(name)
-    Z.event("client_module_install", { name = name, file = file })
-    return { name = name, file = file, chunks = chunks }
-end)
-
-Z.tool("module_client_remove", "Forget a persistent client module and tell clients to drop it (renderHooks/tickHooks under its name). args: {name}.", function(a)
-    local name = checkId(a.name, "name")
-    if not store().cmodules[name] then error("no such client module: " .. name) end
-    store().cmodules[name] = nil
-    V.enqueue("modRemove", { name = name })
-    Z.event("client_module_remove", { name = name })
-    return { removed = name }
-end)
-
-Z.tool("module_client_list", "List persistent client modules: [{name, file, installed}].", function()
-    local out = {}
-    for name, m in pairs(store().cmodules) do out[#out + 1] = { name = name, file = m.file, installed = m.installed } end
-    table.sort(out, function(x, y) return x.name < y.name end)
-    return arr(out)
-end)
+-- client side of script_install / script_list / script_remove (Bridge.lua dispatches on args.side)
+Z.scriptSides.client = {
+    install = function(name, code)
+        local file = "zmcp_cscript_" .. name .. ".lua.txt"    -- getFileWriter refuses .lua
+        Z.writeFile(file, code)
+        store().cscripts[name] = { file = file, installed = Z.now() }
+        local to = {}
+        for _, p in ipairs(Z.players()) do to[#to + 1] = userOf(p) end
+        V.track("script:" .. name, to)
+        local chunks = V.sendScript(name)
+        return { file = file, chunks = chunks, to = arr(to), id = "script:" .. name }
+    end,
+    remove = function(name)
+        if not store().cscripts[name] then error("no such client script: " .. name) end
+        store().cscripts[name] = nil
+        V.enqueue("scriptRemove", { name = name })
+    end,
+    list = function()
+        local out = {}
+        for name, m in pairs(store().cscripts) do out[#out + 1] = { name = name, file = m.file, installed = m.installed } end
+        table.sort(out, function(x, y) return x.name < y.name end)
+        return arr(out)
+    end,
+}
 
 ---------------------------------------------------------------- tools: textures
-Z.tool("texture_upload", "Push a PNG to every client as texture <id>. args: {id, file?, base64?, player?}. Preferred: drop the base64 text of the PNG into the Lua dir as zmcp_tex_<id>.b64 (or args.file) and call with {id}. Inline base64 is written to that file. Streamed in ~3 KB chunks; late joiners get it on hello. Keep PNGs <= 256x256 / 100 KB. Clients report 'client_texture' events.", function(a)
+-- store base64 text under our own file name (the MCP deletes its blob files after the response)
+local function storeBase64(file, text, what)
+    if #text > V.MAX_B64 then error(what .. " too large: " .. #text .. " base64 chars (max " .. V.MAX_B64 .. ")") end
+    Z.writeFile(file, text)
+    return #text
+end
+
+Z.tool("texture_upload", "Push a PNG to every client (or args.player) as texture <id>. args: {id, png_base64, player?}. Streamed in ~3 KB chunks and loaded with getTexture on each client; late joiners get it on hello; a re-upload of the same id makes a new generation. Keep PNGs <= 256x256 / 100 KB. Clients report client_texture events (ok, w, h).", function(a)
     local id = checkId(a.id, "id")
-    local file = a.file or textureFile(id)
-    if type(a.base64) == "string" then
-        if #a.base64 > V.MAX_B64 then error("base64 too large: " .. #a.base64 .. " chars (max " .. V.MAX_B64 .. ")") end
-        file = textureFile(id)
-        Z.writeFile(file, a.base64)
-    end
-    local b64 = Z.readFile(file)
-    if not b64 or b64 == "" then error("file not found or empty in Lua dir: " .. file) end
-    if #b64 > V.MAX_B64 then error("base64 too large: " .. #b64 .. " chars (max " .. V.MAX_B64 .. ")") end
+    local file = textureFile(id)
+    local chars = storeBase64(file, Z.argText(a, "png_base64"), "png_base64")
     local s = store()
     local old = s.textures[id]
     local gen = (old and tonumber(old.gen) or 0) + 1
-    s.textures[id] = { file = file, gen = gen, chars = #b64, uploaded = Z.now() }
+    s.textures[id] = { file = file, gen = gen, chars = chars, uploaded = Z.now() }
     local chunks = V.sendTexture(id, optPlayer(a.player))
-    Z.event("texture_upload", { id = id, gen = gen, chars = #b64, chunks = chunks })
-    return { id = id, gen = gen, chars = #b64, chunks = chunks, note = "clients report load results as client_texture events" }
+    Z.event("texture_upload", { id = id, gen = gen, chars = chars, chunks = chunks })
+    return { id = id, gen = gen, chars = chars, chunks = chunks }
 end)
 
-Z.tool("texture_pixel", "Fallback art without a PNG: a pixel sprite drawn with rects. args: {id, def} where def = {w, h, palette = {a = {r,g,b,a}}, rows = ['aab.', ...]} ('.' transparent, colours 0-1 or 0-255). Usable wherever a texture id is.", function(a)
+Z.tool("texture_pixel", "Art without a PNG: a pixel sprite drawn with rects. args: {id, def} where def = {w?, h?, palette = {a = {r,g,b,a}}, rows = ['aab.', ...]} ('.' transparent, colours 0-1 or 0-255). Usable wherever a texture id is.", function(a)
     local id = checkId(a.id, "id")
     local def = a.def
     if type(def) == "table" then def = J.encode(def) end
@@ -341,71 +326,36 @@ Z.tool("texture_pixel", "Fallback art without a PNG: a pixel sprite drawn with r
     return { id = id, pixel = true }
 end)
 
-Z.tool("texture_list", "Registered runtime textures: [{id, gen, chars|pixel, file}].", function()
-    local out = {}
-    for id, t in pairs(store().textures) do
-        out[#out + 1] = { id = id, gen = t.gen, chars = t.chars, pixel = t.pixel ~= nil, file = t.file, uploaded = t.uploaded }
-    end
-    table.sort(out, function(x, y) return x.id < y.id end)
-    return arr(out)
-end)
-
-Z.tool("texture_remove", "Forget a runtime texture (clients keep the file; sprites using it stop drawing). args: {id}.", function(a)
-    local id = checkId(a.id, "id")
-    if not store().textures[id] then error("unknown texture: " .. id) end
-    store().textures[id] = nil
-    V.enqueue("clear", { what = "textures", id = id })
-    return { removed = id }
-end)
-
 ---------------------------------------------------------------- tools: runtime 3D models (static)
-Z.tool("model_upload", "Register a runtime 3D model on every client (static models, see ENGINE_NOTES 'Runtime 3D models'). args: {id, mesh?, texture?, scale?}. Drop the base64 of the PZ .x text mesh into the Lua dir as zmcp_model_<id>.x.b64 and of the PNG as zmcp_model_<id>.png.b64 (or name other files with args.mesh / args.texture). Clients write them under Lua/media/ and run ModelScript registration; the model name is 'zmcp_<id>_<gen>' (model_list shows it; scripts use ZMCPClient.models.name(id)). Clients report client_model events.", function(a)
+Z.tool("model_upload", "Register a runtime 3D model on every client: args {id, mesh_base64 (PZ .x text mesh), png_base64 (texture), scale?}. Clients write both files under Lua/media/ and register a ModelScript named 'zmcp_<id>_<gen>' (ZMCPClient.models.name(id) in scripts); model_place puts it in the world. Clients report client_model events. See ENGINE_NOTES 'Runtime 3D models'.", function(a)
     local id = checkId(a.id, "id")
-    local meshSrc = a.mesh or ("zmcp_model_" .. id .. ".x.b64")
-    local texSrc = a.texture or ("zmcp_model_" .. id .. ".png.b64")
-    for _, f in ipairs({ meshSrc, texSrc }) do
-        local t = Z.readFile(f)
-        if not t or t == "" then error("file not found or empty in Lua dir: " .. f) end
-        if #t > V.MAX_B64 then error("base64 too large: " .. f) end
-    end
+    local meshSrc, texSrc = "zmcp_model_" .. id .. ".x.b64", "zmcp_model_" .. id .. ".png.b64"
+    storeBase64(meshSrc, Z.argText(a, "mesh_base64"), "mesh_base64")
+    storeBase64(texSrc, Z.argText(a, "png_base64"), "png_base64")
     local s = store()
     local gen = (s.models[id] and tonumber(s.models[id].gen) or 0) + 1
     s.models[id] = { meshSrc = meshSrc, texSrc = texSrc, gen = gen, scale = num(a.scale, 1),
         mesh = "media/zmcp_model_" .. id .. "_" .. gen .. ".x", texture = "media/zmcp_model_" .. id .. "_" .. gen .. ".png", uploaded = Z.now() }
     local chunks = V.sendModel(id, optPlayer(a.player))
     Z.event("model_upload", { id = id, gen = gen, chunks = chunks })
-    return { id = id, gen = gen, name = "zmcp_" .. id .. "_" .. gen, chunks = chunks, note = "clients report client_model events" }
+    return { id = id, gen = gen, name = "zmcp_" .. id .. "_" .. gen, chunks = chunks }
 end)
 
-Z.tool("model_list", "Registered runtime models: [{id, name, gen, scale, mesh, texture}].", function()
-    local out = {}
-    for id, m in pairs(store().models) do
-        out[#out + 1] = { id = id, name = "zmcp_" .. id .. "_" .. m.gen, gen = m.gen, scale = m.scale, mesh = m.mesh, texture = m.texture, uploaded = m.uploaded }
-    end
-    table.sort(out, function(x, y) return x.id < y.id end)
-    return arr(out)
-end)
-
-Z.tool("model_remove", "Forget a runtime model (clients keep the files and the registered ModelScript). args: {id}.", function(a)
-    local id = checkId(a.id, "id")
-    if not store().models[id] then error("unknown model: " .. id) end
-    store().models[id] = nil
-    return { removed = id }
-end)
-
-Z.tool("model_place", "Place a static 3D model in the world: spawns a carrier world item on the square and sets its world model (server side; sync of setWorldStaticModel to MP clients is unverified, single player verified). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees)}. Returns nothing to remove with yet: use run_lua_server / world tools.", function(a)
+Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier world item on the square and sets its world model (server side; single player verified, MP sync of setWorldStaticModel unverified). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees)}. Remove it like any world item (world_query + run_lua_server).", function(a)
     local id = checkId(a.id, "id")
     local m = store().models[id]
     if not m then error("unknown model: " .. id .. " (model_upload first)") end
     local x, y = tonumber(a.x), tonumber(a.y)
     if not x or not y then error("args.x and args.y required") end
     local sq = Z.square(x, y, num(a.z, 0))
-    local item = sq:AddWorldInventoryItem(tostring(a.item or "Base.TirePiece"), num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0))
+    local carrier = tostring(a.item or "Base.TirePiece")
+    local item = sq:AddWorldInventoryItem(carrier, num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0))
     if not item then error("AddWorldInventoryItem returned nil") end
     local name = "zmcp_" .. id .. "_" .. m.gen
     item:setWorldStaticModel(name)
     if a.yrot then pcall(function() item:setWorldYRotation(tonumber(a.yrot)) end) end
-    return { placed = name, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)), item = tostring(a.item or "Base.TirePiece") }
+    Z.event("model_place", { id = id, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)) })
+    return { placed = name, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)), item = carrier }
 end)
 
 ---------------------------------------------------------------- tools: world sprites
@@ -440,29 +390,10 @@ Z.tool("world_sprite", "Show a texture in the world for everyone (or args.player
     return { id = id, persistent = (not sp.ttl and not player) }
 end)
 
-Z.tool("world_sprite_remove", "Remove a world sprite everywhere. args: {id} (omit id to remove all).", function(a)
-    if a.id then
-        local id = checkId(a.id, "id")
-        store().sprites[id] = nil
-        V.enqueue("spriteRemove", { id = id })
-        return { removed = id }
-    end
-    store().sprites = {}
-    V.enqueue("spriteRemove", {})
-    return { removed = "all" }
-end)
-
-Z.tool("world_sprite_list", "Persistent world sprites: [{id, tex, x, y, z, ...}].", function()
-    local out = {}
-    for _, sp in pairs(store().sprites) do out[#out + 1] = sp end
-    table.sort(out, function(p, q) return p.id < q.id end)
-    return arr(out)
-end)
-
 ---------------------------------------------------------------- tools: falling items
-Z.tool("falling_items", "Items rain from the sky around a point (visual on every client) and the REAL items are spawned on the ground where each lands. args: {type ('Base.Banana'), count? (default 10, max 200), x?, y?, z? (default: args.player's position), radius? (tiles, default 3), duration? (s over which they start falling, default 3), fall? (s each drop takes, default 1.2), spawn? (default true), scale? (icon size)}.", function(a)
-    local item = tostring(a.type or a.item or "")
-    if item == "" then error("args.type required (e.g. Base.Banana)") end
+Z.tool("falling_items", "Items rain from the sky around a point (visual on every client) and the REAL items are spawned on the ground where each lands. args: {item ('Base.Banana'), count? (default 10, max 200), x?, y?, z? (default: args.player's position), radius? (tiles, default 3), duration? (s over which they start falling, default 3), fall? (s each drop takes, default 1.2), spawn? (default true), scale? (icon size)}.", function(a)
+    local item = tostring(a.item or "")
+    if item == "" then error("args.item required (e.g. Base.Banana)") end
     local script = getScriptManager():getItem(item)
     if not script then error("unknown item type: " .. item) end
     local count = math.floor(math.max(1, math.min(200, num(a.count, 10))))
@@ -506,7 +437,7 @@ end)
 local DRAW_KEYS = { "id", "kind", "anchor", "x", "y", "z", "x2", "y2", "z2", "w", "h", "r", "g", "b", "a", "ttl",
     "text", "font", "centre", "center", "fill", "thick", "tex", "flip" }
 
-Z.tool("overlay_draw", "Draw a primitive on every client's screen (or args.player). args: {kind = line|rect|text|texture, anchor = screen|world, x, y, z?, x2?, y2?, z2? (line end), w?, h?, r?, g?, b?, a?, ttl? (s, omit = until overlay_clear), id?, text?, font? (small|medium|large|title), centre?, fill? (rect), thick? (line), tex?, flip?}. World anchor: x,y,z in tiles, sizes in px at zoom 1. Screen anchor: px; negative x/y from the right/bottom.", function(a)
+Z.tool("overlay_draw", "Draw a primitive on every client's screen (or args.player). args: {kind = line|rect|text|texture, anchor = screen|world, x, y, z?, x2?, y2?, z2? (line end), w?, h?, r?, g?, b?, a?, ttl? (s, omit = until cleared), id?, text?, font? (small|medium|large|title), centre?, fill? (rect), thick? (line), tex?, flip?}. World anchor: x,y,z in tiles, sizes in px at zoom 1. Screen anchor: px; negative x/y from the right/bottom. Returns {id}; clear with clear_visuals {what = 'overlays', id}.", function(a)
     local args = {}
     for _, k in ipairs(DRAW_KEYS) do if a[k] ~= nil then args[k] = a[k] end end
     args.id = args.id and checkId(tostring(args.id), "id") or nextId("d")
@@ -514,36 +445,54 @@ Z.tool("overlay_draw", "Draw a primitive on every client's screen (or args.playe
     return { id = args.id }
 end)
 
-Z.tool("overlay_clear", "Remove overlay primitives. args: {id?} (omit = all).", function(a)
-    V.enqueue("clear", { what = "draw", id = a.id })
-    return { cleared = a.id or "all" }
+local MESSAGE_MODES = { notify = true, halo = true, chat = true, say = true }
+
+Z.tool("server_message", "Show a message to every player (or args.player) through the client mod. args: {text, mode? = notify|halo|chat|say, player?, ttl? (notify seconds), r?, g?, b? (0-1 or 0-255), font? (notify: small|medium|large|title), time? (halo frames)}. notify = box at the top of the screen, halo = text over the player's head, chat = a line in the chat panel, say = speech bubble. Players without the mod see nothing (the console 'servermsg' command is the vanilla fallback).", function(a)
+    if not a.text then error("args.text required") end
+    local mode = tostring(a.mode or "notify")
+    if not MESSAGE_MODES[mode] then error("args.mode must be notify, halo, chat or say") end
+    local msg = { text = tostring(a.text), ttl = tonumber(a.ttl), r = tonumber(a.r), g = tonumber(a.g), b = tonumber(a.b),
+        font = a.font, time = tonumber(a.time) }
+    local player = optPlayer(a.player)
+    V.enqueue(mode, msg, player)
+    Z.event("server_message", { text = msg.text, mode = mode, user = player and userOf(player) or nil })
+    return { sent = true, mode = mode, to = player and userOf(player) or "all" }
 end)
 
-Z.tool("clear_visuals", "Clear client visuals: args {what? = all|sprites|draw|fall|notices|textures}. 'all' removes sprites, overlays, falling items, notices and pushed render hooks (not textures or client modules).", function(a)
+---------------------------------------------------------------- tools: registry and cleanup
+local CLEAR_WHAT = { all = true, sprites = true, overlays = true, falling = true, notices = true, textures = true, models = true, hooks = true }
+
+Z.tool("clear_visuals", "Remove client visuals everywhere (or args.player): args {what? = all|sprites|overlays|falling|notices|textures|models|hooks, id?}. 'all' clears sprites, overlays, falling items, notices and script hooks (textures, models and client scripts stay). With id only that sprite/overlay/texture/model.", function(a)
     local what = tostring(a.what or "all")
-    if what == "all" or what == "sprites" then store().sprites = {} end
-    if what == "textures" then store().textures = {} end
-    V.enqueue("clear", { what = what })
-    return { cleared = what }
-end)
-
-Z.tool("notify", "On-screen message at the top of every client's screen (or args.player). args: {text, ttl? (s, default 5), r?, g?, b?, font? (small|medium|large|title)}.", function(a)
-    if not a.text then error("args.text required") end
-    V.enqueue("notify", { text = tostring(a.text), ttl = tonumber(a.ttl), r = tonumber(a.r), g = tonumber(a.g), b = tonumber(a.b), font = a.font }, optPlayer(a.player))
-    return { ok = true }
-end)
-
-Z.tool("halo", "Overhead halo text on a player (or everyone). args: {text, player?, r?, g?, b? (0-255), time?}.", function(a)
-    if not a.text then error("args.text required") end
-    V.enqueue("halo", { text = tostring(a.text), r = tonumber(a.r), g = tonumber(a.g), b = tonumber(a.b), time = tonumber(a.time) }, optPlayer(a.player))
-    return { ok = true }
-end)
-
-Z.tool("visuals_status", "Visual subsystem state: queue length, known clients, registry counts, pending landings.", function()
+    if not CLEAR_WHAT[what] then error("args.what must be one of all, sprites, overlays, falling, notices, textures, models, hooks") end
+    local id = a.id and checkId(tostring(a.id), "id") or nil
     local s = store()
-    local function count(t) local n = 0 for _ in pairs(t) do n = n + 1 end return n end
-    return { version = V.version, queue = #V.queue, clients = V.clients, textures = count(s.textures), models = count(s.models),
-        sprites = count(s.sprites), cmodules = count(s.cmodules), pendingSpawns = #V.pendingSpawns }
+    local player = optPlayer(a.player)
+    if not player then
+        if what == "sprites" or what == "all" then if id then s.sprites[id] = nil else s.sprites = {} end end
+        if what == "textures" then if id then s.textures[id] = nil else s.textures = {} end end
+        if what == "models" then if id then s.models[id] = nil else s.models = {} end end
+    end
+    V.enqueue("clear", { what = what, id = id }, player)
+    return { cleared = what, id = id }
+end)
+
+Z.tool("visuals_list", "Everything the visual subsystem knows: textures [{id, gen, chars|pixel}], models [{id, name, gen, scale}], sprites [{id, tex, x, y, z, ...}], client scripts [{name, file}], clients {user = {version, textures, models}}, queue length and pending item landings.", function()
+    local s = store()
+    local textures, models, sprites = {}, {}, {}
+    for id, t in pairs(s.textures) do
+        textures[#textures + 1] = { id = id, gen = t.gen, chars = t.chars, pixel = t.pixel ~= nil, uploaded = t.uploaded }
+    end
+    for id, m in pairs(s.models) do
+        models[#models + 1] = { id = id, name = "zmcp_" .. id .. "_" .. m.gen, gen = m.gen, scale = m.scale, uploaded = m.uploaded }
+    end
+    for _, sp in pairs(s.sprites) do sprites[#sprites + 1] = sp end
+    table.sort(textures, function(x, y) return x.id < y.id end)
+    table.sort(models, function(x, y) return x.id < y.id end)
+    table.sort(sprites, function(x, y) return x.id < y.id end)
+    V.enqueue("ping", {})
+    return { textures = arr(textures), models = arr(models), sprites = arr(sprites), scripts = Z.scriptSides.client.list(),
+        clients = V.clients, queue = #V.queue, pendingSpawns = #V.pendingSpawns }
 end)
 
 Z.event("visuals_loaded", { version = V.version })
