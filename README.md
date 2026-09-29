@@ -2,7 +2,7 @@
 
 A Project Zomboid (Build 42) mod plus a bundled MCP server that gives Claude (or any MCP client) live control over a running game: query the world, spawn things, build with tiles, change weather and time, manage players, and push brand-new visuals (textures, sprites, overlays) to every connected player. Nothing needs a restart or a Workshop update.
 
-The project is in progress. See [docs/PLAN.md](docs/PLAN.md) for the architecture and [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md) for the verified engine facts.
+The project is in progress. See [docs/PLAN.md](docs/PLAN.md) for the architecture, [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md) for the verified engine facts, [docs/TOOLS.md](docs/TOOLS.md) for the tool reference and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the server ↔ client commands.
 
 ## Layout
 - `mod/Contents/mods/ZomboidMCP/`: the Workshop item (`42/media/lua/{shared,server,client}/ZomboidMCP`). The MCP server ships inside the mod under `mcp/` and the skill under `skill/`.
