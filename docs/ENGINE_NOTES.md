@@ -56,14 +56,14 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **SteamCMD** logging in with the owner's account **kicks their desktop Steam** ("lost connection"). Never run SteamCMD while the owner is playing. Always use the isolated HOME: `env HOME=$ZMCP_STEAMCMD_HOME $ZMCP_STEAMCMD +login $ZMCP_STEAM_USER ...`.
 - **Heap:** 2 GB of heap ran out of memory during a save with 35 mods. It's 3 GB now, and the host has only about 1.2 GB spare. Avoid holding big data (for example textures) in Lua or ModData on the server; keep it in files.
 - **Kahlua:** there's no `io` library, no `bit` operations (use arithmetic), and `os.date` works. Overloaded Java methods are chosen by argument count. `tostring()` with no arguments throws. Strings are Java strings (`string.char(256)` works, `string.byte` returns UTF-16 units). Pattern matching: an escaped char such as `%]` does **not** start a range inside a set (`[%]-~]` is not "] to ~"), so avoid ranges that begin with an escaped char (`Json.lua` escapes in two passes because of this).
-  - **No `next()`** (verified 2026-09-30: `next(t) == nil` throws "Object tried to call nil" every frame). Use `for _ in pairs(t) do return false end return true` to test for an empty table. `pairs`, `ipairs`, `select`, `unpack`, `rawget` exist. Check `dev/sim_prelude.lua` for the list of globals the offline harness provides (and deliberately leaves out).
-- **Never test on the owner's running single-player game without asking.** `dev/ZMCPDev` + `~/Zomboid/Lua/zmcp_dev_exec.lua` is a single shared file: two sessions writing it collide, and a render hook that throws breaks the owner's game every frame. Use static checks (`dev/luacheck.py`) and the offline Lua 5.1 harness (`dev/test_sim.py`) instead; a live run needs the owner's OK.
+  - **No `next()`** (verified 2026-09-30: `next(t) == nil` throws "Object tried to call nil" every frame). Use `for _ in pairs(t) do return false end return true` to test for an empty table. `pairs`, `ipairs`, `select`, `unpack`, `rawget` exist. Check `tests/sim/sim_prelude.lua` for the list of globals the offline harness provides (and deliberately leaves out).
+- **Never test on the owner's running single-player game without asking.** `dev/ZMCPDev` + `~/Zomboid/Lua/zmcp_dev_exec.lua` is a single shared file: two sessions writing it collide, and a render hook that throws breaks the owner's game every frame. Use static checks (`tests/luacheck.py`) and the offline Lua 5.1 harness (`tests/sim/test_sim.py`) instead; a live run needs the owner's OK.
 
 ## Live server rules for sessions
 - **Allowed:**
   - Read-only inspection
   - `tools/pz status/events`
-  - Non-destructive `tools/pz run` / `lua_eval` tests
+  - Non-destructive `tools/pz run` / `run_lua_server` tests
   - Pushing to `/opt/zomboid-lua` + `reloadlua`
 - **Needs the owner's OK, because players are usually online:**
   - Server restarts

@@ -118,7 +118,7 @@ class TestTools(FakeGameCase):
         self.assertEqual(st["players"][0]["user"], "niach")
         self.assertLess(st["heartbeat_age_s"], 5)
 
-    def test_lua_eval_roundtrip_and_cleanup(self):
+    def test_run_lua_server_roundtrip_and_cleanup(self):
         r = self.client.call("run_lua_server", {"code": "return 1+1"})
         self.assertFalse(r["isError"])
         self.assertEqual(text_of(r), "2")

@@ -4,7 +4,7 @@
 #
 #   pz status                    bridge heartbeat (zmcp_status.json + age)
 #   pz call <tool> [json-args]   call a bridge tool through the file protocol
-#   pz eval "<lua>"              lua_eval on the server
+#   pz eval "<lua>"              run_lua_server on the server
 #   pz events [n]                last n bridge events
 #   pz bench [n]                 round-trip latency of n pings
 #   pz console "<cmd>"           raw server console command (players, servermsg, reloadlua ..., works while paused)

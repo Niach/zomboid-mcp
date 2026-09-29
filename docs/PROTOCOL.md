@@ -1,4 +1,8 @@
-# Zomboid MCP bridge protocol
+# Zomboid MCP protocol
+
+Part 1: MCP ⇄ server (files in the Lua cache dir). Part 2: server ⇄ client mod (`sendServerCommand`).
+
+# Part 1: MCP ⇄ server bridge
 
 The MCP process and the game talk through plain files in the game's **Lua cache dir**
 (`~/Zomboid/Lua/` for a local game; on our server `$ZMCP_LUA_DIR` on the host, which is
@@ -17,7 +21,9 @@ Reference client (stdlib Python, also used by the tests): `tools/zmcp_client.py`
 | `zmcp_res_<n>.json` | server | one response, `{"n": n, "ok": true, "result": ..., "ms": 3, "t": ...}` or `{"n": n, "ok": false, "error": "...", "ms": 0, "t": ...}` |
 | `zmcp_status.json` | server | heartbeat, rewritten every 2 s and immediately after each processed request |
 | `zmcp_events.log` | server | append-only event log, one JSON object per line: `{"t", "kind", "data"}` |
-| `zmcp_mod_<name>.lua.txt` | server | persistent modules written by `module_install {name, code}` |
+| `zmcp_script_<name>.lua.txt` | server | persistent server scripts written by `script_install {name, code}` |
+| `zmcp_cscript_<name>.lua.txt`, `zmcp_tex_<id>.b64`, `zmcp_model_<id>.*.b64` | server | client scripts and base64 assets kept for late joiners (Api/Visuals.lua) |
+| `zmcp_blob_<n>_<key>.txt` | MCP | a string argument above 32 kB, passed as `<key>_file` (see "Large arguments") |
 | `zmcp_src_*.lua`, `zmcp_boot.lua`, `zmcp_run.lua` | dev tools | scratch files used by `tools/pz load` / `tools/pz run` |
 
 `<n>` is a positive integer without padding. All JSON the MCP writes must be **ASCII only**
@@ -71,7 +77,7 @@ rename files; `fileExists(absolutePath)` works (relative names return false).
    - heartbeat older than 5 s: the bridge is not loaded (server down, Bridge.lua not loaded) or the server
      is paused and no poll command is configured (see "Paused server");
    - `status.nextReq > n`: the response was lost (should not happen);
-   - otherwise the tool is still running (a long `lua_eval`).
+   - otherwise the tool is still running (a long `run_lua_server`).
 
 The reference implementation does steps 1 to 3 in a single `ssh` exec for the remote transport
 (write, trigger a poll if needed, wait on the host, cat, delete): one ssh exchange plus one tick.
@@ -93,8 +99,8 @@ Measured on the live server (ssh from the dev PC, server paused, so every reques
   "server": true,                  // isServer(); false for a single-player host
   "players": [{"user": "niach", "name": "Cool Jesus", "x": 6400, "y": 5498, "z": 0, "dead": false, "health": 100}],
   "time": {"hour": 13.5, "day": 12, "month": 7, "year": 1993},
-  "tools": ["lua_eval", "module_install", "..."],
-  "modules": ["snail"],
+  "tools": ["run_lua_server", "script_install", "..."],
+  "scripts": ["snail"],
   "stats": {"requests": 57, "errors": 2}
 }
 ```
@@ -142,7 +148,7 @@ Status shows it: `paused=true`, `tps=0`.
 ## Events
 
 `zmcp_events.log` grows forever (the server cannot truncate it; the MCP may). Each line is
-`{"t": unixSeconds, "kind": "bridge_loaded" | "gap" | "module_install" | "module_remove" | "module_error" | <mod-defined>, "data": {...}}`.
+`{"t": unixSeconds, "kind": "bridge_loaded" | "gap" | "script_install" | "script_remove" | "script_error" | "client_hello" | "client_exec_result" | "client_texture" | "client_model" | <tool name> | <script-defined>, "data": {...}}`.
 Read it with `tail -c +<offset>` and remember the offset.
 
 ## Core tools (registered by Bridge.lua)
@@ -150,18 +156,27 @@ Read it with `tail -c +<offset>` and remember the offset.
 | tool | args | result |
 |---|---|---|
 | `ping` | | `{pong, version, bootId, paused, players}` |
-| `status` | | the status document, written fresh |
+| `status` | | the status document, written fresh (Api/World.lua adds weather and loaded counts) |
 | `tools_list` | | `[{name, desc}]` |
-| `lua_eval` | `{code}` | the chunk's return value (an array when it returns several) |
-| `run_file` | `{file}` | runs a Lua file from the Lua dir once; not remembered |
-| `module_install` | `{name, code}` or `{name, file}` | writes `zmcp_mod_<name>.lua.txt` (when `code` is given), runs it, and records it in ModData so it runs again on every bridge load and server start |
-| `module_list` | | `[{name, file, installed}]` |
-| `module_remove` | `{name}` | forgets the module (the file stays; already registered handlers stay until the next restart unless the module removes them itself) |
+| `run_lua_server` | `{code}` | the chunk's return value (an array when it returns several) |
+| `run_file` | `{file}` | runs a Lua file from the Lua dir once; not remembered (dev tooling) |
+| `script_install` | `{name, code, side?}` | `side` = `server` (default): writes `zmcp_script_<name>.lua.txt`, runs it, records it in ModData so it runs again on every bridge load and server start. `side` = `client`: Api/Visuals.lua stores it and pushes it to every client now and on join. Other sides plug into `ZMCP.scriptSides` |
+| `script_list` | | `{server = [{name, file, installed}], client = [...]}` |
+| `script_remove` | `{name, side?}` | forgets the script (the file stays; handlers a server script registered stay until the next restart unless the script removes them itself; clients drop the hooks of a client script at once) |
 
 Errors are returned as `{"ok": false, "error": "<lua error message>"}`; a Lua error inside a tool never
 breaks the loop.
 
-## Writing tools and modules (Lua side)
+## Large arguments
+
+Any string argument longer than 32 kB (base64 PNGs, long Lua sources) is written by the MCP to
+`zmcp_blob_<n>_<key>.txt` in the Lua dir and the argument is replaced by `<key>_file` = that file name
+(`png_base64` becomes `png_base64_file`). Tools read such arguments with `ZMCP.argText(args, "png_base64")`,
+which returns the inline value or the file's content. The MCP deletes the blob together with the request and
+response files after the response, unless the tool's result object contains `"keep_files": true`; tools that
+need the data later (textures, models for late joiners) copy it into their own file.
+
+## Writing tools and scripts (Lua side)
 
 Everything goes through the `ZMCP` table (see the header of `Bridge.lua`):
 
@@ -173,11 +188,12 @@ ZMCP.tickHooks.hello = function(t) --[[ runs every processed tick, t = unix seco
 ZMCP.event("hello", { who = "world" })
 ```
 
-Rules for every server file (Bridge.lua, Api/*.lua, modules):
+Rules for every server file (Bridge.lua, Api/*.lua, scripts):
 - **Re-runnable.** Keep state in a global table (`MyMod = MyMod or {}`), store event handlers in
-  `MyMod.handlers` and `Events.X.Remove` them before adding new ones. `ZMCP.tools`, `ZMCP.tickHooks` and
-  `ZMCP.nextReq` survive a reload of Bridge.lua.
-- **No `require` of new files at runtime.** Load new code with `run_file` / `module_install` (loadstring).
+  `MyMod.handlers` and `Events.X.Remove` them before adding new ones. `ZMCP.tools`, `ZMCP.tickHooks`,
+  `ZMCP.scriptSides` and `ZMCP.nextReq` survive a reload of Bridge.lua.
+- **No `require` of new files at runtime.** Load new code with `run_file` / `script_install` (loadstring).
+  Api files guard their `require` lines so they load both at startup (mod) and through `tools/pz load`.
 - Kahlua: no `io`, no `bit`, `tostring()` without an argument throws, overloaded Java methods are chosen by
   argument count. Return only plain tables/strings/numbers/booleans from tools; userdata is `tostring`ed.
 - Keep big data (textures, snapshots) in files, not in ModData.
@@ -204,57 +220,143 @@ source it.
   `/home/steam/pz-dedicated/media/lua/server/ZomboidMCP` so the files load at startup and can be reloaded
   with `reloadlua Bridge.lua`. **The mount does not exist yet**; it is a compose change for the owner
   (ZOM deploy), like the old `vapps` mount. Until then `tools/pz load` is the way to get code into the server.
-- Tests: `tests/run_lua_tests.py` runs `tests/json_test.lua` under a standalone Lua 5.1 (`lua5.1`/`luajit`
-  on PATH, else the `lupa` wheel: `python3 -m venv .venv && .venv/bin/pip install lupa`).
-  `tests/smoke_live.py` runs 16 checks against the live server through the file protocol: ping, lua_eval
-  (values, errors, compile errors), tools_list, ordering, latency under 1 s, gap handling, resync after a
-  lower server counter, stale and malformed requests, module_install/list/remove, run_file, events, cleanup.
-  Run it with the env exported: `set -a; . ~/.config/zomboid-mcp/local.env; set +a; tests/smoke_live.py`.
+- Tests: `make test` runs everything offline (see README). `tests/run_lua_tests.py` runs `tests/json_test.lua` under a
+  standalone Lua 5.1 (`lua5.1`/`luajit` on PATH, else the `lupa` wheel: `pip install lupa`).
+  `tests/live/bridge_smoke.py` runs 16 checks against the live server through the file protocol: ping,
+  run_lua_server (values, errors, compile errors), tools_list, ordering, latency under 1 s, gap handling, resync
+  after a lower server counter, stale and malformed requests, script_install/list/remove, run_file, events,
+  cleanup. `tests/live/mcp_smoke.py` does the same through the MCP server. Run them with the env exported:
+  `set -a; . ~/.config/zomboid-mcp/local.env; set +a; python3 tests/live/bridge_smoke.py`.
 
-# Server ⇄ client commands (module `zmcp`)
+# Part 2: server ⇄ client commands (module `zmcp`)
 
+The command protocol between the server (`Api/Visuals.lua`, plus any tool or script that calls
+`ZMCP.toClients`) and the client mod (`client/ZomboidMCP/Client.lua` and its submodules). Every player with the
+Workshop mod runs the client.
 
-The server bridge talks to the client mod with `sendServerCommand([player,] "zmcp", command, args)`
-(`ZMCP.toClients(command, args, player)` in `Bridge.lua`). The client receives it in
-`Events.OnServerCommand(module, command, args)` with `module == "zmcp"`. In single player both sides share one Lua
-state and `ZMCPClient.onCommand(command, args)` is called directly.
+## Transport
 
-Rules:
-- `args` is a flat table: string, number and boolean values only. Chunk payloads above ~3000 characters.
+- **Server → client:** `sendServerCommand([player,] "zmcp", command, args)`, received by
+  `Events.OnServerCommand(module, command, args)`. `ZMCP.toClients(command, args, player)` wraps it and, in
+  single player (same Lua state, `sendServerCommand` is a no-op), calls `ZMCPClient.onCommand` directly.
+- **Client → server:** `sendClientCommand(player, "zmcp", command, args)`, received by
+  `Events.OnClientCommand(module, command, player, args)` (`ZMCP.visuals.onClientCommand`). This also
+  works in single player (`SinglePlayerServer` fires the event).
+- `args` is a flat table of strings, numbers and booleans. Nested data travels as a string (`"x,y,z;x,y,z"`
+  paths, `"x,y,z,delay,dur;..."` drop lists, JSON for pixel-sprite definitions).
+- Messages are kept under ~3 KB: long payloads (code, base64) are split into `part`/`total` chunks and
+  reassembled by `id` on the client. The server sends at most `ZMCP.visuals.PER_TICK` (12) messages per
+  tick through a FIFO queue, so ordering is preserved (textures before sprites on a resend).
 - Commands addressed to one player are sent with the player argument; the client does not filter by target.
-- The client handler ignores unknown commands (forward compatibility) and never lets an error escape `OnServerCommand`.
-- Every client-side action is **client-authoritative**: the server only sends the request and cannot verify the
-  outcome. Tools report `sent = true`; callers confirm with `player_info` / `status`.
+  Unknown commands are logged and ignored. Every handler runs under `pcall`; a failing handler never breaks the
+  next one. Client-side effects are **client-authoritative**: the server cannot verify them (tools report
+  `sent = true`; the client answers with the result commands below).
 
-## `teleport` (to one player)
-Sent by the `teleport` tool. Move the local player to the given tile.
+## Client → server
 
-| arg | type | description |
-| --- | --- | --- |
-| `x` | number | target x (may be fractional) |
-| `y` | number | target y |
-| `z` | number | level (0 = ground) |
+| command | args | when |
+|---|---|---|
+| `hello` | `{version}` | `OnGameStart`. The server answers with every registered texture, model, client script and world sprite (late join / reconnect). Event `client_hello`. |
+| `execResult` | `{id, ok, res, ms, module?}` | after every `exec` chunk set ran (`res` = the return value, tables JSON-encoded, or the error; ≤ 4000 chars). Event `client_exec_result`; `client_results {id}` shows `{to, results, pending, done}` and the MCP's `run_lua_client` waits for it. |
+| `texResult` | `{id, gen, ok, w?, h?, bytes?, err?}` | after a texture was written and loaded (or failed). Event `client_texture`. |
+| `fileResult` | `{id, gen, path, ok, bytes?, err?}` | after a `file` push was written. Event `client_file`. |
+| `modelResult` | `{id, gen, name, ok, err?}` | after a `model` registration. Event `client_model`. |
+| `pong` | `{version, sprites, textures, models, execs, captured}` | answer to `ping` (`visuals_list` sends one). Event `client_pong`. |
 
-Expected client behaviour (see `docs/recipes/teleport.md`):
+## Server → client
+
+| command | args | effect |
+|---|---|---|
+| `exec` | `{id, part, total, code, module?}` | chunked Lua. When all parts are in: `loadstring`, `pcall`, reply `execResult`. With `module` (= a client script name), the source is kept in `ZMCPClient.modules[name]`. |
+| `scriptRemove` | `{name}` | forget a client script and drop every hook registered under `name` (`ZMCPClient.off(name)`). |
+| `file` | `{id, gen, part, total, data, path}` | base64 chunks of any file → `~/Zomboid/Lua/<path>` (parent dirs are created; `..` refused). Reply `fileResult`. |
+| `model` | `{id, gen, mesh, texture, scale}` | runtime 3D model: once both files (`mesh` = `media/….x`, `texture` = `media/….png`, relative to the Lua dir) are present, `ModelScript.new()` + `setModule(Base)` + `InitLoadPP` + `Load` + `addModelScript` under the name `zmcp_<id>_<gen>`; `ZMCPClient.models.name(id)` returns it. Reply `modelResult`. |
+| `capture` | `{on}` | screen apps: the overlay consumes mouse events and is brought to the top (`on`), or is released (click-through, `backMost`). |
+| `tex` | `{id, gen, part, total, data}` | base64 PNG chunk. Complete → decoded (pure Lua, arithmetic only) into `~/Zomboid/Lua/zmcp_tex_<id>_<gen>.png` via `getFileOutput`, loaded with `getTexture(absolutePath)`. New generation = new file name because textures are cached by path. Reply `texResult`. |
+| `pixel` | `{id, def}` | art without a PNG: `def` = JSON `{w, h, palette = {a = [r,g,b,a]}, rows = ["aab.", ...]}`, drawn with `drawRect`. Usable wherever a texture id is. |
+| `sprite` | `{id, tex, x, y, z, scale?, tiles?, path?, speed?, loop?, bob?, bobHz?, flip?, opacity?, ttl?, fade?, anchor?}` | create/replace a world sprite (see Rendering). |
+| `spriteRemove` | `{id?}` | remove one sprite, or all without `id`. |
+| `fall` | `{id, item, items, scale?, tex?}` | falling item icons; `items` = `"x,y,z,delay,dur;..."` (target tile, seconds until the drop starts, fall duration). Visual only: the server spawns the real items. |
+| `draw` | `{id?, kind, anchor, x, y, z?, x2?, y2?, z2?, w?, h?, r?, g?, b?, a?, ttl?, text?, font?, centre?, fill?, thick?, tex?, flip?}` | overlay primitive: `line`, `rect`, `text`, `texture`; `anchor` = `screen` (px, negative = from right/bottom) or `world` (tiles; sizes in px at zoom 1). `ttl` seconds, absent = until cleared. |
+| `notify` | `{text, ttl?, r?, g?, b?, font?}` | message box at the top of the screen (stacked, fades). |
+| `halo` | `{text, r?, g?, b?, time?}` | `setHaloNote` on the local player (overhead text). |
+| `chat` | `{text, r?, g?, b?}` | a line in the chat panel (`ISChat.addLineInChat`); falls back to `notify` when the chat API differs. |
+| `say` | `{text}` | speech bubble on the local player. |
+| `heal` | `{}` | client-authoritative: every body part `RestoreToFullHealth`, stiffness cleared, pain/panic/stress/fatigue/hunger/thirst reset, `sendPlayerStatsChange`. |
+| `cure` | `{}` | client-authoritative: zombie infection and wound infection cleared on every body part and on `BodyDamage`. |
+| `teleport` | `{x, y, z?}` | `player:teleportTo` (position is client-authoritative in MP). |
+| `clear` | `{what?, id?}` | `all` (sprites, overlays, falling items, notices, every script hook, capture off), `sprites`, `overlays`, `falling`, `notices`, `textures` (forget loaded textures; files stay), `models`, `hooks` (one name with `id`, or all). |
+| `ping` | `{}` | reply `pong`. |
+
+`heal`, `cure`, `teleport`, `halo`, `notify`, `chat` and `say` are meant for server scripts too:
+`ZMCP.toClients("heal", {}, ZMCP.player("niach"))`.
+
+## Rendering
+
+- One full-screen `ISUIElement` (`ZMCPOverlay`) with `setConsumeMouseEvents(false)` is added to the UI
+  manager and sent `backMost()` on `OnGameStart`: it draws above the world and below the vanilla UI, and
+  clicks pass through. Its `render` draws, in order: world sprites, falling items, overlay primitives and
+  notices, then every render hook registered by pushed code (a hook that errors is removed and logged).
+- **World sprites** are drawn bottom-centre at `isoToScreenX/Y(0, x, y, z)`, always on top (owner
+  preference, no occlusion), ordered by `z` then `x + y` so southern sprites overlap northern ones.
+  Size: `scale` multiplies the texture's pixel size at zoom 1, or `tiles` gives the width in world tiles
+  (64 px at zoom 1); both are divided by `getCore():getZoom(0)`.
+  Motion: `path` waypoints (from `x,y,z`) walked at `speed` tiles/s with `loop` = `loop` | `pingpong` |
+  `once`; `bob` px hop (`bobHz`); `flip` = `auto` (mirror when moving left on screen), `0`, `1`;
+  `opacity`, `ttl` (seconds; a sprite with a ttl is not persisted for late joiners), `fade` (in/out seconds),
+  `anchor` = `bottom` | `center`.
+- **Textures** for sprites/draws are resolved through `ZMCPClient.tex.get(ref)`: an uploaded id, a pixel
+  sprite id, `item:Base.Banana` (inventory icon via `instanceItem`), or any vanilla texture name/path
+  accepted by `getTexture`.
+- **Falling items** use the item's inventory icon (`item:<type>`), a quadratic drop from 700 px (at zoom
+  1) with a growing shadow, one small bounce and a fade while the real item appears.
+
+## Server-side registry (Api/Visuals.lua)
+
+`ModData "ZomboidMCP".visuals = { textures = {id → {file, gen, chars} | {pixel = json}}, models = {id → {meshSrc,
+texSrc, gen, scale, mesh, texture}}, sprites = {id → args}, cscripts = {name → {file}} }`. Only metadata is stored;
+the data lives in files in the Lua cache dir (`zmcp_tex_<id>.b64`, `zmcp_model_<id>.x.b64` / `.png.b64`,
+`zmcp_cscript_<name>.lua.txt`), read and streamed on demand (server heap). Late joiners get, in order, textures,
+models, client scripts, sprites.
+
+Upload flow through the MCP: `texture_upload {id, png_path}` (or `png_base64`) and `model_upload {id, mesh_path,
+png_path, scale}`; the MCP base64-encodes local files, the game copies the base64 into its own file and streams
+it. Then `world_sprite {texture: <id>, ...}` or `model_place {id, x, y, z}`. `client_texture` / `client_model`
+events (events_poll) report every client's load result.
+
+## Pushed code (run_lua_client / client scripts)
+
+`run_lua_client {code, player?, id?}` chunks the code, sends it as `exec`, and returns `{id, to}`; every
+recipient answers with `execResult`. `client_results {id}` returns `{to, results = {user = {ok, res, ms}},
+pending, done}`; the MCP polls it and returns `{results = {user = {ok, value|error, ms}}, missing}`.
+Per-script ids are given (`id`) or generated (`c<n>`); client scripts use `script:<name>`.
+
+The chunk runs on every client with these globals: `ZMCPClient`, `ZMCPJson` and the vanilla client API.
+Return a string, number or table (tables are JSON-encoded) and it comes back in the result.
+
+Hook registry for scripts (ClientInput.lua):
 ```lua
-local p = getPlayer()
-if p:getVehicle() then p:getVehicle():exit(p) end
-p:setX(x); p:setY(y); p:setZ(z)
-p:setLx(x); p:setLy(y); p:setLz(z)
+ZMCPClient.on("flappy", "render", function(ui) ui:drawRect(x, y, w, h, a, r, g, b) end)
+ZMCPClient.on("flappy", "tick", function(now) ... end)          -- every game tick, now in seconds
+ZMCPClient.on("flappy", "keyDown", function(key) ... end)       -- OnKeyStartPressed; "keyUp" = release, "keyHeld"
+ZMCPClient.on("flappy", "mouseDown", function(x, y, button) end) -- "mouseUp", "mouseMove"(x, y, dx, dy), "mouseWheel"(delta)
+ZMCPClient.capture(true)     -- screen app: the overlay swallows the mouse and sits above the UI; capture(false) releases
+ZMCPClient.off("flappy")     -- remove every hook of that name (script_remove and clear hooks do this)
+ZMCPClient.input.keyDown(key), ZMCPClient.input.mouse()   -- polling: isKeyDown, getMouseX/Y, buttons
+ZMCPClient.screen(), ZMCPClient.zoom(), ZMCPClient.player(), ZMCPClient.now(), ZMCPClient.send(cmd, args)
+ZMCPClient.tex.get(ref), ZMCPClient.tex.draw(ui, entry, x, y, w, h, alpha, flip), ZMCPClient.sprites, ZMCPClient.draw, ZMCPClient.models.name(id)
 ```
+A hook that throws is removed after the first error and logged once (never every frame). Keyboard hooks
+fire regardless of capture; the game's own keybinds still fire too, so prefer keys the game does not use.
+Convention for client scripts: register hooks under the script name so `script_remove` drops them.
 
-## `message` (to everyone or one player) — optional
-Not sent by any curated tool (messages are a scripting recipe, `docs/recipes/server_message.md`), but cheap to support:
+## Dev loop
 
-| arg | type | description |
-| --- | --- | --- |
-| `text` | string | message text |
-| `mode` | string | `halo` (floating text above the local player) or `chat` (a chat line) |
-| `color` | string | optional `#rrggbb`; default white |
-
-Expected client behaviour: `halo` → `HaloTextHelper.addText(getPlayer(), text, "", r, g, b)`; `chat` → a line in
-`ISChat`, falling back to halo.
-
-## Commands owned by other issues
-- `exec`, `hello`, chunking and late-join resend: ZOM-6 (client mod) / ZOM-1 (bridge).
-- Visual commands (overlays, textures, world sprites, 3D objects, falling items): ZOM-6 and the visuals issues.
+- Single player: `dev/bundle_sp.sh [test.lua]` concatenates the whole mod (shared + server + client) into
+  `~/Zomboid/Lua/zmcp_dev_exec.lua` for the `dev/ZMCPDev` watcher; then drive it with
+  `tools/zmcp_client.py --local call <tool> '<json>'` (request files in `~/Zomboid/Lua`). The game only runs
+  Lua while it is focused (single player pauses when unfocused). Only one agent at a time, with the owner's OK.
+- Offline: `python3 tests/sim/test_sim.py` runs the same files under a standalone Lua 5.1 (`pip install lupa`)
+  with mocked engine globals (`tests/sim/sim_prelude.lua`) and exercises the whole path: hello, texture chunks →
+  PNG file → texture, sprites, falling items and landings, exec round trip, hooks and input capture, models,
+  client and server scripts, late-join resend, request files. `tests/luacheck.py` is the syntax check.

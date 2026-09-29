@@ -1,5 +1,5 @@
 -- Mock of the Project Zomboid Lua globals used by the mod, for offline tests under a standalone Lua 5.1
--- (dev/test_sim.py). Single-player semantics: isClient()/isServer() are false, ZMCP.toClients calls the
+-- (tests/sim/test_sim.py). Single-player semantics: isClient()/isServer() are false, ZMCP.toClients calls the
 -- client directly, sendClientCommand fires OnClientCommand on the same state.
 SIM = { fs = {}, out = {}, sent = {}, draws = {}, spawned = {}, now = 1000, moddata = {}, vanilla = {} }
 

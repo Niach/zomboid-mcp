@@ -145,9 +145,9 @@ test("decode errors return nil, message", function()
 end)
 
 test("round trip of a request/response shaped document", function()
-    local req = { n = 57, t = 1790720788.5, tool = "lua_eval", args = { code = "return 'x'", list = { 1, 2 }, flag = false } }
+    local req = { n = 57, t = 1790720788.5, tool = "run_lua_server", args = { code = "return 'x'", list = { 1, 2 }, flag = false } }
     local back = J.decode(J.encode(req))
-    eq(back.n, 57); eq(back.t, 1790720788.5); eq(back.tool, "lua_eval")
+    eq(back.n, 57); eq(back.t, 1790720788.5); eq(back.tool, "run_lua_server")
     eq(back.args.code, "return 'x'"); eq(back.args.list[2], 2); eq(back.args.flag, false)
     local res = { n = 57, ok = true, result = { pong = true, players = "", nested = { J.array({}), {} } }, ms = 0 }
     local text = J.encode(res)

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Offline end-to-end test of the mod under a standalone Lua 5.1 (pip install lupa) with mocked engine
-globals (dev/sim_prelude.lua). Loads Json + Bridge + Api/*.lua + the client files in single-player mode
+globals (tests/sim/sim_prelude.lua). Loads Json + Bridge + Api/*.lua + the client files in single-player mode
 and drives the visual tools: hello, texture upload (chunks -> PNG file -> texture), sprites, falling items
 and landings, exec round trip, client modules, late-join resend, overlays, utility handlers, request files."""
 import base64, json, os, sys
 from lupa import lua51
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LUA = os.path.join(ROOT, "mod/Contents/mods/ZomboidMCP/42/media/lua")
 FILES = [
     "shared/ZomboidMCP/Json.lua",
@@ -24,7 +24,7 @@ FILES = [
 
 rt = lua51.LuaRuntime(unpack_returned_tuples=True)
 g = rt.globals()
-rt.execute(open(os.path.join(ROOT, "dev/sim_prelude.lua")).read())
+rt.execute(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_prelude.lua")).read())
 # Kahlua does not have these: make sure the mod never relies on them
 rt.execute("next = nil; io = nil; bit = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")
 for f in FILES:

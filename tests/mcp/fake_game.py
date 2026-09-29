@@ -32,7 +32,7 @@ class FakeGame(threading.Thread):
         self.client_results = {}      # script id -> result status returned by client_results
         self.tools = {
             "ping": lambda a: {"pong": True, "version": "fake", "players": ", ".join(p["user"] for p in self.players)},
-            "run_lua_server": self._lua_eval,
+            "run_lua_server": self._run_lua_server,
             "run_lua_client": self._run_lua_client,
             "client_results": self._client_results,
             "tools_list": lambda a: [{"name": n, "desc": "fake tool %s" % n} for n in sorted(self.tools)],
@@ -51,7 +51,7 @@ class FakeGame(threading.Thread):
         self.version = "0.3.0-fake"
 
     # --- tools ----------------------------------------------------------------
-    def _lua_eval(self, a):
+    def _run_lua_server(self, a):
         code = a.get("code", "")
         if code.strip() == "return 1+1":
             return 2

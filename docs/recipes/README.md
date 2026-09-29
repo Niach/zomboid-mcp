@@ -2,7 +2,7 @@
 
 Every curated MCP tool has a recipe here with the equivalent raw Lua, so the same thing can be scripted through
 `run_lua_server` / `run_lua_client` (the skill teaches from these). Recipes for operations that are **not** tools
-(traits, skills, appearance, searches, lightning, sound, messages) live here too.
+(traits, skills, appearance, searches, lightning, sound) live here too.
 
 Conventions:
 - **Server** snippets run in the server Lua state (`run_lua_server`; in single player the host is the server).
@@ -42,4 +42,4 @@ Conventions:
 | [set_appearance](set_appearance.md) | – | client |
 | [lightning](lightning.md) | – | server |
 | [sound](sound.md) | – | server |
-| [server_message](server_message.md) | – | client / console |
+| [server_message](server_message.md) | `server_message` | client |
