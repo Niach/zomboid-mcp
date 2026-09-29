@@ -3,9 +3,11 @@
 --   zmcp_req_<n>.json    request  {"n": n, "t": unixSeconds, "tool": "...", "args": {...}}   written by the MCP
 --   zmcp_res_<n>.json    response {"n": n, "ok": true, "result": ...} | {"n": n, "ok": false, "error": "..."}
 --   zmcp_status.json     heartbeat (every 2 s and after every request): nextReq, paused, players, time, tools
---   zmcp_events.jsonl    append-only event log {"t", "kind", "data"}
--- Requests execute in order (n = nextReq, nextReq + 1, ...) on the server tick. nextReq is persisted in
--- ModData "ZomboidMCP". The MCP never needs write access to files the server wrote and vice versa.
+--   zmcp_events.log      append-only event log, one JSON object per line {"t", "kind", "data"}
+-- Requests execute in order (n = nextReq, nextReq + 1, ...) on the server tick, at most once each: nextReq
+-- is advanced (and persisted in ModData "ZomboidMCP") before a request runs. The MCP never needs write
+-- access to files the server wrote and vice versa. getFileWriter only accepts .txt/.json/.log style names
+-- (verified: .lua, .jsonl and extension-less names are refused), hence the file names below.
 --
 -- Public API for other modules (keep stable, other files build on it):
 --   ZMCP.tool(name, desc, fn)            register a tool; fn(args) returns a JSON-encodable value or errors
@@ -40,7 +42,7 @@ Z.handlers = {}
 
 local MOD_DATA = "ZomboidMCP"
 local STATUS_FILE = "zmcp_status.json"
-local EVENTS_FILE = "zmcp_events.jsonl"
+local EVENTS_FILE = "zmcp_events.log"
 local REQ_PREFIX, RES_PREFIX = "zmcp_req_", "zmcp_res_"
 local MAX_PER_TICK = 20          -- requests processed per tick
 local PROBE_AHEAD = 10           -- how far past nextReq we look for a request when nextReq is missing (gap)
@@ -52,12 +54,27 @@ local PAUSED_POLL = 0.2          -- polling period while the game loop is paused
 ---------------------------------------------------------------- utilities
 function Z.now() return getTimestampMs() / 1000 end
 
-Z.bootId = Z.bootId or string.format("%d-%d", math.floor(Z.now()), ZombRand(1000000))   -- changes only on restart
+Z.bootId = Z.bootId or string.format("%d-%d", math.floor(Z.now()), math.floor(math.random() * 1000000))   -- changes only on restart
 Z.bootAt = Z.bootAt or Z.now()
 
 local function store() return ModData.getOrCreate(MOD_DATA) end
 
+-- absolute path of the Lua cache dir (fileExists needs it; verified: relative names return false)
+local SEP = getFileSeparator and getFileSeparator() or "/"
+local LUA_DIR = (getMyDocumentFolder and getMyDocumentFolder() or "") .. SEP .. "Lua" .. SEP
+
+-- true/false when fileExists is available, nil when unknown
+local function exists(name)
+    if fileExists then
+        local ok, v = pcall(fileExists, LUA_DIR .. name)
+        if ok then return v == true end
+    end
+    return nil
+end
+Z.fileExists = exists
+
 local function readFile(name)
+    if exists(name) == false then return nil end        -- cheap probe, no exception for missing files
     local ok, r = pcall(getFileReader, name, false)
     if not ok or not r then return nil end
     local t, l = {}, r:readLine()
@@ -197,9 +214,12 @@ local function respond(n, res)
 end
 
 -- execute request n if its file exists. Returns true when n was consumed.
+-- nextReq moves past n BEFORE the request runs: a request that kills the Lua state is never retried.
 local function processOne(n)
     local text = readFile(REQ_PREFIX .. n .. ".json")
     if not text or text == "" then return false end
+    Z.nextReq = n + 1
+    store().nextReq = Z.nextReq
     local started = Z.now()
     local req, err = J.decode(text)
     local res
@@ -254,8 +274,6 @@ local function pump(t)
     local done = 0
     while done < MAX_PER_TICK do
         if processOne(Z.nextReq) then
-            Z.nextReq = Z.nextReq + 1
-            store().nextReq = Z.nextReq
             done = done + 1
         else
             -- gap: the MCP skipped a number (crashed mid-write, resynced) or an old file was removed.
@@ -297,9 +315,11 @@ local function safeTick()
     if not ok then print("[ZomboidMCP] tick error: " .. tostring(err)) end
 end
 
--- OnTick: ~10 Hz while the game loop runs (players online). OnTickEvenPaused: also while the dedicated
--- server is paused because it is empty (PauseEmpty=true), verified on 42.21; it is throttled to 5 Hz
--- and yields to OnTick whenever OnTick is alive, so requests are never processed twice per tick.
+-- OnTick: ~10 Hz while the game loop runs (players online). With PauseEmpty=true and nobody online the
+-- dedicated server pauses its loop and NO Lua event fires (verified on 42.21: not OnTick, not
+-- EveryOneMinute, not OnTickEvenPaused). Console commands still run, so the MCP triggers
+-- `reloadlua ZomboidMCP/ZMCPPoll.lua` (a file that just calls ZMCP.poll) when the heartbeat goes stale.
+-- OnTickEvenPaused stays registered for hosts where it does fire; it yields to OnTick.
 Z.handlers.OnTick = function()
     local t = Z.now()
     Z.lastTick = t
@@ -308,15 +328,24 @@ Z.handlers.OnTick = function()
     if t - tpsAt >= 1 then tps = ticksThisSecond; ticksThisSecond = 0; tpsAt = t end
     safeTick()
 end
+
+-- one request-loop pass outside the tick events (paused server): used by ZMCPPoll.lua / the dev bootstrap
+function Z.poll()
+    local t = Z.now()
+    if t - (Z.lastTick or 0) < 1 then return 0 end     -- the game loop is alive, OnTick does the work
+    Z.paused = true
+    tps = 0
+    Z.lastPoll = t
+    lastStatus = 0                                      -- force a heartbeat so the client sees paused=true
+    return Z.tick()
+end
+
 Z.handlers.OnTickEvenPaused = function()
     local t = Z.now()
     Z.lastTickEvenPaused = t
-    if t - (Z.lastTick or 0) < 1 then return end
     if t - (Z.lastPausedPoll or 0) < PAUSED_POLL then return end
     Z.lastPausedPoll = t
-    Z.paused = true
-    tps = 0
-    safeTick()
+    Z.poll()
 end
 for ev, fn in pairs(Z.handlers) do
     if Events[ev] then Events[ev].Add(fn) else print("[ZomboidMCP] no such event: " .. ev) end
@@ -350,7 +379,7 @@ local function moduleFile(name)
     if type(name) ~= "string" or not name:match("^[%w_%-]+$") then
         error("module name must match [A-Za-z0-9_-]+")
     end
-    return "zmcp_mod_" .. name .. ".lua"
+    return "zmcp_mod_" .. name .. ".lua.txt"    -- getFileWriter refuses names ending in .lua
 end
 
 function Z.loadModules()
@@ -389,7 +418,7 @@ Z.tool("run_file", "Execute a Lua file from the Lua cache dir (~/Zomboid/Lua/) o
     return runLuaFile(a.file)
 end)
 
-Z.tool("module_install", "Install a persistent server module: args {name, code} (the server writes zmcp_mod_<name>.lua) or {name, file} (an existing file in the Lua dir). It runs now and again on every bridge load / server start.", function(a)
+Z.tool("module_install", "Install a persistent server module: args {name, code} (the server writes zmcp_mod_<name>.lua.txt) or {name, file} (an existing file in the Lua dir). It runs now and again on every bridge load / server start.", function(a)
     local file = moduleFile(a.name)
     if type(a.code) == "string" then
         writeFile(file, a.code)
@@ -432,4 +461,5 @@ do
     local loaded, failed = Z.loadModules()
     Z.event("bridge_loaded", { version = Z.version, bootId = Z.bootId, nextReq = Z.nextReq, modules = J.array(loaded), failed = J.array(failed) })
 end
-pcall(writeStatus)
+lastStatus = 0
+safeTick()      -- answer anything already pending (a reload is also how the paused server gets polled)

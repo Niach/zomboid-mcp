@@ -21,19 +21,28 @@ local ARRAY = {}   -- metatable marker: force array encoding
 function J.array(t) return setmetatable(t or {}, ARRAY) end
 
 local escapes = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
--- Kahlua: escape everything outside printable ASCII (including chars > 255). Plain Lua: only
--- control chars, quotes and backslashes; bytes >= 0x80 pass through as UTF-8.
-local escapePattern = WIDE and '[^ !#-[%]-~]' or '[%c"\\]'
-
 local function escapeChar(c)
     local e = escapes[c]
     if e then return e end
     return string.format("\\u%04x", string.byte(c))
 end
 
-local function encodeString(s)
-    local escaped = s:gsub(escapePattern, escapeChar)
-    return '"' .. escaped .. '"'
+-- Kahlua: escape everything outside printable ASCII (including chars > 255) in two passes; its pattern
+-- matcher does not treat an escaped char (%]) as the start of a range, so a single negated set cannot
+-- exclude both quote and backslash. Plain Lua: one pass for control chars, quotes and backslashes; bytes
+-- >= 0x80 pass through as UTF-8.
+local encodeString
+if WIDE then
+    encodeString = function(s)
+        local escaped = s:gsub('["\\]', escapeChar)
+        escaped = escaped:gsub('[^ -~]', escapeChar)
+        return '"' .. escaped .. '"'
+    end
+else
+    encodeString = function(s)
+        local escaped = s:gsub('[%c"\\]', escapeChar)
+        return '"' .. escaped .. '"'
+    end
 end
 
 local function isArray(t)
