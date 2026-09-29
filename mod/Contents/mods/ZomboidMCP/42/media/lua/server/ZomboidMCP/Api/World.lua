@@ -1,6 +1,8 @@
 -- Discovery tools: status, players_list, player_info, world_query. Read-only, server side.
-require "ZomboidMCP/Bridge"
-require "ZomboidMCP/Api/Common"
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
+if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -39,22 +41,29 @@ local function weatherInfo()
 end
 Z.weatherInfo = weatherInfo
 
+-- The bridge (Bridge.lua) registers a plain `status` (heartbeat data). This one adds weather and loaded counts on top
+-- of it; the original function is kept across Api reloads.
+local prev = Z.tools.status
+if prev and not prev.api then Z.bridgeStatus = prev.fn end
 U.def("status", {
-    desc = "Server snapshot: version, online players (position, health), game time, weather, loaded zombie/vehicle counts.",
+    desc = "Server snapshot: bridge heartbeat (version, paused, players with position/health, time, tools) plus weather and loaded zombie/vehicle counts.",
     authority = "server", args = {},
 }, function()
-    local players = {}
-    for _, p in ipairs(Z.players()) do players[#players + 1] = U.playerSummary(p) end
-    local nTools = 0
-    for _ in pairs(Z.tools) do nTools = nTools + 1 end
-    return {
-        version = Z.version, server = isServer(), t = math.floor(Z.now()),
-        players = players, time = timeInfo(), weather = U.try(weatherInfo),
-        zombiesLoaded = U.try(function() return getCell():getZombieList():size() end),
-        vehiclesLoaded = U.try(function() return getCell():getVehicles():size() end),
-        tools = nTools,
-    }
+    local res = Z.bridgeStatus and U.try(Z.bridgeStatus) or {}
+    if type(res) ~= "table" then res = {} end
+    res.version = res.version or Z.version
+    res.time = res.time or timeInfo()
+    if not res.players then
+        local players = {}
+        for _, p in ipairs(Z.players()) do players[#players + 1] = U.playerSummary(p) end
+        res.players = players
+    end
+    res.weather = U.try(weatherInfo)
+    res.zombiesLoaded = U.try(function() return getCell():getZombieList():size() end)
+    res.vehiclesLoaded = U.try(function() return getCell():getVehicles():size() end)
+    return res
 end)
+Z.tools.status.api = true
 
 U.def("players_list", {
     desc = "Online players with username, character name, position, health, access level and vehicle.",
@@ -160,11 +169,11 @@ end
 U.def("player_info", {
     desc = "Full picture of one online player: position, health/infection, traits, skills, inventory summary, equipped and worn items, moodles and stats (moodles/stats are the server's copy of client state; may lag).",
     authority = "server", args = {
-        { "name", "string", false, "username or character name (optional when exactly one player is online)" },
+        { "player", "string", false, "username or character name (optional when exactly one player is online)" },
         { "inventory_limit", "number", false, "max distinct item types in the inventory summary (default 60)" },
     },
 }, function(a)
-    local p = Z.player(U.optStr(a, "name"))
+    local p = Z.player(U.optStr(a, "player"))
     local bd = p:getBodyDamage()
     local d = p:getDescriptor()
     local info = U.playerSummary(p)

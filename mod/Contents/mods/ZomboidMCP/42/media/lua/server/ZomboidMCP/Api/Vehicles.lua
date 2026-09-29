@@ -1,6 +1,8 @@
--- Vehicle tools: spawn_vehicle, vehicle_fix, vehicle_types.
-require "ZomboidMCP/Bridge"
-require "ZomboidMCP/Api/Common"
+-- Vehicle tools: spawn_vehicle, vehicle_fix. Script search and part listings are recipes (docs/recipes/).
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
+if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -32,7 +34,7 @@ local function partList(v)
     return out
 end
 
--- vehicle by player (their vehicle, else nearest within 12 tiles) or nearest to x,y,z within radius
+-- vehicle by player argument (their vehicle, else nearest within 12 tiles) or nearest to x,y,z within radius
 local function findVehicle(a)
     local x, y, z, p = U.posOrPlayer(a)
     if p then
@@ -58,33 +60,10 @@ local function findVehicle(a)
     return best
 end
 
-U.def("vehicle_types", {
-    desc = "Search vehicle scripts (getScriptManager). Returns full script names for spawn_vehicle, e.g. Base.CarNormal.",
-    authority = "server", args = {
-        { "query", "string", false, "substring filter (empty lists all)" },
-        { "limit", "number", false, "max results (default 100, max 1000)" },
-    },
-}, function(a)
-    local q = U.optStr(a, "query")
-    local limit = U.int(a, "limit", 100, 1, 1000)
-    local out, total = {}, 0
-    U.each(getScriptManager():getAllVehicleScripts(), function(s)
-        local full = s:getFullName()
-        if not q or U.contains(full, q) then
-            total = total + 1
-            if #out < limit then
-                out[#out + 1] = { script = full, name = s:getName(),
-                    mechanicType = U.try(function() return s:getMechanicType() end) }
-            end
-        end
-    end)
-    return { total = total, vehicles = out, truncated = total > #out }
-end)
-
 U.def("spawn_vehicle", {
     desc = "Spawn a vehicle at x,y,z facing dir (addVehicleDebug; server-side, synced). Needs free flat ground; ask the owner before spawning near players.",
     authority = "server", args = {
-        { "script", "string", true, "vehicle script, e.g. Base.CarNormal (see vehicle_types)" },
+        { "script", "string", true, "vehicle script, e.g. Base.CarNormal (docs/recipes/vehicle_types.md)" },
         { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
         { "dir", "string", false, "N|NE|E|SE|S|SW|W|NW (default S)" },
     },
@@ -102,7 +81,7 @@ U.def("spawn_vehicle", {
             if not vs and (U.lower(s:getFullName()) == U.lower(script) or U.lower(s:getName()) == U.lower(script)) then vs = s end
         end)
     end
-    if not vs then error("unknown vehicle script '" .. script .. "' (see vehicle_types)") end
+    if not vs then error("unknown vehicle script '" .. script .. "' (docs/recipes/vehicle_types.md)") end
     local full = vs:getFullName()
     local sq = Z.square(x, y, z)
     local v = addVehicleDebug(full, IsoDirections[dirName], nil, sq)
@@ -116,8 +95,8 @@ end)
 U.def("vehicle_fix", {
     desc = "Repair and/or refuel a vehicle: the player's current vehicle, or the nearest to the player / to x,y,z (server-side, synced).",
     authority = "server", args = {
-        { "name", "string", false, "player: their vehicle or nearest to them" },
-        { "x", "number", false, "tile x (instead of name)" }, { "y", "number", false, "tile y" }, { "z", "number", false, "level" },
+        { "player", "string", false, "username: their vehicle or nearest to them" },
+        { "x", "number", false, "tile x (instead of player)" }, { "y", "number", false, "tile y" }, { "z", "number", false, "level" },
         { "radius", "number", false, "search radius in tiles (default 12, max 40)" },
         { "repair", "boolean", false, "repair all parts (default true)" },
         { "refuel", "boolean", false, "fill the gas tank (default true)" },
@@ -147,19 +126,4 @@ U.def("vehicle_fix", {
     res.after = { engineQuality = U.try(function() return v:getEngineQuality() end), parts = partList(v) }
     Z.event("vehicle_fix", { id = res.vehicle.id, script = res.vehicle.script, repaired = res.repaired, refueled = res.refueled })
     return res
-end)
-
-U.def("vehicle_info", {
-    desc = "Details of the vehicle a player is in / nearest to a player or x,y,z: script, position, engine, parts with condition and container contents.",
-    authority = "server", args = {
-        { "name", "string", false, "player" },
-        { "x", "number", false, "tile x" }, { "y", "number", false, "tile y" }, { "z", "number", false, "level" },
-        { "radius", "number", false, "search radius (default 12)" },
-    },
-}, function(a)
-    local v = findVehicle(a)
-    local info = U.vehicleInfo(v)
-    info.parts = partList(v)
-    info.dir = U.try(function() return tostring(v:getDir()) end)
-    return info
 end)

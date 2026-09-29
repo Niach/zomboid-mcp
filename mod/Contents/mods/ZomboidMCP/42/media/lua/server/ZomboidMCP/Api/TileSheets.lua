@@ -1,7 +1,8 @@
 -- Generated from media/newtiledefinitions.tiles.txt (Build 42.21): vanilla tilesheet name -> tile count.
 -- Sprite names are "<sheet>_<n>" with n in 0..count-1. Used by sprite_search as a fallback when the live sprite map
 -- is not readable, and to validate sprite names. Regenerate with tools/gen_tilesheets.sh.
-require "ZomboidMCP/Bridge"
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 ZMCP.tileSheets = {
     ["advertising_01"] = 128,
     ["advertising_01_on"] = 128,

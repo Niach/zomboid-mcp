@@ -1,6 +1,8 @@
--- Environment tools: set_weather, set_time, lightning, sound, server_message.
-require "ZomboidMCP/Bridge"
-require "ZomboidMCP/Api/Common"
+-- Environment tools: set_weather, set_time. Lightning, sounds and messages are recipes (docs/recipes/).
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
+if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -34,61 +36,12 @@ U.def("set_time", {
 }, function(a)
     local gt = getGameTime()
     local before = Z.timeInfo()
+    if a.hour == nil and a.day == nil and a.month == nil and a.year == nil then error("give at least one of hour, day, month, year") end
     if a.hour ~= nil then gt:setTimeOfDay(U.num(a, "hour", nil, 0, 24)) end
     if a.day ~= nil then gt:setDay(U.int(a, "day", nil, 1, 31) - 1) end
     if a.month ~= nil then gt:setMonth(U.int(a, "month", nil, 1, 12) - 1) end
     if a.year ~= nil then gt:setYear(U.int(a, "year", nil, 1, 9999)) end
-    if a.hour == nil and a.day == nil and a.month == nil and a.year == nil then error("give at least one of hour, day, month, year") end
     local after = Z.timeInfo()
     Z.event("set_time", after)
     return { before = before, after = after }
-end)
-
-U.def("lightning", {
-    desc = "Trigger a lightning strike at x,y (server-side, synced): flash, optional strike damage/fx and thunder rumble.",
-    authority = "server", args = {
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" },
-        { "strike", "boolean", false, "actual strike at the square (default true)" },
-        { "light", "boolean", false, "flash (default true)" }, { "rumble", "boolean", false, "thunder (default true)" },
-    },
-}, function(a)
-    local x, y = math.floor(U.num(a, "x")), math.floor(U.num(a, "y"))
-    local strike, light, rumble = U.bool(a, "strike", true), U.bool(a, "light", true), U.bool(a, "rumble", true)
-    getClimateManager():transmitServerTriggerLightning(x, y, strike, light, rumble)
-    Z.event("lightning", { x = x, y = y, strike = strike })
-    return { x = x, y = y, strike = strike, light = light, rumble = rumble }
-end)
-
-U.def("sound", {
-    desc = "Play a named game sound at x,y,z for everyone nearby (playServerSound). Names are FMOD events, e.g. 'ZombieThumpGeneric', 'Thunder', 'AlarmClock'.",
-    authority = "server", args = {
-        { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "name", "string", true, "sound event name" },
-    },
-}, function(a)
-    local x, y, z = U.pos(a)
-    local name = U.str(a, "name")
-    local sq = Z.square(x, y, z)
-    playServerSound(name, sq)
-    return { name = name, x = math.floor(x), y = math.floor(y), z = z }
-end)
-
-U.def("server_message", {
-    desc = "Show a message to everyone or one player through the Zomboid MCP client mod ('message' command: halo text over the player or a chat line; docs/PROTOCOL.md). Players without the mod see nothing; the console 'servermsg' command is the vanilla fallback.",
-    authority = "client", args = {
-        { "text", "string", true, "message text" },
-        { "name", "string", false, "only this player (default: everyone)" },
-        { "mode", "string", false, "halo|chat (default halo)" },
-        { "color", "string", false, "'#rrggbb' (default white)" },
-    },
-}, function(a)
-    local text = U.str(a, "text")
-    local mode = U.oneOf(a, "mode", { "halo", "chat" }, "halo")
-    local color = U.optStr(a, "color")
-    local p = a.name and Z.player(tostring(a.name)) or nil
-    local msg = { text = text, mode = mode }
-    if color then msg.color = color end
-    Z.toClients("message", msg, p)
-    Z.event("server_message", { text = text, mode = mode, user = p and p:getUsername() or nil })
-    return { sent = true, to = p and p:getUsername() or "all", mode = mode, players = #Z.players() }
 end)

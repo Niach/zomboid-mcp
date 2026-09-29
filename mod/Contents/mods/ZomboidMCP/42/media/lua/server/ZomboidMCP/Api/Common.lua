@@ -1,7 +1,8 @@
 -- Shared helpers for the Zomboid MCP tool modules (Api/*.lua): argument validation, Java list iteration,
 -- item/object summaries and a tool registry with argument specs.
 -- Server only. Re-runnable (hot reload).
-require "ZomboidMCP/Bridge"
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 
 local Z = ZMCP
 Z.util = Z.util or {}
@@ -68,9 +69,9 @@ function U.pos(a)
     return U.int(a, "x"), U.int(a, "y"), U.int(a, "z", 0, 0, 31)
 end
 
--- position from either a player name or x,y,z. Returns x, y, z, player|nil
+-- position from either a player (username) or x,y,z. Returns x, y, z, player|nil
 function U.posOrPlayer(a)
-    local name = U.optStr(a, "name")
+    local name = U.optStr(a, "player")
     if name or (a.x == nil and a.y == nil) then
         local p = Z.player(name)
         return p:getX(), p:getY(), p:getZ(), p

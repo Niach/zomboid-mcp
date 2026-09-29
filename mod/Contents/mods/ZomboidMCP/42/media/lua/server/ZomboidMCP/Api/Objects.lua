@@ -1,8 +1,11 @@
--- Object tools: place_object, remove_object, sprite_search, build_structure.
+-- Object tools: place_object, remove_object, build_structure. Sprite search is a recipe (docs/recipes/sprite_search.md).
 -- Tiles are IsoObjects with a sprite name like "walls_exterior_wooden_01_2" (see Api/TileSheets.lua for the sheets).
-require "ZomboidMCP/Bridge"
-require "ZomboidMCP/Api/Common"
-require "ZomboidMCP/Api/TileSheets"
+if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
+if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
+if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.tileSheets) then pcall(require, "ZomboidMCP/Api/TileSheets") end
+if not (ZMCP and ZMCP.tileSheets) then error("ZomboidMCP/Api/TileSheets.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
@@ -33,50 +36,11 @@ end
 local function checkSprite(name)
     local live = spriteExistsLive(name)
     if live == true then return "live" end
-    if live == false then error("unknown sprite '" .. name .. "' (use sprite_search)") end
+    if live == false then error("unknown sprite '" .. name .. "' (docs/recipes/sprite_search.md)") end
     if spriteExistsIndex(name) then return "index" end
-    error("unknown sprite '" .. name .. "' (not in the vanilla tilesheet index; use sprite_search)")
+    error("unknown sprite '" .. name .. "' (not in the vanilla tilesheet index; docs/recipes/sprite_search.md)")
 end
 Z.checkSprite = checkSprite
-
-U.def("sprite_search", {
-    desc = "Search tile sprite names (e.g. 'walls_exterior_wooden', 'furniture_seating_indoor'). Uses the live sprite map (mods included) or the vanilla tilesheet index. Also returns matching sheets with their tile counts: a sheet 'X' with count N has sprites X_0 .. X_(N-1).",
-    authority = "server", args = {
-        { "query", "string", true, "substring of the sprite/sheet name" },
-        { "limit", "number", false, "max sprite names (default 100, max 2000)" },
-    },
-}, function(a)
-    local q = U.str(a, "query")
-    local limit = U.int(a, "limit", 100, 1, 2000)
-    local sheets = {}
-    for sheet, count in pairs(Z.tileSheets) do
-        if U.contains(sheet, q) then sheets[#sheets + 1] = { sheet = sheet, count = count } end
-    end
-    table.sort(sheets, function(x, y) return x.sheet < y.sheet end)
-
-    local names, total, source = {}, 0, "index"
-    local map = spriteMap()
-    local live = map and U.try(function() return transformIntoKahluaTable(map) end)
-    if live then
-        source = "live"
-        for name in pairs(live) do
-            if type(name) == "string" and U.contains(name, q) then
-                total = total + 1
-                names[#names + 1] = name
-            end
-        end
-        table.sort(names)
-        while #names > limit do table.remove(names) end
-    else
-        for _, s in ipairs(sheets) do
-            for i = 0, s.count - 1 do
-                total = total + 1
-                if #names < limit then names[#names + 1] = s.sheet .. "_" .. i end
-            end
-        end
-    end
-    return { query = q, source = source, sheets = sheets, sprites = names, total = total, truncated = total > #names }
-end)
 
 ---------------------------------------------------------------- place / remove
 local function placeOne(x, y, z, sprite, name)
@@ -93,7 +57,7 @@ U.def("place_object", {
     desc = "Place a tile object (any vanilla/mod sprite) on a loaded square: IsoObject.new + transmitAddObjectToSquare (server-side, synced). Ask the owner before building near players.",
     authority = "server", args = {
         { "x", "number", true, "tile x" }, { "y", "number", true, "tile y" }, { "z", "number", false, "level (default 0)" },
-        { "sprite", "string", true, "sprite name, e.g. walls_exterior_wooden_01_2 (see sprite_search)" },
+        { "sprite", "string", true, "sprite name, e.g. walls_exterior_wooden_01_2 (docs/recipes/sprite_search.md)" },
         { "name", "string", false, "object name (optional, e.g. 'Campfire')" },
     },
 }, function(a)
