@@ -717,6 +717,27 @@ class TestUnits(unittest.TestCase):
         os.remove(path)
         self.assertEqual(os.environ["ZMCP_TEST_B"], "/vol/Lua")
 
+    def test_env_file_configures_console_and_poll(self):
+        import zomboid_mcp
+        fd, path = tempfile.mkstemp()
+        os.write(fd, b"ZMCP_SSH=root@example\nZMCP_LUA_DIR=/vol/Lua\nZMCP_CONTAINER=pzbox\nZMCP_POLL_FILE=Custom/Poll.lua\n")
+        os.close(fd)
+        for k in ("ZMCP_SSH", "ZMCP_LUA_DIR", "ZMCP_CONTAINER", "ZMCP_POLL_FILE"):
+            os.environ.pop(k, None)
+        try:
+            server = zomboid_mcp.build_server(zomboid_mcp.build_parser().parse_args(["--env-file", path]))
+        finally:
+            os.remove(path)
+            for k in ("ZMCP_SSH", "ZMCP_LUA_DIR", "ZMCP_CONTAINER", "ZMCP_POLL_FILE"):
+                os.environ.pop(k, None)
+        tr = server.bridge.transport
+        self.assertEqual(tr.kind, "ssh")
+        self.assertIn("reloadlua Custom/Poll.lua", tr.poll_cmd)
+        self.assertIn("docker exec -i pzbox", tr.poll_cmd)
+        self.assertTrue(server.console["enabled"])
+        server2 = zomboid_mcp.build_server(zomboid_mcp.build_parser().parse_args(["--lua-dir", "/tmp", "--no-poll", "--console-container", "x"]))
+        self.assertIsNone(server2.bridge.transport.poll_cmd)
+
     def test_validate_args_unknown_key(self):
         import zomboid_mcp
         schema = zmcp_catalog.BY_NAME["players_list"]["inputSchema"]

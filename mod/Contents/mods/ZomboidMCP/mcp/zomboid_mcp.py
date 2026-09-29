@@ -596,8 +596,9 @@ def build_parser():
     p.add_argument("--console-container", metavar="NAME", help="docker container running the dedicated server; enables server_console via its FIFO (default $ZMCP_CONTAINER)")
     p.add_argument("--console-fifo", metavar="PATH", default="/tmp/pz-console", help="console FIFO path (inside the container if one is given)")
     p.add_argument("--console-log", metavar="PATH", help="server-console.txt path (default: <lua-dir>/../server-console.txt)")
-    p.add_argument("--poll-file", metavar="LUAFILE", default=os.environ.get("ZMCP_POLL_FILE", DEFAULT_POLL_FILE),
-                   help="loaded server Lua file whose `reloadlua` polls the bridge while the server is paused (default %(default)s; needs the console)")
+    p.add_argument("--poll-file", metavar="LUAFILE",
+                   help="loaded server Lua file whose `reloadlua` polls the bridge while the server is paused "
+                        "(default $ZMCP_POLL_FILE or %s; needs the console)" % DEFAULT_POLL_FILE)
     p.add_argument("--no-poll", action="store_true", help="never poll a paused server through the console")
     p.add_argument("--api-index", metavar="DIR", help="directory holding api_index.json.gz and lua_examples.json.gz (default: next to this script, or $ZMCP_API_INDEX)")
     p.add_argument("--docs-dir", action="append", metavar="DIR", help="extra directory of *.md files to expose as resources (repeatable)")
@@ -617,7 +618,8 @@ def build_server(args):
     lua_dir = args.lua_dir or (os.environ.get("ZOMBOID_LUA_DIR") or os.environ.get("ZMCP_LUA_DIR") if ssh else None)
     container = args.console_container or os.environ.get("ZMCP_CONTAINER")
     console_enabled = bool(container) or args.console_fifo != "/tmp/pz-console"
-    poll_cmd = poll_command(container, args.console_fifo, args.poll_file) if console_enabled and not args.no_poll else None
+    poll_file = args.poll_file or os.environ.get("ZMCP_POLL_FILE") or DEFAULT_POLL_FILE   # after --env-file
+    poll_cmd = poll_command(container, args.console_fifo, poll_file) if console_enabled and not args.no_poll else None
     if ssh:
         if not lua_dir:
             sys.exit("--ssh needs --lua-dir <remote Zomboid/Lua directory> (or $ZMCP_LUA_DIR)")
