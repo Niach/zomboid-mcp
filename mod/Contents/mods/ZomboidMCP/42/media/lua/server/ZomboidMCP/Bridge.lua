@@ -12,16 +12,19 @@
 -- Public API for other modules (keep stable, other files build on it):
 --   ZMCP.tool(name, desc, fn)            register a tool; fn(args) returns a JSON-encodable value or errors
 --   ZMCP.toClients(cmd, args, player)    sendServerCommand("zmcp", cmd, args) to one player or everyone
---   ZMCP.event(kind, data)               append to zmcp_events.jsonl and log to the console
+--   ZMCP.event(kind, data)               append to zmcp_events.log and log to the console
 --   ZMCP.player(name) / ZMCP.players()   online IsoPlayer by user or character name / all online players
 --   ZMCP.square(x, y, z)                 loaded IsoGridSquare or error
 --   ZMCP.zombiesNear(x, y, z, radius)    live IsoZombie list in the loaded area
 --   ZMCP.tickHooks.<name> = function(t)  periodic work, called every processed tick with the unix time
 --   ZMCP.readFile(name) / ZMCP.writeFile(name, text)   text files in the Lua cache dir
---   ZMCP.playerNames(), ZMCP.charName(p), ZMCP.now(), ZMCP.version, ZMCP.tools, ZMCP.modules()
+--   ZMCP.argText(args, key)              a string argument, or the file the MCP moved it to (args.<key>_file)
+--   ZMCP.statusDoc()                     the heartbeat document (Api/World.lua extends the status tool with it)
+--   ZMCP.scriptSides.<side>              {install(name, code), remove(name), list()} for script_* with side ~= "server"
+--   ZMCP.playerNames(), ZMCP.charName(p), ZMCP.now(), ZMCP.version, ZMCP.tools, ZMCP.scripts()
 --
 -- Hot reload: this file is fully re-runnable. It removes its own event handlers before re-adding them and
--- keeps ZMCP.tools / ZMCP.tickHooks / ZMCP.nextReq across reloads. Load paths: reloadlua Bridge.lua,
+-- keeps ZMCP.tools / ZMCP.tickHooks / ZMCP.scriptSides / ZMCP.nextReq across reloads. Load paths: reloadlua Bridge.lua,
 -- tools/pz load (loadstring of the concatenated files), or the run_file tool.
 
 if isClient() then return end   -- server (dedicated or SP host) only
@@ -32,9 +35,10 @@ if not ZMCPJson then error("ZomboidMCP/Json.lua must be loaded before Bridge.lua
 ZMCP = ZMCP or {}
 local Z = ZMCP
 local J = ZMCPJson
-Z.version = "0.2.0"
+Z.version = "0.3.0"
 Z.tools = Z.tools or {}            -- name -> { fn = function(args) ... end, desc = "..." }
 Z.tickHooks = Z.tickHooks or {}    -- name -> function(t)
+Z.scriptSides = Z.scriptSides or {} -- side -> { install = fn(name, code), remove = fn(name), list = fn() }
 Z.handlers = Z.handlers or {}
 
 for ev, fn in pairs(Z.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
@@ -86,11 +90,26 @@ Z.readFile = readFile
 
 local function writeFile(name, text)
     local w = getFileWriter(name, true, false)
-    if not w then error("cannot open " .. name .. " for writing") end
+    if not w then error("cannot open " .. name .. " for writing (names must end in .txt/.json/.log; .lua is refused)") end
     w:write(text)
     w:close()
 end
 Z.writeFile = writeFile
+
+-- A string argument that the MCP may have moved into a file when it was large (docs/PROTOCOL.md "Large
+-- arguments"): args.<key> inline, or args.<key>_file naming a file in the Lua dir. Errors when required and absent.
+function Z.argText(a, key, required)
+    local v = a[key]
+    if type(v) == "string" and v ~= "" then return v end
+    local file = a[key .. "_file"]
+    if type(file) == "string" and file ~= "" then
+        local text = readFile(file)
+        if not text then error("args." .. key .. "_file not found in Lua dir: " .. file) end
+        return text
+    end
+    if required ~= false then error("args." .. key .. " (string) required") end
+    return nil
+end
 
 function Z.event(kind, data)
     local ok, w = pcall(getFileWriter, EVENTS_FILE, true, true)
@@ -174,7 +193,7 @@ function Z.toClients(command, args, player)
     end
 end
 
--- register a tool: Z.tool("name", "description", function(args) return result end)
+-- register a tool: Z.tool(name, description, function(args) return result end)
 function Z.tool(name, desc, fn)
     if type(fn) ~= "function" then error("ZMCP.tool: fn must be a function") end
     Z.tools[name] = { fn = fn, desc = desc or "" }
@@ -242,7 +261,7 @@ local function processOne(n)
     return true
 end
 
-local function writeStatus()
+function Z.statusDoc()
     local players = {}
     for _, p in ipairs(Z.players()) do
         local ok, entry = pcall(function()
@@ -259,14 +278,18 @@ local function writeStatus()
         local gt = getGameTime()
         time = { hour = gt:getTimeOfDay(), day = gt:getDay() + 1, month = gt:getMonth() + 1, year = gt:getYear() }
     end)
-    writeFile(STATUS_FILE, J.encode({
+    return {
         version = Z.version, bootId = Z.bootId, t = Z.now(), uptime = math.floor(Z.now() - Z.bootAt),
         nextReq = Z.nextReq, lastReq = Z.lastReq,
         paused = Z.paused, tps = tps, server = isServer(),
         players = J.array(players), time = time,
-        tools = J.array(Z.toolNames()), modules = J.array(Z.moduleNames()),
+        tools = J.array(Z.toolNames()), scripts = J.array(Z.scriptNames()),
         stats = Z.stats,
-    }) .. "\n")
+    }
+end
+
+local function writeStatus()
+    writeFile(STATUS_FILE, J.encode(Z.statusDoc()) .. "\n")
 end
 
 -- process pending requests in order; returns the number processed
@@ -351,8 +374,9 @@ for ev, fn in pairs(Z.handlers) do
     if Events[ev] then Events[ev].Add(fn) else print("[ZomboidMCP] no such event: " .. ev) end
 end
 
----------------------------------------------------------------- modules (persistent hot-loaded Lua)
--- A module is a Lua file in the Lua cache dir, remembered in ModData so it is re-run on every bridge load.
+---------------------------------------------------------------- scripts (persistent hot-loaded Lua)
+-- A server script is a Lua file in the Lua cache dir, remembered in ModData so it is re-run on every bridge load.
+-- Other sides (the client, in Api/Visuals.lua) plug into Z.scriptSides.<side>.
 local function runLuaFile(file)
     local text = readFile(file)
     if not text then error("file not found in Lua dir: " .. tostring(file)) end
@@ -361,35 +385,74 @@ local function runLuaFile(file)
     return fn()
 end
 
-local function modules()
+local function scripts()
     local s = store()
-    if type(s.modules) ~= "table" then s.modules = {} end
-    return s.modules
+    if type(s.scripts) ~= "table" then s.scripts = {} end
+    return s.scripts
 end
-Z.modules = modules
+Z.scripts = scripts
 
-function Z.moduleNames()
+function Z.scriptNames()
     local names = {}
-    for name in pairs(modules()) do names[#names + 1] = name end
+    for name in pairs(scripts()) do names[#names + 1] = name end
     table.sort(names)
     return names
 end
 
-local function moduleFile(name)
+function Z.checkName(name, what)
     if type(name) ~= "string" or not name:match("^[%w_%-]+$") then
-        error("module name must match [A-Za-z0-9_-]+")
+        error((what or "name") .. " must be a string matching [A-Za-z0-9_-]+")
     end
-    return "zmcp_mod_" .. name .. ".lua.txt"    -- getFileWriter refuses names ending in .lua
+    return name
 end
 
-function Z.loadModules()
+local function scriptFile(name)
+    return "zmcp_script_" .. Z.checkName(name, "script name") .. ".lua.txt"    -- getFileWriter refuses .lua
+end
+
+function Z.loadScripts()
     local loaded, failed = {}, {}
-    for _, name in ipairs(Z.moduleNames()) do
-        local ok, err = pcall(runLuaFile, modules()[name].file)
+    for _, name in ipairs(Z.scriptNames()) do
+        local ok, err = pcall(runLuaFile, scripts()[name].file)
         if ok then loaded[#loaded + 1] = name
-        else failed[#failed + 1] = name; Z.event("module_error", { name = name, error = tostring(err) }) end
+        else failed[#failed + 1] = name; Z.event("script_error", { name = name, side = "server", error = tostring(err) }) end
     end
     return loaded, failed
+end
+
+Z.scriptSides.server = {
+    install = function(name, code)
+        local file = scriptFile(name)
+        writeFile(file, code)
+        local result = runLuaFile(file)
+        scripts()[name] = { file = file, installed = Z.now() }
+        return { file = file, result = result }
+    end,
+    remove = function(name)
+        if not scripts()[name] then error("no such server script: " .. tostring(name)) end
+        scripts()[name] = nil
+    end,
+    list = function()
+        local out = {}
+        for _, name in ipairs(Z.scriptNames()) do
+            local m = scripts()[name]
+            out[#out + 1] = { name = name, file = m.file, installed = m.installed }
+        end
+        return J.array(out)
+    end,
+}
+
+local function side(a)
+    local name = a.side
+    if name == nil or name == "" then name = "server" end
+    local s = Z.scriptSides[name]
+    if not s then
+        local known = {}
+        for k in pairs(Z.scriptSides) do known[#known + 1] = k end
+        table.sort(known)
+        error("unknown side '" .. tostring(name) .. "' (known: " .. table.concat(known, ", ") .. ")")
+    end
+    return name, s
 end
 
 ---------------------------------------------------------------- core tools
@@ -397,9 +460,9 @@ Z.tool("ping", "Health check: {pong, version, bootId, paused, players}.", functi
     return { pong = true, version = Z.version, bootId = Z.bootId, paused = Z.paused, players = Z.playerNames() }
 end)
 
-Z.tool("lua_eval", "Run Lua on the server via loadstring. args: {code}. Returns the chunk's return value(s), JSON-encoded.", function(a)
-    if type(a.code) ~= "string" then error("args.code (string) required") end
-    local fn, err = loadstring(a.code, "=lua_eval")
+Z.tool("run_lua_server", "Run Lua in the server Lua state via loadstring. args: {code}. Returns the chunk's return value(s), JSON-encoded.", function(a)
+    local code = Z.argText(a, "code")
+    local fn, err = loadstring(code, "=run_lua_server")
     if not fn then error("compile: " .. tostring(err)) end
     local res = { pcall(fn) }
     if not res[1] then error(tostring(res[2])) end
@@ -414,52 +477,44 @@ Z.tool("tools_list", "List the tools registered in the game: [{name, desc}].", f
     return J.array(out)
 end)
 
-Z.tool("run_file", "Execute a Lua file from the Lua cache dir (~/Zomboid/Lua/) on the server. args: {file}. Not remembered across restarts (see module_install).", function(a)
+Z.tool("run_file", "Execute a Lua file from the Lua cache dir (~/Zomboid/Lua/) on the server. args: {file}. Not remembered across restarts (see script_install).", function(a)
     return runLuaFile(a.file)
 end)
 
-Z.tool("module_install", "Install a persistent server module: args {name, code} (the server writes zmcp_mod_<name>.lua.txt) or {name, file} (an existing file in the Lua dir). It runs now and again on every bridge load / server start.", function(a)
-    local file = moduleFile(a.name)
-    if type(a.code) == "string" then
-        writeFile(file, a.code)
-    elseif type(a.file) == "string" then
-        file = a.file
-        if not readFile(file) then error("file not found in Lua dir: " .. file) end
-    else
-        error("args.code or args.file required")
-    end
-    local result = runLuaFile(file)
-    modules()[a.name] = { file = file, installed = Z.now() }
-    Z.event("module_install", { name = a.name, file = file })
-    return { name = a.name, file = file, result = result }
+Z.tool("script_install", "Install or replace a persistent script: args {name, code, side? = server|client}. It runs now and again on every bridge load / server start (server) or for every player who joins (client).", function(a)
+    local name = Z.checkName(a.name, "script name")
+    local code = Z.argText(a, "code")
+    local sideName, s = side(a)
+    local res = s.install(name, code)
+    Z.event("script_install", { name = name, side = sideName })
+    res = res or {}
+    res.name, res.side = name, sideName
+    return res
 end)
 
-Z.tool("module_list", "List installed persistent modules: [{name, file, installed}].", function()
+Z.tool("script_list", "Installed persistent scripts per side: {server = [{name, file, installed}], client = [...]}.", function()
     local out = {}
-    for _, name in ipairs(Z.moduleNames()) do
-        local m = modules()[name]
-        out[#out + 1] = { name = name, file = m.file, installed = m.installed }
-    end
-    return J.array(out)
+    for name, s in pairs(Z.scriptSides) do out[name] = s.list() end
+    return out
 end)
 
-Z.tool("module_remove", "Forget a persistent module (its handlers stay until the module's own unload code or a restart). args: {name}.", function(a)
-    moduleFile(a.name)
-    if not modules()[a.name] then error("no such module: " .. tostring(a.name)) end
-    modules()[a.name] = nil
-    Z.event("module_remove", { name = a.name })
-    return { removed = a.name }
+Z.tool("script_remove", "Forget a persistent script: args {name, side? = server|client}. Handlers it registered stay until its own cleanup runs or the next restart.", function(a)
+    local name = Z.checkName(a.name, "script name")
+    local sideName, s = side(a)
+    s.remove(name)
+    Z.event("script_remove", { name = name, side = sideName })
+    return { removed = name, side = sideName }
 end)
 
-Z.tool("status", "The same data as zmcp_status.json, fresh.", function()
+Z.tool("status", "The bridge heartbeat (zmcp_status.json), written fresh: version, bootId, paused, players, time, tools, scripts, stats.", function()
     writeStatus()
-    return J.decode(readFile(STATUS_FILE))
+    return Z.statusDoc()
 end)
 
 ---------------------------------------------------------------- go
 do
-    local loaded, failed = Z.loadModules()
-    Z.event("bridge_loaded", { version = Z.version, bootId = Z.bootId, nextReq = Z.nextReq, modules = J.array(loaded), failed = J.array(failed) })
+    local loaded, failed = Z.loadScripts()
+    Z.event("bridge_loaded", { version = Z.version, bootId = Z.bootId, nextReq = Z.nextReq, scripts = J.array(loaded), failed = J.array(failed) })
 end
 lastStatus = 0
 safeTick()      -- answer anything already pending (a reload is also how the paused server gets polled)

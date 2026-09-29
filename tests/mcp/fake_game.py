@@ -1,10 +1,11 @@
 """A fake Project Zomboid server for tests: plays the game side of the Bridge.lua file protocol.
 
-It watches a Lua dir like Bridge.lua 0.2.0 does (docs/PROTOCOL.md): executes
+It watches a Lua dir like Bridge.lua does (docs/PROTOCOL.md): executes
 zmcp_req_<n>.json in order, writes zmcp_res_<n>.json terminated by a newline,
 writes zmcp_status.json every `status_interval` seconds and after each request,
-probes for gaps, and appends events to zmcp_events.jsonl. With ``legacy=True``
-it behaves like Bridge 0.1.0 (no trailing newline, request file blanked instead).
+probes for gaps, and appends events to zmcp_events.log. While ``paused`` it
+does nothing until ``poll()`` is called (like a PauseEmpty server woken by
+``reloadlua``); a poll command that touches ``<lua_dir>/POLLED`` triggers that.
 """
 
 import json
@@ -14,10 +15,10 @@ import time
 
 
 class FakeGame(threading.Thread):
-    def __init__(self, lua_dir, next_req=1, status_interval=0.2, players=None, tick=0.02, legacy=False):
+    def __init__(self, lua_dir, next_req=1, status_interval=0.2, players=None, tick=0.02):
         threading.Thread.__init__(self, daemon=True)
         self.lua_dir = lua_dir
-        self.legacy = legacy
+        self.polls = 0                # poll() calls (paused server woken through the console)
         self.boot_id = "%d-%d" % (int(time.time()), os.getpid())
         self.requests_seen = []       # raw request dicts, to check n/t fields
         self.next_req = next_req
@@ -28,24 +29,29 @@ class FakeGame(threading.Thread):
         self.paused = False           # like PauseEmpty: no ticks, no heartbeat
         self.running = True
         self.calls = []               # (tool, args) executed
+        self.client_results = {}      # script id -> result status returned by client_results
         self.tools = {
             "ping": lambda a: {"pong": True, "version": "fake", "players": ", ".join(p["user"] for p in self.players)},
-            "lua_eval": self._lua_eval,
+            "run_lua_server": self._run_lua_server,
+            "run_lua_client": self._run_lua_client,
+            "client_results": self._client_results,
             "tools_list": lambda a: [{"name": n, "desc": "fake tool %s" % n} for n in sorted(self.tools)],
             "run_file": self._run_file,
+            "script_install": self._script_install,
+            "script_list": lambda a: {"server": [], "client": []},
             "echo": lambda a: a,
             "slow": self._slow,
             "fail": self._fail,
             "blob_check": self._blob_check,
             "keep": lambda a: {"keep_files": True, "got": sorted(a)},
             "custom_thing": lambda a: {"custom": True, "args": a},
-            "module_list": lambda a: [],
+            "texture_upload": self._texture_upload,
         }
         self.last_status = 0.0
-        self.version = "0.1.0-fake" if legacy else "0.2.0-fake"
+        self.version = "0.3.0-fake"
 
     # --- tools ----------------------------------------------------------------
-    def _lua_eval(self, a):
+    def _run_lua_server(self, a):
         code = a.get("code", "")
         if code.strip() == "return 1+1":
             return 2
@@ -54,6 +60,43 @@ class FakeGame(threading.Thread):
         if code.strip() == "return getOnlinePlayers():size()":
             return len(self.players)
         return {"evaluated": code}
+
+    def _run_lua_client(self, a):
+        code = a.get("code") or self._read(a.get("code_file", "")) or ""
+        to = [a["player"]] if a.get("player") else [p["user"] for p in self.players]
+        sid = a.get("id") or "c%d" % (len(self.client_results) + 1)
+        results = {}
+        for user in to:
+            if user == "slowpoke":
+                continue                                       # never answers
+            if code.strip().startswith("error("):
+                results[user] = {"ok": False, "res": code.strip()[6:].strip("()\"'"), "ms": 1}
+            elif code.strip() == "return {a = 1}":
+                results[user] = {"ok": True, "res": '{"a":1}', "ms": 1}
+            else:
+                results[user] = {"ok": True, "res": "ran %d chars" % len(code), "ms": 1}
+        self.client_results[sid] = {"id": sid, "to": to, "results": results}
+        return {"id": sid, "chunks": max(1, -(-len(code) // 3000)), "to": to}
+
+    def _client_results(self, a):
+        r = self.client_results.get(a.get("id"))
+        if not r:
+            raise RuntimeError("unknown script id %s" % a.get("id"))
+        pending = [u for u in r["to"] if u not in r["results"]]
+        return dict(r, pending=pending, done=not pending)
+
+    def _script_install(self, a):
+        code = a.get("code") or self._read(a.get("code_file", "")) or ""
+        name = a.get("name", "")
+        if not name or "/" in name or "." in name:
+            raise RuntimeError("script name must be a string matching [A-Za-z0-9_-]+")
+        side = a.get("side") or "server"
+        self._write("zmcp_script_%s.lua.txt" % name, code)
+        return {"name": name, "side": side, "file": "zmcp_script_%s.lua.txt" % name, "result": len(code)}
+
+    def _texture_upload(self, a):
+        b64 = a.get("png_base64") or self._read(a.get("png_base64_file", "")) or ""
+        return {"id": a.get("id"), "gen": 1, "chars": len(b64), "chunks": max(1, -(-len(b64) // 3000))}
 
     def _run_file(self, a):
         text = self._read(a["file"])
@@ -94,20 +137,26 @@ class FakeGame(threading.Thread):
             f.write(text)
 
     def event(self, kind, data):
-        with open(self._p("zmcp_events.jsonl"), "a", encoding="utf-8") as f:
+        with open(self._p("zmcp_events.log"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": int(time.time()), "kind": kind, "data": data}) + "\n")
 
     def write_status(self):
         st = {"version": self.version, "t": time.time(), "nextReq": self.next_req, "server": True,
-              "players": self.players, "time": {"hour": 12.5, "day": 3, "month": 7, "year": 1993}}
-        if self.legacy:
-            st["tools"] = len(self.tools)
-            self._write("zmcp_status.json", json.dumps(st))
-        else:
-            st.update({"bootId": self.boot_id, "paused": not self.players, "tps": 0 if not self.players else 10,
-                       "uptime": 1, "tools": sorted(self.tools), "modules": [], "stats": {"requests": len(self.calls), "errors": 0}})
-            self._write("zmcp_status.json", json.dumps(st) + "\n")
+              "players": self.players, "time": {"hour": 12.5, "day": 3, "month": 7, "year": 1993},
+              "bootId": self.boot_id, "paused": self.paused, "tps": 0 if self.paused else 10,
+              "uptime": 1, "tools": sorted(self.tools), "scripts": [], "stats": {"requests": len(self.calls), "errors": 0}}
+        self._write("zmcp_status.json", json.dumps(st) + "\n")
         self.last_status = time.time()
+
+    @property
+    def poll_cmd(self):
+        """Shell command an MCP can use to wake this fake while paused (stands in for `reloadlua` on the console)."""
+        return "touch %s" % self._p("POLLED")
+
+    def poll(self):
+        """One bridge pass while paused (what `reloadlua ZMCPPoll.lua` does on the real server)."""
+        self.polls += 1
+        self.tick(force_status=True)
 
     # --- protocol -------------------------------------------------------------
     def process_one(self, n):
@@ -132,16 +181,12 @@ class FakeGame(threading.Thread):
                 except Exception as e:   # noqa: BLE001
                     res = {"ok": False, "error": str(e)}
                     self.event("tool_error", {"tool": tool, "error": str(e)})
-        if self.legacy:
-            self._write("zmcp_res_%d.json" % n, json.dumps(res))
-            self._write("zmcp_req_%d.json" % n, "")
-        else:
-            res["n"] = n
-            res["t"] = time.time()
-            self._write("zmcp_res_%d.json" % n, json.dumps(res) + "\n")
+        res["n"] = n
+        res["t"] = time.time()
+        self._write("zmcp_res_%d.json" % n, json.dumps(res) + "\n")
         return True
 
-    def tick(self):
+    def tick(self, force_status=False):
         budget = 20
         processed = 0
         while budget > 0:
@@ -159,7 +204,7 @@ class FakeGame(threading.Thread):
                         break
                 if not jumped:
                     break
-        if processed or time.time() - self.last_status >= self.status_interval:
+        if processed or force_status or time.time() - self.last_status >= self.status_interval:
             self.write_status()
 
     def run(self):
@@ -167,6 +212,9 @@ class FakeGame(threading.Thread):
         while self.running:
             if not self.paused:
                 self.tick()
+            elif os.path.exists(self._p("POLLED")):
+                os.remove(self._p("POLLED"))
+                self.poll()
             time.sleep(self.tick_s)
 
     def stop(self):

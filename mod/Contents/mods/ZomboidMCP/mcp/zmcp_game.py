@@ -11,13 +11,19 @@ Two layers, both pure stdlib:
     zmcp_req_<n>.json   request  {"n": n, "t": unixSeconds, "tool": "...", "args": {...}}   written by us
     zmcp_res_<n>.json   response {"n": n, "ok": true, "result": ...} / {"n": n, "ok": false, "error": "..."}
     zmcp_status.json    heartbeat (every 2 s and after each request): nextReq, bootId, paused, players, ...
-    zmcp_events.jsonl   append-only event log
+    zmcp_events.log     append-only event log
 
   Requests are numbered by the game's ``nextReq`` counter and executed in order
-  on the server tick. A response is complete when its file ends with a newline
-  (bridge >= 0.2.0) or when the game blanked the request file (bridge 0.1.0).
+  on the server tick. A response is complete when its file ends with a newline.
   We delete both files afterwards; the game never deletes anything. Request
   JSON is ASCII-only because the JVM reads it with its default charset.
+
+Paused server (PROTOCOL.md "Paused server"): with PauseEmpty=true and nobody
+online no Lua event fires, but the console still runs ``reloadlua <file>``.
+When a ``poll_cmd`` is configured (a host-side shell command that sends
+``reloadlua <poll file>`` to the server console), the transport runs it right
+after writing a request whenever the heartbeat is stale or says ``paused``, so
+requests are answered while the server is empty.
 
 Large string arguments (base64 PNGs, long Lua sources) are written to separate
 ``zmcp_blob_<n>_<key>.txt`` files and the argument ``<key>`` is replaced by
@@ -37,7 +43,7 @@ import threading
 import time
 
 STATUS_FILE = "zmcp_status.json"
-EVENTS_FILE = "zmcp_events.jsonl"
+EVENTS_FILE = "zmcp_events.log"
 REQ_FILE = "zmcp_req_{n}.json"
 RES_FILE = "zmcp_res_{n}.json"
 BLOB_FILE = "zmcp_blob_{n}_{key}.txt"
@@ -48,6 +54,20 @@ MAX_AHEAD = 10               # the game only probes this far past its nextReq
 BLOB_THRESHOLD = 32 * 1024   # string args longer than this go to a blob file
 MAX_READ = 4 * 1024 * 1024   # never pull more than this from one file in one go
 DEFAULT_TIMEOUT_S = 20.0
+POLL_AFTER_S = 3.0           # heartbeat older than this: the game loop is paused, trigger the poll command
+DEFAULT_POLL_FILE = "ZomboidMCP/ZMCPPoll.lua"
+
+
+def console_send_command(container, fifo):
+    """Shell command (runs where the Lua dir is) that pipes stdin into the server console FIFO."""
+    if container:
+        return "docker exec -i %s sh -c %s" % (_sh_quote(container), _sh_quote("cat > %s" % _sh_quote(fifo)))
+    return "cat > %s" % _sh_quote(fifo)
+
+
+def poll_command(container, fifo, poll_file=DEFAULT_POLL_FILE):
+    """Shell command that makes a paused server run one bridge pass: `reloadlua <poll file>` on the console."""
+    return "printf 'reloadlua %s\\n' | %s" % (poll_file, console_send_command(container, fifo))
 
 
 class GameError(Exception):
@@ -69,8 +89,9 @@ class Transport(object):
 
     kind = "?"
 
-    def __init__(self, lua_dir):
+    def __init__(self, lua_dir, poll_cmd=None):
         self.lua_dir = lua_dir
+        self.poll_cmd = poll_cmd      # see poll_command(); None = cannot wake a paused server
 
     # --- primitives -------------------------------------------------------
     def read(self, name):
@@ -117,12 +138,19 @@ class Transport(object):
         return self.lua_dir.rstrip("/\\") + "/" + path
 
     @staticmethod
-    def response_complete(res_text, req_text):
-        # Bridge >= 0.2.0 terminates the response with "\n" (the write itself is not atomic);
-        # Bridge 0.1.0 blanked the request file after writing the response.
-        if not res_text:
+    def response_complete(res_text):
+        # the bridge terminates the response with "\n"; the write itself is not atomic
+        return bool(res_text) and res_text.endswith("\n")
+
+    @staticmethod
+    def needs_poll(status_text, status_age):
+        """True when the game loop looks paused: stale heartbeat, or the last heartbeat says paused."""
+        if status_age is None or status_age > POLL_AFTER_S:
+            return True
+        try:
+            return bool(json.loads(status_text or "").get("paused"))
+        except (ValueError, AttributeError):
             return False
-        return res_text.endswith("\n") or not req_text
 
 
 class LocalTransport(Transport):
@@ -167,13 +195,28 @@ class LocalTransport(Transport):
             f.seek(offset)
             return f.read(max_bytes), size
 
+    def status_age(self):
+        try:
+            return time.time() - os.path.getmtime(self._p(STATUS_FILE))
+        except OSError:
+            return None
+
+    def poll(self):
+        """Ask a paused server to run one bridge pass (no-op without a poll command)."""
+        if not self.poll_cmd:
+            return False
+        subprocess.Popen(self.poll_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+
     def roundtrip(self, n, req_text, timeout_s):
         req, res = REQ_FILE.format(n=n), RES_FILE.format(n=n)
         self.write(req, req_text)
+        if self.poll_cmd and self.needs_poll(self.read(STATUS_FILE), self.status_age()):
+            self.poll()
         deadline = time.time() + timeout_s
         while True:
             res_text = self.read(res)
-            if self.response_complete(res_text, self.read(req)):
+            if self.response_complete(res_text):
                 return res_text, self.read(STATUS_FILE), time.time()
             if time.time() >= deadline:
                 return None, self.read(STATUS_FILE), time.time()
@@ -197,17 +240,11 @@ class LocalTransport(Transport):
         log_path = self._p(log_path)
         _, before = self.read_from(log_path, 0, 0)
         data = (command.rstrip("\n") + "\n").encode("utf-8")
-        if container:
-            cmd = ["docker", "exec", "-i", container, "sh", "-c", "cat > %s" % _sh_quote(fifo)]
-            p = subprocess.run(cmd, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-            if p.returncode != 0:
-                raise GameError("docker exec failed (%d): %s" % (p.returncode, p.stderr.decode("utf-8", "replace").strip()))
-        else:
-            try:
-                with open(fifo, "wb") as f:
-                    f.write(data)
-            except OSError as e:
-                raise GameError("cannot write console FIFO %s: %s" % (fifo, e))
+        p = subprocess.run(console_send_command(container, fifo), shell=True, input=data,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if p.returncode != 0:
+            raise GameError("cannot write to the console FIFO %s%s: %s" % (
+                fifo, " in container %s" % container if container else "", p.stderr.decode("utf-8", "replace").strip()))
         time.sleep(wait_s)
         out, _ = self.read_from(log_path, before, 512 * 1024)
         return out.decode("utf-8", "replace")
@@ -218,8 +255,8 @@ class SshTransport(Transport):
 
     kind = "ssh"
 
-    def __init__(self, lua_dir, host, port=None, identity=None, control_persist="10m", extra_opts=None):
-        Transport.__init__(self, lua_dir)
+    def __init__(self, lua_dir, host, port=None, identity=None, control_persist="10m", extra_opts=None, poll_cmd=None):
+        Transport.__init__(self, lua_dir, poll_cmd)
         self.host = host
         self.port = port
         self.identity = identity
@@ -320,13 +357,19 @@ class SshTransport(Transport):
         res = _sh_quote("%s/%s" % (d, RES_FILE.format(n=n)))
         status = _sh_quote("%s/%s" % (d, STATUS_FILE))
         tenths = max(1, int(timeout_s * 10))
+        # paused game loop: nothing ticks, so ask the server to poll (heartbeat stale, or it says paused)
+        poll = ""
+        if self.poll_cmd:
+            poll = ("if [ $(( $(date +%s) - $(stat -c %Y {status} 2>/dev/null || echo 0) )) -gt {after} ] "
+                    "|| grep -Eq '\"paused\": *true' {status} 2>/dev/null; then ({cmd}) >/dev/null 2>&1 & fi; "
+                    ).format(status=status, after=int(POLL_AFTER_S), cmd=self.poll_cmd)
         script = (
-            "cat > {req}.tmp && mv -f {req}.tmp {req} || exit 9; i=0; "
+            "cat > {req}.tmp && mv -f {req}.tmp {req} || exit 9; {poll}i=0; "
             "while :; do "
-            "if [ -s {res} ] && {{ [ -z \"$(tail -c 1 {res})\" ] || ! [ -s {req} ]; }}; then echo __ZMCP_OK__; cat {res}; break; fi; "
+            "if [ -s {res} ] && [ -z \"$(tail -c 1 {res})\" ]; then echo __ZMCP_OK__; cat {res}; break; fi; "
             "i=$((i+1)); if [ $i -ge {t} ]; then echo __ZMCP_TIMEOUT__; break; fi; sleep 0.1; done; "
             "printf '\\n__ZMCP_STATUS__\\n'; cat {status} 2>/dev/null; printf '\\n__ZMCP_NOW__ %s' $(date +%s)"
-        ).format(req=req, res=res, status=status, t=tenths)
+        ).format(req=req, res=res, status=status, t=tenths, poll=poll)
         rc, out, err = self.sh(script, stdin=req_text.encode("utf-8"), timeout=timeout_s + 60)
         if rc == 9:
             raise GameError("cannot write request into %s on %s: %s" % (self.lua_dir, self.host, err))
@@ -364,12 +407,15 @@ class SshTransport(Transport):
                     pass
         return files, now
 
+    def poll(self):
+        if not self.poll_cmd:
+            return False
+        self.sh("(%s) >/dev/null 2>&1" % self.poll_cmd, timeout=30)
+        return True
+
     def console(self, command, container, fifo, log_path, wait_s):
         log_path = _sh_quote(self._abs(log_path))
-        if container:
-            send = "docker exec -i %s sh -c %s" % (_sh_quote(container), _sh_quote("cat > %s" % _sh_quote(fifo)))
-        else:
-            send = "cat > %s" % _sh_quote(fifo)
+        send = console_send_command(container, fifo)
         script = (
             "N=$(wc -c < {log} 2>/dev/null || echo 0); CMD=$(cat); printf '%s\\n' \"$CMD\" | {send} || exit 7; "
             "sleep {w}; tail -c +$((N+1)) {log} | head -c 524288"
@@ -416,17 +462,30 @@ class GameBridge(object):
             self.last_status_age = None
         return st
 
-    def read_status(self):
-        """Re-read the heartbeat. Returns the dict or None if the file is missing/unparseable."""
+    def read_status(self, refresh=False):
+        """Re-read the heartbeat. Returns the dict or None if the file is missing/unparseable.
+
+        With ``refresh`` and a poll command, a stale heartbeat (paused server) is refreshed by one poll first.
+        """
         with self.lock:
             text = self.transport.read(STATUS_FILE)
             now = self.transport.now() if text else time.time()
-            return self._adopt_status(text, now)
+            st = self._adopt_status(text, now)
+            if refresh and st is not None and self.transport.poll_cmd and self.transport.needs_poll(text, self.last_status_age):
+                if self.transport.poll():
+                    deadline = time.time() + 3.0
+                    while time.time() < deadline:
+                        time.sleep(0.2)
+                        text = self.transport.read(STATUS_FILE)
+                        st2 = self._adopt_status(text, self.transport.now())
+                        if st2 is not None and self.last_status_age is not None and self.last_status_age <= POLL_AFTER_S:
+                            return st2
+            return st
 
-    def status_summary(self):
+    def status_summary(self, refresh=True):
         """Status enriched with liveness info; never raises."""
         try:
-            st = self.read_status()
+            st = self.read_status(refresh=refresh)
             err = None
         except GameError as e:
             st, err = None, str(e)
@@ -451,22 +510,25 @@ class GameBridge(object):
         else:
             out["bridge"] = "live"
             if st.get("paused"):
-                out["hint"] = ("The game loop is paused (no players online) but the bridge still answers "
-                               "requests; the world does not simulate and only areas near players exist.")
+                out["hint"] = ("The game loop is paused (no players online) but the bridge answers requests "
+                               "through console polls; the world does not simulate and only areas near players exist.")
         return out
 
     def not_running_hint(self):
         return ("No %s in %s. Is the game (or dedicated server) running with the ZomboidMCP mod enabled, "
                 "and does --lua-dir point at its Zomboid/Lua directory?" % (STATUS_FILE, self.transport.describe()))
 
-    @staticmethod
-    def paused_hint():
-        return ("server paused (no players online): a dedicated server with PauseEmpty=true stops ticking when "
-                "nobody is connected, so the bridge cannot execute requests. Use the wait_for tool to block until "
-                "a player joins, then retry. Console commands (server_console) still work.")
+    def paused_hint(self):
+        base = ("server paused (no players online): a dedicated server with PauseEmpty=true stops ticking when "
+                "nobody is connected, so the bridge cannot execute requests on its own. ")
+        if self.transport.poll_cmd:
+            return base + ("The console poll (`reloadlua`) did not wake the bridge either: check that the ZomboidMCP "
+                           "mod is loaded on the server (server_console 'reloadlua ZomboidMCP/ZMCPPoll.lua', then status).")
+        return base + ("Start the MCP with --console-container (or --console-fifo) so it can poll the server through "
+                       "the console, use wait_for to block until a player joins, or use server_console meanwhile.")
 
     def is_live(self, max_age_s=STALE_AFTER_S):
-        st = self.read_status()
+        st = self.read_status(refresh=True)
         return st is not None and self.last_status_age is not None and self.last_status_age <= max_age_s
 
     # --- requests ------------------------------------------------------------
@@ -606,9 +668,23 @@ class GameBridge(object):
     def _game_error_message(err, tool):
         err = str(err)
         if err.startswith("unknown tool"):
-            return ("%s. The running mod does not implement the game side of '%s' (older mod version or module "
+            return ("%s. The running mod does not implement the game side of '%s' (older mod version or script "
                     "not loaded). Script it with run_lua_server instead, or add the tool with script_install." % (err, tool))
         return err
+
+    # --- waiting on client replies (run_lua_client) --------------------------------
+    def wait_client_results(self, script_id, timeout_s):
+        """Poll the game's client_results until every targeted client answered or the timeout passes."""
+        deadline = time.time() + timeout_s
+        last = None
+        while True:
+            last = self.call("client_results", {"id": script_id}, timeout_s=max(3.0, min(10.0, timeout_s)))
+            if not isinstance(last, dict) or last.get("done") or not last.get("to"):
+                break
+            if time.time() >= deadline:
+                break
+            time.sleep(min(0.3, max(0.05, deadline - time.time())))
+        return last
 
     # --- events --------------------------------------------------------------
     def events(self, cursor=None, limit=100, kinds=None, tail_bytes=256 * 1024):

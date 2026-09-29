@@ -3,16 +3,16 @@
 
 Needs the bridge loaded (tools/pz load) and the env from ~/.config/zomboid-mcp/local.env
 (ZMCP_SSH, ZMCP_LUA_DIR, ZMCP_CONTAINER / ZMCP_POLL_FILE for the paused path):
-    . ~/.config/zomboid-mcp/local.env && ZMCP_POLL_FILE=VappsGuardian.lua tests/smoke_live.py
-Only non-destructive tools are used (ping, lua_eval on bridge state, tools_list, module_install of a
-no-op module that is removed again).
+    set -a; . ~/.config/zomboid-mcp/local.env; set +a; python3 tests/live/bridge_smoke.py
+Only non-destructive tools are used (ping, run_lua_server on bridge state, tools_list, script_install of a
+no-op script that is removed again).
 """
 import json
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tools"))
 from zmcp_client import BridgeError, Client, REQ  # noqa: E402
 
 results = []
@@ -44,13 +44,13 @@ def main():
         return f"paused={r['paused']}"
     check("ping", ping)
 
-    def lua_eval():
+    def run_lua():
         assert c.eval("return 1 + 1") == 2
         assert c.eval("return 'a', 2, true") == ["a", 2, True]
         assert c.eval("return {x = 1, list = {1, 2, 3}}") == {"x": 1, "list": [1, 2, 3]}
         assert c.eval("return nil") is None
         return "scalars, multiple returns, tables"
-    check("lua_eval", lua_eval)
+    check("run_lua_server", run_lua)
 
     def lua_error():
         try:
@@ -59,7 +59,7 @@ def main():
             assert "boom" in str(e), e
             return "error propagated"
         raise AssertionError("no error raised")
-    check("lua_eval error", lua_error)
+    check("run_lua_server error", lua_error)
 
     def compile_error():
         try:
@@ -68,11 +68,11 @@ def main():
             assert "compile" in str(e), e
             return "compile error reported"
         raise AssertionError("no error raised")
-    check("lua_eval compile error", compile_error)
+    check("run_lua_server compile error", compile_error)
 
     def tools_list():
         tools = {t["name"] for t in c.call("tools_list")}
-        for name in ("ping", "lua_eval", "tools_list", "run_file", "module_install", "module_list", "module_remove", "status"):
+        for name in ("ping", "run_lua_server", "tools_list", "run_file", "script_install", "script_list", "script_remove", "status"):
             assert name in tools, name
         return f"{len(tools)} tools"
     check("tools_list", tools_list)
@@ -135,7 +135,7 @@ def main():
         # a request with an old timestamp is refused (never executed late)
         n = c.n
         c.n += 1
-        body = c.t.request(n, json.dumps({"n": n, "t": time.time() - 3600, "tool": "lua_eval", "args": {"code": "ZMCP._stale = true"}}), c.timeout)
+        body = c.t.request(n, json.dumps({"n": n, "t": time.time() - 3600, "tool": "run_lua_server", "args": {"code": "ZMCP._stale = true"}}), c.timeout)
         res = json.loads(body)
         assert res["ok"] is False and "stale" in res["error"], res
         assert c.eval("return ZMCP._stale") is None
@@ -151,17 +151,17 @@ def main():
         return "answered with an error"
     check("malformed request", bad_json)
 
-    def modules():
-        r = c.call("module_install", {"name": "smoke_test", "code": "ZMCP._smokeModule = (ZMCP._smokeModule or 0) + 1 return 'hi'"})
-        assert r["result"] == "hi", r
-        assert any(m["name"] == "smoke_test" for m in c.call("module_list"))
-        assert "smoke_test" in c.call("status")["modules"]
-        r = c.call("module_remove", {"name": "smoke_test"})
+    def scripts():
+        r = c.call("script_install", {"name": "smoke_test", "code": "ZMCP._smokeScript = (ZMCP._smokeScript or 0) + 1 return 'hi'"})
+        assert r["result"] == "hi" and r["side"] == "server", r
+        assert any(m["name"] == "smoke_test" for m in c.call("script_list")["server"])
+        assert "smoke_test" in c.call("status")["scripts"]
+        r = c.call("script_remove", {"name": "smoke_test"})
         assert r["removed"] == "smoke_test"
-        assert not any(m["name"] == "smoke_test" for m in c.call("module_list"))
-        c.eval("ZMCP._smokeModule = nil")
+        assert not any(m["name"] == "smoke_test" for m in c.call("script_list")["server"])
+        c.eval("ZMCP._smokeScript = nil")
         return "install, list, status, remove"
-    check("module_install/list/remove", modules)
+    check("script_install/list/remove", scripts)
 
     def run_file():
         c.t.put("zmcp_run.lua", "return {from = 'file', n = 3}")     # the MCP may write .lua; the server may not

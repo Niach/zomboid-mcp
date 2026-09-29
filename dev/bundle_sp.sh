@@ -1,7 +1,7 @@
 #!/bin/bash
 # WARNING: this writes to the owner's running game. Only run it with the owner's OK (see docs/ENGINE_NOTES.md);
 # the ZMCPDev exec file is shared with other sessions and a bad render hook breaks the game every frame.
-# Prefer dev/luacheck.py + dev/test_sim.py (offline).
+# Prefer tests/luacheck.py + tests/sim/test_sim.py (offline).
 # Build a single-player dev bundle of the whole mod (shared + server + client Lua) and hand it to the
 # ZMCPDev exec watcher (dev/ZMCPDev must be in ~/Zomboid/mods and the game running):
 #   dev/bundle_sp.sh            -> writes ~/Zomboid/Lua/zmcp_dev_exec.lua and waits for zmcp_dev_result.txt

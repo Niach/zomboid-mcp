@@ -6,8 +6,7 @@ Opt-in: it needs the deployment details from ~/.config/zomboid-mcp/local.env
 `status`, `events_poll`, `server_console "players"` and, when the bridge is live,
 `run_lua_server "return 1+1"` plus `players_list`. Nothing in the game changes.
 
-    python3 tests/mcp/live_smoke.py                 # uses ~/.config/zomboid-mcp/local.env
-    ZMCP_LIVE=1 python3 -m unittest tests.mcp.live_smoke
+    python3 tests/live/mcp_smoke.py                 # uses ~/.config/zomboid-mcp/local.env
 """
 
 import json
@@ -17,7 +16,7 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "mcp"))
 from mcp_client import StdioClient  # noqa: E402
 
 ENV_FILE = os.path.expanduser("~/.config/zomboid-mcp/local.env")

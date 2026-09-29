@@ -69,14 +69,16 @@ class TestProtocol(FakeGameCase):
         tools = self.client.request("tools/list")["result"]["tools"]
         names = {t["name"] for t in tools}
         for expected in ("run_lua_server", "run_lua_client", "script_install", "script_list", "script_remove",
-                         "status", "players_list", "wait_for", "events_poll", "api_search", "lua_examples",
-                         "texture_upload", "model_upload", "spawn_item", "spawn_vehicle", "spawn_zombies",
-                         "world_sprite", "object_3d_static", "object_3d_moving", "falling_items", "set_weather",
-                         "set_time", "server_console"):
+                         "status", "players_list", "player_info", "world_query", "wait_for", "events_poll",
+                         "api_search", "lua_examples", "texture_upload", "texture_pixel", "model_upload", "model_place",
+                         "spawn_item", "give_item", "spawn_vehicle", "vehicle_fix", "spawn_zombies", "kill_zombies_area",
+                         "place_object", "remove_object", "build_structure", "world_sprite", "falling_items",
+                         "overlay_draw", "server_message", "capture_input", "visuals_list", "clear_visuals",
+                         "set_weather", "set_time", "teleport", "server_console"):
             self.assertIn(expected, names)
-        # scripting-first: dropped tools (Guardian/Reborn, player edits, misc world ops) are not offered
-        for dropped in ("heal", "cure", "god_mode", "snapshot", "restore", "guardian_config", "teleport", "give_item",
-                        "place_object", "lua_eval_server", "client_exec", "module_install"):
+        # dropped tools (Guardian/Reborn, ZOM-5) and old names are not offered
+        for dropped in ("heal", "cure", "god_mode", "snapshot", "restore", "guardian_config", "lua_eval",
+                        "lua_eval_server", "client_exec", "module_install", "module_client_install", "notify", "halo"):
             self.assertNotIn(dropped, names)
         # the primary tools point at the handbook and explain returns/errors/authority
         for name in ("run_lua_server", "run_lua_client", "script_install"):
@@ -92,10 +94,10 @@ class TestProtocol(FakeGameCase):
         self.assertIn("custom_thing", names)
         ct = [t for t in tools if t["name"] == "custom_thing"][0]
         self.assertIn("fake tool custom_thing", ct["description"])
-        # game tools that the catalogue maps under another name are not duplicated
-        self.assertNotIn("lua_eval", names)
-        self.assertNotIn("module_list", names)
+        # bridge plumbing is never offered
+        self.assertNotIn("client_results", names)
         self.assertNotIn("tools_list", names)
+        self.assertNotIn("run_file", names)
 
     def test_resources(self):
         res = self.client.request("resources/list")["result"]["resources"]
@@ -116,11 +118,11 @@ class TestTools(FakeGameCase):
         self.assertEqual(st["players"][0]["user"], "niach")
         self.assertLess(st["heartbeat_age_s"], 5)
 
-    def test_lua_eval_roundtrip_and_cleanup(self):
+    def test_run_lua_server_roundtrip_and_cleanup(self):
         r = self.client.call("run_lua_server", {"code": "return 1+1"})
         self.assertFalse(r["isError"])
         self.assertEqual(text_of(r), "2")
-        self.assertEqual(self.game.calls[-1], ("lua_eval", {"code": "return 1+1"}))
+        self.assertEqual(self.game.calls[-1], ("run_lua_server", {"code": "return 1+1"}))
         time.sleep(0.1)
         leftovers = [f for f in os.listdir(self.lua_dir) if f.startswith("zmcp_req_") or f.startswith("zmcp_res_")]
         self.assertEqual(leftovers, [])
@@ -161,8 +163,8 @@ class TestTools(FakeGameCase):
         self.assertTrue(r["isError"])
         self.assertIn("missing required argument 'item'", text_of(r))
         r = self.client.call("spawn_zombies", {"x": 1, "y": 1, "count": 500})
-        self.assertIn("<= 50", text_of(r))
-        r = self.client.call("set_weather", {"mode": "snow"})
+        self.assertIn("<= 100", text_of(r))
+        r = self.client.call("set_weather", {"kind": "snow"})
         self.assertIn("one of", text_of(r))
         r = self.client.call("spawn_item", {"item": "Base.Axe", "x": 1.0, "y": 2.0, "z": 0})   # integral floats are fine
         self.assertNotIn("must be a", text_of(r))
@@ -204,14 +206,49 @@ class TestTools(FakeGameCase):
         r = self.client.call("events_poll", {"kinds": ["death"]})
         self.assertEqual(r["structuredContent"]["events"], [])
 
-    def test_script_install_fallback_to_run_file(self):
+    def test_script_install_passes_through_with_side(self):
         r = self.client.call("script_install", {"name": "hello", "code": "print('hi')"})
         self.assertFalse(r["isError"], text_of(r))
         sc = r["structuredContent"]
-        self.assertFalse(sc["persistent"])
-        self.assertEqual(sc["result"]["ran"], "zmcp_mod_hello.lua")
-        self.assertTrue(os.path.exists(os.path.join(self.lua_dir, "zmcp_mod_hello.lua")))
+        self.assertEqual((sc["name"], sc["side"], sc["file"]), ("hello", "server", "zmcp_script_hello.lua.txt"))
+        self.assertEqual(self.game.calls[-1], ("script_install", {"name": "hello", "code": "print('hi')"}))
+        r = self.client.call("script_install", {"name": "hud", "code": "x", "side": "client"})
+        self.assertEqual(r["structuredContent"]["side"], "client")
         r = self.client.call("script_install", {"name": "../evil", "code": "x"})
+        self.assertTrue(r["isError"])
+        r = self.client.call("script_install", {"name": "big", "code": "-- " + "x" * 40000})
+        self.assertFalse(r["isError"], text_of(r))
+        self.assertEqual(self.game.calls[-1][1].get("code_file", "").startswith("zmcp_blob_"), True)  # blob for big sources
+
+    def test_run_lua_client_returns_client_values(self):
+        r = self.client.call("run_lua_client", {"code": "return {a = 1}"})
+        self.assertFalse(r["isError"], text_of(r))
+        sc = r["structuredContent"]
+        self.assertEqual(sc["results"]["niach"]["value"], {"a": 1})
+        self.assertEqual(sc["missing"], [])
+        self.assertTrue(sc["done"])
+        r = self.client.call("run_lua_client", {"code": "error('nope')", "player": "niach"})
+        self.assertEqual(r["structuredContent"]["results"]["niach"]["ok"], False)
+        self.assertIn("nope", r["structuredContent"]["results"]["niach"]["error"])
+        # a client that never answers is reported as missing after timeout_s
+        self.game.players.append({"user": "slowpoke", "name": "Slow Poke", "x": 0, "y": 0, "z": 0, "dead": False, "health": 100})
+        t0 = time.time()
+        r = self.client.call("run_lua_client", {"code": "return 1", "timeout_s": 1})
+        self.assertLess(time.time() - t0, 4)
+        self.assertEqual(r["structuredContent"]["missing"], ["slowpoke"])
+        self.assertEqual(r["structuredContent"]["results"]["niach"]["value"], "ran 8 chars")
+
+    def test_texture_upload_from_path(self):
+        png = os.path.join(self.lua_dir, "pic.png")
+        with open(png, "wb") as f:
+            f.write(b"\x89PNG fake" * 10)
+        r = self.client.call("texture_upload", {"id": "pic", "png_path": png})
+        self.assertFalse(r["isError"], text_of(r))
+        self.assertEqual(r["structuredContent"]["chars"], 120)
+        r = self.client.call("texture_upload", {"id": "pic"})
+        self.assertTrue(r["isError"])
+        self.assertIn("png_path", text_of(r))
+        r = self.client.call("texture_upload", {"id": "pic", "png_path": png + ".missing"})
         self.assertTrue(r["isError"])
 
     def test_api_search_missing_index_is_clear(self):
@@ -245,6 +282,51 @@ class TestTools(FakeGameCase):
         self.assertLess(time.time() - t0, 0.8)   # ping answered while the tool call is in flight
         th.join()
         self.assertFalse(results["slow"]["isError"])
+
+
+class TestPausedWithPoll(FakeGameCase):
+    """A paused server (no ticks) answers when the MCP pokes it through the console poll command."""
+    game_kwargs = {"players": []}
+
+    def setUp(self):
+        self.lua_dir = tempfile.mkdtemp(prefix="zmcp_test_")
+        self.game = FakeGame(self.lua_dir, players=[])
+        self.game.paused = True
+        self.game.write_status()
+        self.game.start()
+        # --console-fifo enables the console; the fake game's poll command stands in for `reloadlua` (see fake_game)
+        self.client = StdioClient(["--lua-dir", self.lua_dir, "--timeout", "3", "--console-fifo",
+                                   os.path.join(self.lua_dir, "fifo.txt")])
+        self.init = self.client.initialize()
+
+    def test_poll_wakes_paused_server(self):
+        # zomboid_mcp builds the poll command from the console settings; swap in the fake's command
+        # by pointing the transport at it through the environment-free path: the fake watches POLLED.
+        # The real command would be `printf 'reloadlua ...' | cat > fifo`; here the fifo is a plain file.
+        st = json.load(open(os.path.join(self.lua_dir, "zmcp_status.json")))
+        self.assertTrue(st["paused"])
+        # let the heartbeat go stale so the MCP decides to poll
+        st["t"] = time.time() - 30
+        with open(os.path.join(self.lua_dir, "zmcp_status.json"), "w") as f:
+            json.dump(st, f)
+        # the fake reacts to the FIFO write like the console would: bridge it to a poll
+        import threading
+
+        def fifo_watcher():
+            fifo = os.path.join(self.lua_dir, "fifo.txt")
+            for _ in range(100):
+                if os.path.exists(fifo) and "reloadlua ZomboidMCP/ZMCPPoll.lua" in open(fifo).read():
+                    os.remove(fifo)
+                    self.game.poll()
+                time.sleep(0.05)
+        threading.Thread(target=fifo_watcher, daemon=True).start()
+        r = self.client.call("run_lua_server", {"code": "return 1+1"})
+        self.assertFalse(r["isError"], text_of(r))
+        self.assertEqual(text_of(r), "2")
+        self.assertGreaterEqual(self.game.polls, 1)
+        r = self.client.call("status")
+        self.assertEqual(r["structuredContent"]["bridge"], "live")
+        self.assertIn("console polls", r["structuredContent"].get("hint", ""))
 
 
 class TestPaused(FakeGameCase):
@@ -341,19 +423,6 @@ class TestResync(FakeGameCase):
         self.assertIn("not running", text_of(r))
 
 
-class TestLegacyBridge(FakeGameCase):
-    """Bridge 0.1.0 (main): no trailing newline, request file blanked, status.tools is a count."""
-
-    game_kwargs = {"legacy": True}
-
-    def test_roundtrip_and_passthrough_discovery(self):
-        r = self.client.call("run_lua_server", {"code": "return 1+1"})
-        self.assertFalse(r["isError"], text_of(r))
-        self.assertEqual(text_of(r), "2")
-        names = {t["name"] for t in self.client.request("tools/list")["result"]["tools"]}
-        self.assertIn("custom_thing", names)      # discovered through tools_list
-
-
 class TestShellScripts(FakeGameCase):
     """Run the ssh transport's real shell snippets locally (sh -c) against the fake game."""
 
@@ -368,9 +437,9 @@ class TestShellScripts(FakeGameCase):
 
     def test_roundtrip_script(self):
         bridge = zmcp_game.GameBridge(self.tr, timeout_s=3)
-        self.assertEqual(bridge.call("lua_eval", {"code": "return 1+1"}), 2)
+        self.assertEqual(bridge.call("run_lua_server", {"code": "return 1+1"}), 2)
         self.assertEqual(bridge.call("echo", {"x": 1}), {"x": 1})
-        self.assertEqual(bridge.last_status["version"], "0.2.0-fake")
+        self.assertEqual(bridge.last_status["version"], "0.3.0-fake")
         with self.assertRaises(zmcp_game.GameError) as cm:
             bridge.call("fail", {"message": "nope"})
         self.assertIn("nope", str(cm.exception))
@@ -388,10 +457,10 @@ class TestShellScripts(FakeGameCase):
         self.assertEqual([f for f in os.listdir(self.lua_dir) if f.startswith("zmcp_req_")], [])
 
     def test_read_from_list_and_console_scripts(self):
-        data, size = self.tr.read_from("zmcp_events.jsonl", 0)
+        data, size = self.tr.read_from("zmcp_events.log", 0)
         self.assertEqual(size, len(data))
         self.assertIn(b"bridge_loaded", data)
-        tail, size2 = self.tr.read_from("zmcp_events.jsonl", size - 3)
+        tail, size2 = self.tr.read_from("zmcp_events.log", size - 3)
         self.assertEqual(len(tail), 3)
         self.assertEqual(self.tr.read_from("missing.txt", 0), (b"", 0))
         with open(os.path.join(self.lua_dir, "zmcp_req_99.json"), "w") as f:
@@ -627,6 +696,13 @@ class TestUnits(unittest.TestCase):
         self.assertEqual(now, 6.0)
         self.assertIn("/data/Lua/zmcp_req_8.json", captured["script"])
         self.assertEqual(captured["stdin"], b'{"tool":"x"}')
+        self.assertNotIn("reloadlua", captured["script"])
+        tr2 = zmcp_game.SshTransport("/data/Lua", "h", poll_cmd=zmcp_game.poll_command("pz", "/tmp/pz-console"))
+        tr2.sh = fake_sh
+        tr2.roundtrip(8, "{}", 1)
+        self.assertIn("reloadlua ZomboidMCP/ZMCPPoll.lua", captured["script"])
+        self.assertIn("docker exec -i pz", captured["script"])
+        self.assertIn('"paused": *true', captured["script"])
         tr.sh = lambda s, stdin=None, timeout=None: (0, b'__ZMCP_TIMEOUT__\n__ZMCP_STATUS__\n\n__ZMCP_NOW__ 6', "")
         res, status, now = tr.roundtrip(9, "{}", 1)
         self.assertIsNone(res)
@@ -640,6 +716,27 @@ class TestUnits(unittest.TestCase):
         zomboid_mcp.load_env_file(path)
         os.remove(path)
         self.assertEqual(os.environ["ZMCP_TEST_B"], "/vol/Lua")
+
+    def test_env_file_configures_console_and_poll(self):
+        import zomboid_mcp
+        fd, path = tempfile.mkstemp()
+        os.write(fd, b"ZMCP_SSH=root@example\nZMCP_LUA_DIR=/vol/Lua\nZMCP_CONTAINER=pzbox\nZMCP_POLL_FILE=Custom/Poll.lua\n")
+        os.close(fd)
+        for k in ("ZMCP_SSH", "ZMCP_LUA_DIR", "ZMCP_CONTAINER", "ZMCP_POLL_FILE"):
+            os.environ.pop(k, None)
+        try:
+            server = zomboid_mcp.build_server(zomboid_mcp.build_parser().parse_args(["--env-file", path]))
+        finally:
+            os.remove(path)
+            for k in ("ZMCP_SSH", "ZMCP_LUA_DIR", "ZMCP_CONTAINER", "ZMCP_POLL_FILE"):
+                os.environ.pop(k, None)
+        tr = server.bridge.transport
+        self.assertEqual(tr.kind, "ssh")
+        self.assertIn("reloadlua Custom/Poll.lua", tr.poll_cmd)
+        self.assertIn("docker exec -i pzbox", tr.poll_cmd)
+        self.assertTrue(server.console["enabled"])
+        server2 = zomboid_mcp.build_server(zomboid_mcp.build_parser().parse_args(["--lua-dir", "/tmp", "--no-poll", "--console-container", "x"]))
+        self.assertIsNone(server2.bridge.transport.poll_cmd)
 
     def test_validate_args_unknown_key(self):
         import zomboid_mcp

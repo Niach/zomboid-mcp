@@ -1,11 +1,11 @@
 -- Zomboid MCP client: receives "zmcp" server commands (Events.OnServerCommand) and renders visuals.
--- Protocol: docs/CLIENT_PROTOCOL.md. Server side: server/ZomboidMCP/Api/Visuals.lua.
+-- Protocol: docs/PROTOCOL.md part 2. Server side: server/ZomboidMCP/Api/Visuals.lua.
 --
 -- Scripting first: "exec" runs chunked Lua on this client (run_lua_client) and reports the result back;
 -- scripts register hooks with ZMCPClient.on(name, "render"|"tick"|"keyDown"|..., fn) (ClientInput.lua).
 -- Commands handled (args are flat tables of strings/numbers/booleans):
 --   exec        chunked Lua {id, part, total, code, module?}  -> loadstring, run, reply "execResult"
---   modRemove   {name}                    forget a persistent client module (+ every hook of that name)
+--   scriptRemove {name}                   forget a persistent client script (+ every hook of that name)
 --   tex         {id, gen, part, total, data}   base64 PNG chunk -> file -> texture (ClientTextures)
 --   pixel       {id, def}                 pixel-sprite fallback (palette/rows JSON)
 --   file        {id, gen, part, total, data, path}   any file into the Lua dir (ClientModels)
@@ -14,12 +14,13 @@
 --   spriteRemove {id?}
 --   fall        {id, item, items, ...}    falling items (ClientFalling)
 --   draw        {id?, kind, anchor, ...}  overlay primitive (ClientOverlay)
---   notify      {text, ttl, ...}          on-screen message
+--   notify      {text, ttl, r, g, b, font}   message box at the top of the screen
 --   halo        {text, r, g, b, time}     overhead text on the local player
+--   chat        {text, r, g, b}           a line in the chat panel (falls back to notify)
 --   say         {text}                    speech bubble
 --   capture     {on}                      overlay swallows the mouse / sits on top (screen apps)
 --   heal / cure / teleport {x, y, z}      client-authoritative body state / position
---   clear       {what = all|sprites|draw|fall|notices|textures|hooks, id?}
+--   clear       {what = all|sprites|overlays|falling|notices|textures|models|hooks, id?}
 --   ping        {}                        -> "pong" with the client version
 -- Replies: sendClientCommand(player, "zmcp", cmd, args): hello, execResult, texResult, fileResult, modelResult, pong.
 --
@@ -37,12 +38,12 @@ require "ZomboidMCP/ClientModels"
 
 ZMCPClient = ZMCPClient or {}
 local C = ZMCPClient
-C.version = "0.3.0"
+C.version = "0.3.0"          -- keep equal to ZMCP.version in Bridge.lua
 C.MODULE = "zmcp"
 C.commands = C.commands or {}        -- command -> function(args)
 C.renderHooks = C.renderHooks or {}  -- name -> function(overlay)   (pushed code draws here)
 C.tickHooks = C.tickHooks or {}      -- name -> function(now)       (pushed code updates here)
-C.modules = C.modules or {}          -- persistent client modules: name -> source
+C.modules = C.modules or {}          -- persistent client scripts: name -> source
 C.pendingExec = C.pendingExec or {}  -- id -> { total, parts }
 C.handlers = C.handlers or {}
 C.stats = C.stats or { commands = 0, errors = 0, execs = 0 }
@@ -151,11 +152,11 @@ C.commands.exec = function(a)
     runChunk(id, table.concat(m.parts), a.module and tostring(a.module) or nil)
 end
 
-C.commands.modRemove = function(a)
+C.commands.scriptRemove = function(a)
     local name = tostring(a.name or "")
     C.modules[name] = nil
     C.off(name)
-    C.log("module " .. name .. " removed")
+    C.log("script " .. name .. " removed")
 end
 
 ---------------------------------------------------------------- visuals
@@ -173,10 +174,11 @@ C.commands.capture = function(a) C.ensureOverlay(); C.capture(a.on == true or a.
 C.commands.clear = function(a)
     local what, id = tostring(a.what or "all"), a.id
     if what == "all" or what == "sprites" then C.sprites.remove(id) end
-    if what == "all" or what == "draw" then C.draw.clear(id) end
-    if what == "all" or what == "fall" then C.falling.clear(id) end
+    if what == "all" or what == "overlays" then C.draw.clear(id) end
+    if what == "all" or what == "falling" then C.falling.clear(id) end
     if what == "all" or what == "notices" then C.draw.notices = {} end
     if what == "textures" then C.tex.clear(id) end
+    if what == "models" then C.models.clear(id) end
     if what == "hooks" then if id then C.off(id) else C.offAll() end end
     if what == "all" and not id then C.offAll() end
 end
@@ -191,6 +193,24 @@ end
 C.commands.say = function(a)
     local p = C.player()
     if p then p:Say(tostring(a.text or "")) end
+end
+
+-- a line in the chat panel; the ISChat message shape varies between builds, so fall back to a notice
+C.commands.chat = function(a)
+    local text = tostring(a.text or "")
+    local ok = pcall(function()
+        local line = "[Zomboid MCP] " .. text
+        local msg = {
+            getText = function() return text end, getTextWithPrefix = function() return line end,
+            getTextWithReplacedParentheses = function() return text end, getAuthor = function() return "" end,
+            isServerAlert = function() return true end, isShowAuthor = function() return false end,
+            isOverHeadSpeech = function() return false end, setOverHeadSpeech = function() end,
+            setShouldAttractZombies = function() end, isFromDiscord = function() return false end,
+            getChatID = function() return -1 end, getDatetimeStr = function() return "" end,
+        }
+        ISChat.addLineInChat(msg, -1)
+    end)
+    if not ok then C.draw.notify({ text = text, r = a.r, g = a.g, b = a.b }) end
 end
 
 ---------------------------------------------------------------- client-authoritative player state

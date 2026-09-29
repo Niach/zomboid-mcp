@@ -3,18 +3,12 @@
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
 if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.def) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
+if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 
 local Z = ZMCP
 local U = Z.util
 
-U.def("teleport", {
-    desc = "Move a player to x,y,z. Position is client-authoritative: sends the 'teleport' command to that player's Zomboid MCP client mod (docs/PROTOCOL.md); nothing happens if the player lacks the mod. Verify with player_info.",
-    authority = "client", args = {
-        { "player", "string", false, "username or character name (optional when one player is online)" },
-        { "x", "number", true, "target x (fractional ok)" }, { "y", "number", true, "target y" }, { "z", "number", false, "level (default 0)" },
-    },
-}, function(a)
+Z.tool("teleport", "Move a player to x,y,z. Position is client-authoritative: sends the 'teleport' command to that player's Zomboid MCP client mod (docs/PROTOCOL.md); nothing happens if the player lacks the mod. Verify with player_info.", function(a)
     local p = Z.player(U.optStr(a, "player"))
     local x, y, z = U.num(a, "x"), U.num(a, "y"), U.int(a, "z", 0, 0, 31)
     Z.toClients("teleport", { x = x, y = y, z = z }, p)
@@ -24,16 +18,9 @@ U.def("teleport", {
         note = "applied by the client mod; verify with player_info after a second" }
 end)
 
-U.def("give_item", {
-    desc = "Add items to a player's main inventory (server-side, synced with sendAddItemToContainer). Search types by scripting: docs/recipes/item_types.md.",
-    authority = "server", args = {
-        { "player", "string", false, "username or character name" },
-        { "type", "string", true, "full item type, e.g. Base.Axe" },
-        { "count", "number", false, "1..100 (default 1)" },
-    },
-}, function(a)
+Z.tool("give_item", "Add items to a player's main inventory (server-side, synced with sendAddItemToContainer). Search types by scripting: docs/recipes/item_types.md.", function(a)
     local p = Z.player(U.optStr(a, "player"))
-    local itemType = U.str(a, "type")
+    local itemType = U.str(a, "item")
     local count = U.int(a, "count", 1, 1, 100)
     local script = getScriptManager():FindItem(itemType)
     if not script then error("unknown item type '" .. itemType .. "' (search with the item_types recipe)") end

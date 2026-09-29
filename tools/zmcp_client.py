@@ -322,7 +322,7 @@ class Client:
             raise Timeout(reason)
 
     def eval(self, code, timeout=None):
-        return self.call("lua_eval", {"code": code}, timeout)
+        return self.call("run_lua_server", {"code": code}, timeout)
 
 
 # ---------------------------------------------------------------- CLI

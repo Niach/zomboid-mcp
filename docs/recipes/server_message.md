@@ -1,6 +1,8 @@
 # server_message
 
-Not a tool: three ways.
+Tool: `server_message` (**client**) with `mode` = `notify` (box at the top of the screen), `halo` (text over the player), `chat`
+(chat line) or `say` (speech bubble); it sends the command of the same name to the client mod (`docs/PROTOCOL.md` part 2).
+The raw Lua behind it:
 
 ```lua
 -- client (run_lua_client on all players or one): floating halo text above the local player
@@ -21,5 +23,6 @@ ISChat.addLineInChat({ getText = function() return "Bananas incoming!" end, getT
 
 Server console (the MCP `server_console` tool): `servermsg "Bananas incoming!"` shows the vanilla server-message box on every client.
 
-The server can also ask the client mod to do it: `sendServerCommand(player, "zmcp", "message", { text = "...", mode = "halo" })`
-if ZOM-6 implements the `message` command (see `docs/PROTOCOL.md`).
+From a server script the client mod does it for you: `ZMCP.toClients("notify", { text = "Bananas incoming!", ttl = 5 })`,
+`ZMCP.toClients("halo", { text = "..." }, ZMCP.player("niach"))`, `ZMCP.toClients("chat", { text = "..." })` or
+`ZMCP.toClients("say", { text = "..." })` (see `docs/PROTOCOL.md` part 2).

@@ -18,11 +18,12 @@ Examples::
     # localhost HTTP for other clients
     python3 zomboid_mcp.py --http 8765 --ssh root@host --lua-dir ...
 
-    # deployment env file (ZMCP_SSH, ZMCP_LUA_DIR, ZMCP_CONTAINER)
+    # deployment env file (ZMCP_SSH, ZMCP_LUA_DIR, ZMCP_CONTAINER, ZMCP_POLL_FILE)
     python3 zomboid_mcp.py --env-file ~/.config/zomboid-mcp/local.env --check
 """
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -38,10 +39,10 @@ if HERE not in sys.path:
 
 import zmcp_catalog as catalog                       # noqa: E402
 from zmcp_game import (GameBridge, GameError, LocalTransport, SshTransport,  # noqa: E402
-                       default_lua_dir, log, STALE_AFTER_S)
+                       default_lua_dir, log, poll_command, DEFAULT_POLL_FILE)
 from zmcp_index import ApiIndex, default_index_dir   # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.3.0"
 SERVER_NAME = "zomboid-mcp"
 
 # JSON-RPC error codes
@@ -52,7 +53,7 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 CONSOLE_NOISE = re.compile(r"AnimState|Property Name|Ragdoll|Saving took|Saving GlobalModData|Saving finish")
-GAME_INTERNAL_TOOLS = {"ping", "tools_list", "run_file", "status"}   # bridge plumbing, never exposed
+GAME_INTERNAL_TOOLS = {"ping", "tools_list", "run_file", "status", "client_results"}   # bridge plumbing, never exposed
 
 
 class JsonRpcError(Exception):
@@ -267,28 +268,65 @@ class ZomboidMCP(object):
         return self.index.lua_examples(str(args.get("query", "")), limit=int(args.get("limit") or 8),
                                        context=int(args.get("context") or 0))
 
-    def tool_script_install(self, args, t):
-        name = str(args.get("name", ""))
-        if not re.match(r"^[A-Za-z0-9_-]{1,64}$", name):
-            raise GameError("invalid module name %r" % name)
-        code = str(args.get("code", ""))
-        fname = "zmcp_mod_%s.lua" % name
-        self.bridge.transport.write(fname, code)
+    def tool_run_lua_client(self, args, t):
+        """Send the chunk, then wait for the clients' replies so the caller gets values, not just an id."""
+        timeout = float(args.get("timeout_s") or 10)
+        game_args = {k: v for k, v in args.items() if k != "timeout_s"}
+        sent = self.bridge.call("run_lua_client", game_args)
+        if not isinstance(sent, dict) or not sent.get("id"):
+            return sent
+        if not sent.get("to"):
+            sent["results"] = {}
+            sent["note"] = "no client with the ZomboidMCP mod is connected; nothing ran"
+            return sent
+        status = self.bridge.wait_client_results(sent["id"], timeout)
+        out = {"id": sent["id"], "to": sent.get("to"), "results": {}, "missing": []}
+        if isinstance(status, dict):
+            for user, r in (status.get("results") or {}).items():
+                res = r.get("res")
+                if isinstance(res, str):
+                    try:
+                        res = json.loads(res)
+                    except ValueError:
+                        pass
+                out["results"][user] = {"ok": r.get("ok"), "value" if r.get("ok") else "error": res, "ms": r.get("ms")}
+            out["missing"] = status.get("pending") or []
+            out["done"] = bool(status.get("done"))
+        if out["missing"]:
+            out["note"] = "clients that did not answer within %.0fs are listed in missing; poll events_poll for late results" % timeout
+        return out
+
+    @staticmethod
+    def _read_file_base64(path, what):
+        path = os.path.expanduser(str(path))
         try:
-            result = self.bridge.call("module_install", {"name": name, "file": fname})
-            return {"module": name, "file": fname, "persistent": True, "result": result}
-        except GameError as e:
-            if "unknown tool" not in str(e):
-                raise
-            # Older bridge without module support: at least run it now.
-            result = self.bridge.call("run_file", {"file": fname})
-            return {"module": name, "file": fname, "persistent": False, "result": result,
-                    "note": "the running bridge has no module_install tool; the script was executed once with run_file "
-                            "and will not reload automatically"}
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            raise GameError("cannot read %s file %s: %s" % (what, path, e))
+        return base64.b64encode(data).decode("ascii")
+
+    def _upload_args(self, args, pairs):
+        """Resolve a path argument (a file on this machine) into its base64 argument for the game."""
+        out = dict(args)
+        for key, path_key, what in pairs:
+            path = out.pop(path_key, None)
+            if path and not out.get(key):
+                out[key] = self._read_file_base64(path, what)
+            if not out.get(key):
+                raise GameError("give %s (base64) or %s (a file on this machine)" % (key, path_key))
+        return out
+
+    def tool_texture_upload(self, args, t):
+        return self.bridge.call("texture_upload", self._upload_args(args, [("png_base64", "png_path", "PNG")]))
+
+    def tool_model_upload(self, args, t):
+        return self.bridge.call("model_upload", self._upload_args(
+            args, [("mesh_base64", "mesh_path", "mesh"), ("png_base64", "png_path", "PNG")]))
 
     def tool_server_console(self, args, t):
         c = self.console
-        if not c.get("container") and not c.get("fifo_explicit"):
+        if not c.get("enabled"):
             raise GameError("server_console is not configured: start zomboid_mcp.py with --console-container <docker "
                             "name> (dedicated server in Docker) or --console-fifo <path> (FIFO the server reads).")
         cmd = str(args.get("command", "")).strip()
@@ -558,6 +596,10 @@ def build_parser():
     p.add_argument("--console-container", metavar="NAME", help="docker container running the dedicated server; enables server_console via its FIFO (default $ZMCP_CONTAINER)")
     p.add_argument("--console-fifo", metavar="PATH", default="/tmp/pz-console", help="console FIFO path (inside the container if one is given)")
     p.add_argument("--console-log", metavar="PATH", help="server-console.txt path (default: <lua-dir>/../server-console.txt)")
+    p.add_argument("--poll-file", metavar="LUAFILE",
+                   help="loaded server Lua file whose `reloadlua` polls the bridge while the server is paused "
+                        "(default $ZMCP_POLL_FILE or %s; needs the console)" % DEFAULT_POLL_FILE)
+    p.add_argument("--no-poll", action="store_true", help="never poll a paused server through the console")
     p.add_argument("--api-index", metavar="DIR", help="directory holding api_index.json.gz and lua_examples.json.gz (default: next to this script, or $ZMCP_API_INDEX)")
     p.add_argument("--docs-dir", action="append", metavar="DIR", help="extra directory of *.md files to expose as resources (repeatable)")
     p.add_argument("--timeout", type=float, default=20.0, metavar="SECONDS", help="default wait for a game response (default 20)")
@@ -574,25 +616,28 @@ def build_server(args):
         load_env_file(args.env_file)
     ssh = args.ssh or os.environ.get("ZOMBOID_SSH") or os.environ.get("ZMCP_SSH")
     lua_dir = args.lua_dir or (os.environ.get("ZOMBOID_LUA_DIR") or os.environ.get("ZMCP_LUA_DIR") if ssh else None)
+    container = args.console_container or os.environ.get("ZMCP_CONTAINER")
+    console_enabled = bool(container) or args.console_fifo != "/tmp/pz-console"
+    poll_file = args.poll_file or os.environ.get("ZMCP_POLL_FILE") or DEFAULT_POLL_FILE   # after --env-file
+    poll_cmd = poll_command(container, args.console_fifo, poll_file) if console_enabled and not args.no_poll else None
     if ssh:
         if not lua_dir:
             sys.exit("--ssh needs --lua-dir <remote Zomboid/Lua directory> (or $ZMCP_LUA_DIR)")
         transport = SshTransport(lua_dir, ssh, port=args.ssh_port, identity=args.ssh_identity,
-                                 extra_opts=[o for opt in args.ssh_opt for o in ("-o", opt)])
+                                 extra_opts=[o for opt in args.ssh_opt for o in ("-o", opt)], poll_cmd=poll_cmd)
     else:
         lua_dir = os.path.expanduser(lua_dir or default_lua_dir())
-        transport = LocalTransport(lua_dir)
+        transport = LocalTransport(lua_dir, poll_cmd=poll_cmd)
     bridge = GameBridge(transport, timeout_s=args.timeout)
     if args.api_index:
         idx = os.path.expanduser(args.api_index)
         index = ApiIndex(idx if os.path.isdir(idx) else os.path.dirname(idx))
     else:
         index = ApiIndex(default_index_dir(HERE))
-    container = args.console_container or os.environ.get("ZMCP_CONTAINER")
     console = {
+        "enabled": console_enabled,
         "container": container,
         "fifo": args.console_fifo,
-        "fifo_explicit": args.console_fifo != "/tmp/pz-console",
         "log": args.console_log or (lua_dir.rstrip("/\\").rsplit("/", 1)[0] + "/server-console.txt"
                                     if "/" in lua_dir.rstrip("/\\") else "server-console.txt"),
     }

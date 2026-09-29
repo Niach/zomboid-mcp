@@ -1,8 +1,8 @@
 # teleport
 
 Tool: `teleport` (**client**). Player position is client-authoritative: setting `p:setX()` on the server copy is
-overwritten by the next client update. The tool sends the `teleport` command (`docs/PROTOCOL.md`) to the player's client
-mod, which runs the equivalent of:
+overwritten by the next client update. The tool sends the `teleport` command (`docs/PROTOCOL.md` part 2) to the player's client
+mod, which calls `player:teleportTo(x, y, z)`; by hand it is the equivalent of:
 
 ```lua
 -- client (run_lua_client on that player): move the local player
