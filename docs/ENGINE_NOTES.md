@@ -56,6 +56,8 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **SteamCMD** logging in with the owner's account **kicks their desktop Steam** ("lost connection"). Never run SteamCMD while the owner is playing. Always use the isolated HOME: `env HOME=$ZMCP_STEAMCMD_HOME $ZMCP_STEAMCMD +login $ZMCP_STEAM_USER ...`.
 - **Heap:** 2 GB of heap ran out of memory during a save with 35 mods. It's 3 GB now, and the host has only about 1.2 GB spare. Avoid holding big data (for example textures) in Lua or ModData on the server; keep it in files.
 - **Kahlua:** there's no `io` library, no `bit` operations (use arithmetic), and `os.date` works. Overloaded Java methods are chosen by argument count. `tostring()` with no arguments throws.
+  - **No `next()`** (verified 2026-09-30: `next(t) == nil` throws "Object tried to call nil" every frame). Use `for _ in pairs(t) do return false end return true` to test for an empty table. `pairs`, `ipairs`, `select`, `unpack`, `rawget` exist. Check `dev/sim_prelude.lua` for the list of globals the offline harness provides (and deliberately leaves out).
+- **Never test on the owner's running single-player game without asking.** `dev/ZMCPDev` + `~/Zomboid/Lua/zmcp_dev_exec.lua` is a single shared file: two sessions writing it collide, and a render hook that throws breaks the owner's game every frame. Use static checks (`dev/luacheck.py`) and the offline Lua 5.1 harness (`dev/test_sim.py`) instead; a live run needs the owner's OK.
 
 ## Live server rules for sessions
 - **Allowed:**
@@ -84,3 +86,10 @@ Tested in single-player 42.21 on Linux with the `dev/ZMCPDev` exec watcher:
 - **Owner preference:** world sprites are drawn **always on top** (no wall occlusion needed).
 - **Performance:** a 22 KB PNG (≈29 KB base64) decodes instantly. Keep textures ≤ 256×256 and ≤ 100 KB where possible (network chunks of ~3000 characters).
 - **Dev tip:** `dev/ZMCPDev` is a local-only mod (copy it to `~/Zomboid/mods/`). It runs `~/Zomboid/Lua/zmcp_dev_exec.lua` every time the file changes and writes `zmcp_dev_result.txt`. Draw hooks go in `ZMCPDev.hooks[name] = function(ui) ... end`. This gives a live single-player test loop without restarts. Note: `OnTick` doesn't run while the game is paused.
+
+## Runtime 3D models: VERIFIED 2026-09-30 (coordinator's spike, for ZOM-10/11)
+- **Runtime 3D models work.** `local ms = ModelScript.new()`, `ms:setModule(getScriptManager():getModule("Base"))`,
+  `ms:InitLoadPP(name)`, `ms:Load(name, "{ mesh = <absolute path containing 'media/' incl. .x>, texture = <absolute .png>, scale = N, }")`,
+  then `getScriptManager():addModelScript(ms)`. A world item uses it with `item:setWorldStaticModel(name)`.
+- World-item model space is **Y-up**. `worldYRotation` rolls an upright XY-plane disc like a wheel.
+- Per-frame rotation/offset updates flicker (still under investigation).
