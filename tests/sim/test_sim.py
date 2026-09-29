@@ -11,6 +11,8 @@ LUA = os.path.join(ROOT, "mod/Contents/mods/ZomboidMCP/42/media/lua")
 FILES = [
     "shared/ZomboidMCP/Json.lua",
     "server/ZomboidMCP/Bridge.lua",
+    "server/ZomboidMCP/Api/Common.lua",
+    "server/ZomboidMCP/Api/Models.lua",
     "server/ZomboidMCP/Api/Visuals.lua",
     "client/ZomboidMCP/ClientBase64.lua",
     "client/ZomboidMCP/ClientTextures.lua",
@@ -205,6 +207,90 @@ r = tool("model_place", {"id": "star", "x": 6080, "y": 5385, "yrot": 45})
 check(r["placed"] == "zmcp_star_1" and g.SIM.spawned[len(g.SIM.spawned)]["model"] == "zmcp_star_1", "model_place spawned a carrier item with the world model")
 check(len(tool("visuals_list")["models"]) == 1, "model listed")
 
+# --- moving 3D entities: UI3DScene layer synced to the iso camera
+def scene_obj(eid):
+    o = g.SIM.scene.objects["zmcp_e3d_" + eid]
+    return o
+def frame():
+    lua("ZMCPClient.e3d.layer:prerender()")
+r = tool("entity3d_spawn", {"id": "star", "model": "star", "x": 100, "y": 100, "scale": 3, "roll": 1.35})
+check(r["id"] == "star" and r["h"] == 1.35 and r["motion"] == "static", "entity3d_spawn: h defaults to the roll radius")
+lua("SIM.tick(1)")
+frame()
+check(g.SIM.scene is not None and g.SIM.scene.view == "UserDefined" and list(g.SIM.scene.rot.values()) == [30, 315, 0] and g.SIM.consume3d is False, "3D layer: UserDefined iso view (30, 315), click-through")
+check(g.SIM.scene.grid is False and g.SIM.scene.gizmo == "none", "grid and gizmo off (no debug text)")
+o = scene_obj("star")
+check(o["model"] == "zmcp_star_1", "scene object created from the registered runtime model")
+check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].z - 100) < 1e-3, f"placed at world 100,100 -> scene X=Z=100 (k=1 at zoom 1) ({o['t'].x:.2f},{o['t'].z:.2f})")
+check(abs(o["t"].y - 1.35) < 1e-3, "lifted by h = roll radius")
+check(abs(o["s"].x - 3) < 1e-3 and abs(o["s"].y - 3) < 1e-3, "scale 3 applied")
+ux, uy = lua("return SIM.scene:sceneToUIX(%f, %f, %f), SIM.scene:sceneToUIY(%f, %f, %f)" % (o["t"].x, 0, o["t"].z, o["t"].x, 0, o["t"].z))
+check(abs(ux - lua("return isoToScreenX(0, 100, 100, 0)")) < 0.5 and abs(uy - lua("return isoToScreenY(0, 100, 100, 0)")) < 0.5, "scene projection of the ground point matches isoToScreenX/Y")
+ev = events("client_entity3d")
+check(len(ev) == 1 and ev[0]["data"]["ok"] is True and ev[0]["data"]["model"] == "zmcp_star_1", "client reported e3dResult ok")
+# path motion: 2 tiles/s along +x, rolling
+r = tool("entity3d_move", {"id": "star", "path": "120,100,0", "speed": 2, "loop": "pingpong"})
+check(r["motion"] == "path", "entity3d_move: path motion")
+lua("SIM.tick(1)")
+t0 = g.SIM.now
+g.SIM.now = t0 + 5
+frame()
+o = scene_obj("star")
+check(abs(o["t"].x - 110) < 0.3, f"after 5 s at 2 tiles/s the entity is at x=110 ({o['t'].x:.2f})")
+check(abs(o["r"].y) < 1e-6, "faces +x (heading 0)")
+import math
+check(abs(o["r"].z + math.degrees(10 / 1.35)) < 2, f"rolled -deg(10 / 1.35) about Z ({o['r'].z:.1f})")
+lst = tool("entity3d_list")
+e0 = list(lst.values())[0]
+check(abs(e0["x"] - 110) < 0.3 and e0["moving"] is True and e0["loop"] == "pingpong", "entity3d_list computes the same position on the server")
+g.SIM.now = t0 + 15
+frame()
+o = scene_obj("star")
+check(abs(o["t"].x - 110) < 0.3 and abs(o["r"].y - 180) < 1e-3, "pingpong: heading back (heading 180)")
+g.SIM.zoom = 2
+frame()
+o = scene_obj("star")
+check(abs(o["t"].x - 55) < 0.2 and abs(o["s"].x - 1.5) < 1e-3, "zoom 2 halves scene units and the object scale")
+g.SIM.zoom = 1
+# tween + rotate + spin
+r = tool("entity3d_move", {"id": "star", "x": 100, "y": 100, "duration": 4, "ease": True})
+check(r["motion"] == "to" and r["duration"] == 4, "entity3d_move: tween")
+lua("SIM.tick(1)")
+t1 = g.SIM.now
+g.SIM.now = t1 + 2
+frame()
+o = scene_obj("star")
+check(abs(o["t"].x - 105) < 0.3, f"tween half way (eased midpoint) ({o['t'].x:.2f})")
+tool("entity3d_rotate", {"id": "star", "roll": 0, "rx": 10, "spin": "0,90,0", "h": 2})
+lua("SIM.tick(1)")
+g.SIM.now = t1 + 6
+frame()
+o = scene_obj("star")
+check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].y - 2) < 1e-3 and abs(o["r"].x - 10) < 1e-6, "tween finished, h and rx applied")
+ry1 = o["r"].y
+g.SIM.now = t1 + 7
+frame()
+check(abs(scene_obj("star")["r"].y - ry1 - 90) < 1e-3, "spin: +90 degrees about Y per second")
+# entity before its model: pending until the model registers; vanilla model names pass through
+tool("entity3d_spawn", {"id": "late", "model": "later", "x": 101, "y": 101})
+tool("entity3d_spawn", {"id": "radio", "model": "RadioBlue_Ground", "x": 102, "y": 102})
+lua("SIM.tick(1)")
+frame()
+check("zmcp_e3d_radio" in g.SIM.scene.objects and scene_obj("radio")["model"] == "RadioBlue_Ground", "vanilla ModelScript name used verbatim")
+check("zmcp_e3d_late" not in g.SIM.scene.objects and lua("return ZMCPClient.e3d.list.late.created == false"), "unknown model: entity waits")
+g.SIM.fs["zmcp_model_later.x.b64"] = g.SIM.fs["zmcp_model_star.x.b64"]
+g.SIM.fs["zmcp_model_later.png.b64"] = g.SIM.fs["zmcp_model_star.png.b64"]
+tool("model_upload", {"id": "later", "scale": 2, "mesh_base64_file": "zmcp_model_later.x.b64", "png_base64_file": "zmcp_model_later.png.b64"})
+lua("SIM.tick(3)")
+g.SIM.now += 3
+frame()
+check(scene_obj("late")["model"] == "zmcp_later_1", "entity created once its model registered (upload after spawn)")
+ev = events("client_entity3d")
+check(len([e for e in ev if e["data"]["ok"]]) == 3 and len([e for e in ev if not e["data"]["ok"]]) == 1 and ev[-1]["data"]["ok"], f"three ok e3dResults plus one failed try of the unknown name ({len(ev)})")
+tool("entity3d_remove", {"id": "radio"})
+lua("SIM.tick(1)")
+check("zmcp_e3d_radio" not in g.SIM.scene.objects and lua("return ZMCPClient.e3d.list.radio == nil") and len(tool("entity3d_list")) == 2, "entity3d_remove drops the scene object and the registry entry")
+
 # --- client modules + late joiner
 tool("script_install", {"side": "client", "name": "hud", "code": "ZMCPClient.renderHooks.hud = function(ui) ui:drawText('hud', 5, 5, 1, 1, 1, 1) end return 'installed'"})
 lua("SIM.tick(1)")
@@ -217,6 +303,9 @@ check(lua("return ZMCPClient.tex.loaded.snail ~= nil and ZMCPClient.tex.loaded.s
 check(lua("return ZMCPClient.sprites.list.s1 ~= nil"), "late joiner received the persistent sprite")
 check(lua("return ZMCPClient.modules.hud ~= nil"), "late joiner received the client module")
 check(lua("return ZMCPClient.models.name('star') == 'zmcp_star_1'"), "late joiner registered the model")
+frame()
+check(lua("return ZMCPClient.e3d.list.star ~= nil and ZMCPClient.e3d.list.late ~= nil") and scene_obj("star")["model"] == "zmcp_star_1", "late joiner received the 3D entities and re-created the scene objects")
+check(lua("return ZMCPClient.e3d.list.star.motion == nil and math.abs(ZMCPClient.e3d.list.star.x - 100) < 0.001"), "late joiner got the settled position of the finished tween")
 check(events("client_hello")[-1]["data"]["user"] == "friend", "hello logged for the second player")
 tool("script_remove", {"name": "hud", "side": "client"})
 lua("SIM.tick(1)")
@@ -240,6 +329,7 @@ tool("clear_visuals")
 lua("SIM.tick(1)")
 check(lua("return ZMCPClient.sprites.list.s1 == nil and #ZMCPClient.draw.notices == 0") and lua("return ZMCP.visuals.store().sprites.s1 == nil"), "clear_visuals wipes sprites/overlays on clients and in the registry")
 check(lua("return ZMCPClient.tex.loaded.snail ~= nil"), "clear_visuals keeps textures")
+check(lua("return ZMCPClient.e3d.list.star == nil and ZMCPClient.e3d.list.late == nil") and len(tool("entity3d_list")) == 0 and lua("return SIM.scene.objects.zmcp_e3d_star == nil"), "clear_visuals all removes the 3D entities on clients and in the registry")
 
 # --- utility handlers
 lua("ZMCP.toClients('heal', {}); ZMCP.toClients('cure', {}); ZMCP.toClients('teleport', {x = 10, y = 20, z = 1}); ZMCP.toClients('say', {text = 'yo'})")
@@ -259,7 +349,7 @@ check(len(rects) == 2, f"pixel sprite drawn as 2 rects ({len(rects)})")
 g.SIM.fs["zmcp_req_1.json"] = json.dumps({"n": 1, "t": g.SIM.now, "tool": "visuals_list", "args": {}})
 lua("SIM.tick(1)")
 res = json.loads(g.SIM.fs["zmcp_res_1.json"])
-check(res["ok"] and len(res["result"]["textures"]) == 2 and len(res["result"]["models"]) == 1, "visuals_list via request file")
+check(res["ok"] and len(res["result"]["textures"]) == 2 and len(res["result"]["models"]) == 2, "visuals_list via request file")
 
 # --- server scripts persist in ModData and reload with the bridge
 r = tool("script_install", {"name": "counter", "code": "COUNTER = (COUNTER or 0) + 1 return COUNTER"})
@@ -282,7 +372,8 @@ check(enc == base64.b64encode(b"hello, zomboid!").decode(), "b64 encode")
 check(lua("return ZMCPClient.b64.decode('aGVsbG8sIHpvbWJvaWQh')") == "hello, zomboid!", "b64 decode")
 
 errs = [l for l in g.SIM.out.values() if ("error" in l.lower() or "failed" in l.lower() or "removed" in l.lower()) and "bridge_loaded" not in l]
-expected = ("exec e2 error", "exec e3 compile", "script hud removed", "hook 'bad' (render) removed", "render hook 'bad' removed")
+expected = ("exec e2 error", "exec e3 compile", "script hud removed", "hook 'bad' (render) removed", "render hook 'bad' removed",
+            "e3d late: createModel(later) failed", "client_entity3d {\"err\"")
 unexpected = [l for l in errs if not any(x in l for x in expected)]
 check(not unexpected, "no unexpected errors in the log: " + "; ".join(unexpected[:5]))
 

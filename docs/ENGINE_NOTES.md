@@ -104,6 +104,52 @@ Tested live with the owner in single-player (see ZOM-11 for details):
 - **Static objects render perfectly. Animating them flickers:** B42 chunk FBO caching (`PerformanceSettings.fboRenderChunk`) plus the `WorldItemAtlas` get invalidated on every offset or rotation change. Moving 3D needs a dynamic carrier (ZOM-11).
 - **Not usable:** `ScriptManager.ParseScript` parses item scripts but doesn't finalize them ("Couldn't find item"), and `ScriptBucket` isn't exposed. Use vanilla carrier items plus `ModelScript`.
 
+## Moving 3D entities: UI3DScene layer (ZOM-11, bytecode-verified 2026-09-30, live test pending)
+Carrier evaluation for a smoothly moving, rotating custom model (all from `javap` of 42.21 + vanilla Lua; nothing
+below was run in the game yet unless marked):
+- **World item (dynamic flag): no.** `IsoWorldInventoryObject` has no per-object dynamic path; `WorldItemModelDrawer`
+  draws into the chunk FBO / `WorldItemAtlas`. The only switch is the global `PerformanceSettings.fboRenderChunk`.
+- **Physics objects: no.** `IsoPhysicsObject` / `IsoBall` (B42 thrown ball) are `IsoMovingObject`s but are not
+  exposed to Lua (`LuaManager.Exposer`), and `IsoBall.render` draws the item's *sprite*, not a model.
+- **Zombie / animal carrier: partial.** `createZombie(x, y, z, desc|nil, outfit, IsoDirections)` +
+  `zombie:setUseless(true)`, `setAttachedItem(location, item)` with `item:setStaticModel("zmcp_<id>_<gen>")`
+  (`ModelManager.addEquippedModelInstance` reads `InventoryItem.getStaticModel()`, so the per-instance override
+  works and custom locations can be added with `AttachedLocations.getGroup("Human"):getOrCreateLocation(...)` +
+  a `ModelAttachment` on `getScriptManager():getModelScript("MaleBody")`; `Vector3f` is exposed for offsets).
+  Movement is smooth and MP-synced, but the model cannot be rotated per frame from Lua (attachment rotation is
+  per model script), the zombie body stays visible (`setInvisible` is only read by `IsoPlayer`; `ghost` is unused
+  in rendering; `ModelInstance.scale` is not reachable), and animals use a different skeleton. Keep for "a zombie
+  carrying a thing"; wrong for a rolling star.
+- **Vehicle carrier: no.** `ScriptManager` has no `addVehicleScript` (`ScriptBucketCollection<VehicleScript>` is
+  private, only `ParseScript` fills it), a vehicle needs wheels/physics shapes/skins, and physics fights any
+  manual rotation.
+- **UI3DScene layer: yes (chosen).** `zombie.vehicles.UI3DScene` (the vehicle / attachment / sprite-model editor
+  viewport) is Lua-exposed (`UI3DScene.new(luaTable)` like vanilla `ISUI3DScene`). Facts:
+  - `render()` clears **only the depth buffer** (`glClear(256)`), so a full-screen element is transparent; the
+    grey background is drawn by vanilla `ISUI3DScene:prerender`, not by Java. The debug text is only drawn while
+    `setDrawGrid(true)`. `setConsumeMouseEvents(false)` on the Java object makes it click-through.
+  - Camera: `fromLua1("setView", "UserDefined")` + `fromLua3("setViewRotation", 30, 315, 0)` + `setZoom` is what
+    `SpriteModelEditor:resetView` uses to preview tile models, i.e. the game's 2:1 iso orthographic projection
+    (`Matrix4f.setOrtho`). `sceneToUIX/Y(x, y, z)` (public Java methods) give the pixel of any scene point, so the
+    layer calibrates the affine scene→pixel map every frame (4 probes) and converts world tiles → scene units:
+    `k = (32 / zoom) / px_per_unit_x` scene units per tile, `ky = (96 / zoom) / px_per_unit_y` per z level. The
+    world point under the scene origin is `screenToIsoX/Y(0, u0, v0, 0)`. Objects get scale `k * scale` so the
+    scene zoom does not matter.
+  - Objects: `fromLua2("createModel", objectName, modelScriptName)` (looks up `ScriptManager.getModelScript` +
+    `ModelManager.getLoadedModel`, so runtime `ModelScript`s and vanilla ones like `RadioBlue_Ground` work),
+    `fromLua1("getObjectTranslation" | "getObjectRotation" | "getObjectScale", name)` return the live `Vector3f`
+    (mutate with `:set(x, y, z)`); rotation is **degrees**, applied as `translate * rotateXYZ(rx, ry, rz) * scale`
+    (Z first in model space, then Y, then X). `removeObject`, `setObjectVisible`, `getObjectExists`. Model space
+    is Y-up like world items; a disc in the model XY plane stands upright, heading = rotation about Y
+    (`+X → (cos, 0, -sin)`), rolling = negative rotation about Z per distance / radius.
+  - Turn off `setDrawGrid/setDrawGridAxes/setDrawGridPlane` and `setGizmoVisible("none")`.
+  - Scene objects are drawn on top of the world (own depth buffer, no wall occlusion; owner preference), below the
+    2D overlay (`backMost()` after the overlay exists). Pure client side: MP clients each run the same motion from
+    the server's `e3d` commands (with `elapsed` so late joiners are in phase).
+  - Client: `ZMCPClient.e3d` (`ClientModels.lua`); server: `Api/Models.lua` (`entity3d_*` tools). Offline
+    verified with `dev/test_sim.py` (projection maths, motion, late join); live demo: `dev/e3d_demo.lua` with the
+    owner. Knobs if the live picture is off: `ZMCPClient.e3d.MODEL_SCALE`, `.YAW`, `.PITCH`, `.ZOOM`.
+
 ## Coordination
 - Only one agent may drive the owner's running game (`dev/ZMCPDev`) at a time. Ask the owner or coordinator first.
 - A crashing render hook spams errors every frame and breaks the game, so always `pcall` hooks and remove them on error.

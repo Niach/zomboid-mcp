@@ -462,7 +462,7 @@ end)
 ---------------------------------------------------------------- tools: registry and cleanup
 local CLEAR_WHAT = { all = true, sprites = true, overlays = true, falling = true, notices = true, textures = true, models = true, hooks = true }
 
-Z.tool("clear_visuals", "Remove client visuals everywhere (or args.player): args {what? = all|sprites|overlays|falling|notices|textures|models|hooks, id?}. 'all' clears sprites, overlays, falling items, notices and script hooks (textures, models and client scripts stay). With id only that sprite/overlay/texture/model.", function(a)
+Z.tool("clear_visuals", "Remove client visuals everywhere (or args.player): args {what? = all|sprites|overlays|falling|notices|textures|models|hooks, id?}. 'all' clears sprites, overlays, falling items, notices, script hooks and moving 3D entities (textures, models and client scripts stay). With id only that sprite/overlay/texture/model.", function(a)
     local what = tostring(a.what or "all")
     if not CLEAR_WHAT[what] then error("args.what must be one of all, sprites, overlays, falling, notices, textures, models, hooks") end
     local id = a.id and checkId(tostring(a.id), "id") or nil
@@ -474,6 +474,8 @@ Z.tool("clear_visuals", "Remove client visuals everywhere (or args.player): args
         if what == "models" then if id then s.models[id] = nil else s.models = {} end end
     end
     V.enqueue("clear", { what = what, id = id }, player)
+    -- moving 3D entities (Api/Models.lua) go with "all" too; their registry stays in Models.lua
+    if what == "all" and not id and not player and Z.tools.entity3d_remove then pcall(Z.tools.entity3d_remove.fn, { all = true }) end
     return { cleared = what, id = id }
 end)
 

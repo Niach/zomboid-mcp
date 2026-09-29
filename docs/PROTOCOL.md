@@ -261,6 +261,7 @@ Workshop mod runs the client.
 | `texResult` | `{id, gen, ok, w?, h?, bytes?, err?}` | after a texture was written and loaded (or failed). Event `client_texture`. |
 | `fileResult` | `{id, gen, path, ok, bytes?, err?}` | after a `file` push was written. Event `client_file`. |
 | `modelResult` | `{id, gen, name, ok, err?}` | after a `model` registration. Event `client_model`. |
+| `e3dResult` | `{id, ok, model, err?, tries?}` | after a 3D entity's scene object was created or failed (`createModel`). Event `client_entity3d`. |
 | `pong` | `{version, sprites, textures, models, execs, captured}` | answer to `ping` (`visuals_list` sends one). Event `client_pong`. |
 
 ## Server → client
@@ -271,6 +272,7 @@ Workshop mod runs the client.
 | `scriptRemove` | `{name}` | forget a client script and drop every hook registered under `name` (`ZMCPClient.off(name)`). |
 | `file` | `{id, gen, part, total, data, path}` | base64 chunks of any file → `~/Zomboid/Lua/<path>` (parent dirs are created; `..` refused). Reply `fileResult`. |
 | `model` | `{id, gen, mesh, texture, scale}` | runtime 3D model: once both files (`mesh` = `media/….x`, `texture` = `media/….png`, relative to the Lua dir) are present, `ModelScript.new()` + `setModule(Base)` + `InitLoadPP` + `Load` + `addModelScript` under the name `zmcp_<id>_<gen>`; `ZMCPClient.models.name(id)` returns it. Reply `modelResult`. |
+| `e3d`, `e3dMove`, `e3dRotate`, `e3dRemove` | see the `e3d` section below | moving 3D entities on the transparent `UI3DScene` layer (`ZMCPClient.e3d`): create/replace, motion (path or tween), rotation/spin/roll, remove. Reply `e3dResult`. |
 | `capture` | `{on}` | screen apps: the overlay consumes mouse events and is brought to the top (`on`), or is released (click-through, `backMost`). |
 | `tex` | `{id, gen, part, total, data}` | base64 PNG chunk. Complete → decoded (pure Lua, arithmetic only) into `~/Zomboid/Lua/zmcp_tex_<id>_<gen>.png` via `getFileOutput`, loaded with `getTexture(absolutePath)`. New generation = new file name because textures are cached by path. Reply `texResult`. |
 | `pixel` | `{id, def}` | art without a PNG: `def` = JSON `{w, h, palette = {a = [r,g,b,a]}, rows = ["aab.", ...]}`, drawn with `drawRect`. Usable wherever a texture id is. |
@@ -290,6 +292,37 @@ Workshop mod runs the client.
 
 `heal`, `cure`, `teleport`, `halo`, `notify`, `chat` and `say` are meant for server scripts too:
 `ZMCP.toClients("heal", {}, ZMCP.player("niach"))`.
+
+## `e3d`, `e3dMove`, `e3dRotate`, `e3dRemove` (to everyone; `e3d` also to one late joiner)
+Moving 3D entities (ZOM-11, `Api/Models.lua` → `ZMCPClient.e3d` in `client/ZomboidMCP/ClientModels.lua`). The
+client draws them on a transparent full-screen `UI3DScene` layer synced to the iso camera (see
+`docs/ENGINE_NOTES.md`, "Moving 3D entities") and simulates the motion locally; the server only stores the state.
+
+`e3d` creates or replaces an entity:
+
+| arg | type | description |
+| --- | --- | --- |
+| `id` | string | entity id; the scene object is `zmcp_e3d_<id>` |
+| `model` | string | `model_upload` id (resolved through `ZMCPClient.models.name`) or a vanilla ModelScript name |
+| `upload` | boolean | the server knows `model` as one of its uploads: wait for the registration instead of trying the name verbatim |
+| `x`, `y`, `z` | number | world position (tiles, `z` = level) |
+| `h` | number | height above the ground in tiles (model units) |
+| `scale` | number | extra scale on top of the ModelScript scale |
+| `rx`, `ry`, `rz` | number | base rotation in degrees (`rotateXYZ` order) |
+| `spin` | string | `"dx,dy,dz"` degrees per second, added since creation |
+| `roll` | number | wheel radius in tiles: the entity turns into its travel direction and rotates about model Z by `-distance / radius` |
+| `face` | boolean | turn into the travel direction only |
+| `path`, `speed`, `loop` | string, number, string | waypoints `"x,y,z;x,y,z"` walked from `x,y,z` at `speed` tiles/s; `loop` \| `pingpong` \| `once` |
+| `tox`, `toy`, `toz`, `dur`, `ease` | number, …, boolean | tween from `x,y,z` to the target over `dur` seconds (`ease` = smoothstep) |
+| `elapsed` | number | seconds the motion has already run (late joiners start in phase) |
+
+`e3dMove {id, x?, y?, z?, path?, speed?, loop?, tox?, toy?, toz?, dur?, ease?, elapsed?}` freezes the current
+position, optionally jumps to `x,y,z`, then starts the new motion. `e3dRotate {id, rx?, ry?, rz?, spin?, roll?,
+face?, h?, scale?}` changes the rotation state (`spin = ""` / `roll = 0` switch them off). `e3dRemove {id?}`
+removes one entity or all.
+
+Client → server reply `e3dResult {id, ok, model, err?, tries?}` after `createModel` succeeded or failed (logged as
+event `client_entity3d`). A model that is not registered yet is retried every 0.5 s (uploads) or 2 s (names).
 
 ## Rendering
 
@@ -317,7 +350,8 @@ Workshop mod runs the client.
 texSrc, gen, scale, mesh, texture}}, sprites = {id → args}, cscripts = {name → {file}} }`. Only metadata is stored;
 the data lives in files in the Lua cache dir (`zmcp_tex_<id>.b64`, `zmcp_model_<id>.x.b64` / `.png.b64`,
 `zmcp_cscript_<name>.lua.txt`), read and streamed on demand (server heap). Late joiners get, in order, textures,
-models, client scripts, sprites.
+models, client scripts, sprites; `Api/Models.lua` keeps `visuals.entities3d = {id → {model, x, y, z, h, scale, rx, ry, rz,
+spin, roll, face, motion}}` in the same table and resends it as `e3d` on `hello` (with `elapsed`).
 
 Upload flow through the MCP: `texture_upload {id, png_path}` (or `png_base64`) and `model_upload {id, mesh_path,
 png_path, scale}`; the MCP base64-encodes local files, the game copies the base64 into its own file and streams

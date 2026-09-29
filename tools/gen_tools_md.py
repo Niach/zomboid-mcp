@@ -26,6 +26,8 @@ GROUPS = [
     ("Visuals (client push)", ["texture_upload", "texture_pixel", "model_upload", "model_place", "world_sprite",
                                "falling_items", "overlay_draw", "server_message", "capture_input", "visuals_list",
                                "clear_visuals"]),
+    ("Moving 3D entities (client push)", ["entity3d_spawn", "entity3d_move", "entity3d_rotate", "entity3d_remove",
+                                          "entity3d_list"]),
     ("Server admin", ["server_console"]),
 ]
 
