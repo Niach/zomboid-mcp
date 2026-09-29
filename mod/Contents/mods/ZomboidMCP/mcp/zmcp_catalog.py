@@ -1,46 +1,51 @@
-"""Static tool catalogue for the Zomboid MCP server.
+"""Tool catalogue for the Zomboid MCP server (scripting-first, see the top of docs/PLAN.md).
 
-These descriptions and JSON schemas are the main documentation an MCP client
-(Claude) sees, so each one states:
+The primary tools are ``run_lua_server`` and ``run_lua_client`` plus persistent
+script modules: Claude writes Lua and runs it live, guided by the "zomboid engine
+handbook" skill. A small curated set covers the most common operations. These
+descriptions and JSON schemas are the main documentation an MCP client sees, so
+each one states where the code runs, **authority** (server-owned and synced to
+everyone vs. client-owned and pushed to the client mod), **who sees** the effect,
+how return values and errors come back, and the **limits** we know about.
 
-* **authority**: whether the effect is applied by the server (authoritative,
-  synced to everyone) or has to be pushed to a client (player position, body
-  state, visuals), and
-* **who sees it** and the **limits** we know about (loaded area only, sizes,
-  cooldowns, what needs the client mod).
-
-Every tool has ``game``: the name of the tool on the Lua side (``None`` when
-the MCP process answers it itself). Tools registered in the running game that
-are not listed here are exposed too, as passthrough tools with a free-form
-argument object.
+Every tool has ``game``: the name of the tool on the Lua side (``None`` when the
+MCP process answers it itself). Tools registered in the running game that are not
+listed here are exposed too, as passthrough tools with a free-form argument object.
 """
 
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
-SERVER_INSTRUCTIONS = """\
-Zomboid MCP controls a running Project Zomboid (Build 42) game through the ZomboidMCP mod.
+HANDBOOK = ("the \"zomboid engine handbook\" skill (skill/SKILL.md in the mod: categorized map of every Lua-reachable "
+            "engine function, guides for overlays, textures, 3D models, world/tiles, items, zombies, vehicles, weather, "
+            "players and scenes, tested snippets and all known B42 gotchas)")
 
-How the game side works:
-- Every tool call is written as a file into the game's Zomboid/Lua directory and executed by the server-side Lua
-  bridge on the next game tick, so a call normally takes well under a second. The server ticks only while at least
-  one player is online: a dedicated server with PauseEmpty=true is frozen when empty, and tool calls then time out
-  with a "server paused" error. Call `status` first (it never needs the game to respond) and `wait_for` to block
-  until somebody joins.
-- Authority: the server owns zombies, items, world objects, vehicles, weather, time, XP, traits and god mode; those
-  tools take effect for everybody immediately. A player's position, body damage, infection, appearance and stats are
-  owned by that player's client, so `teleport`, `heal`, `cure`, `set_appearance` and every visual tool (`overlay_draw`,
-  `texture_upload`, `world_sprite`, `falling_items`, `client_exec`, `lua_eval_client`) are pushed to the client mod
-  and only work for players running the ZomboidMCP mod (all players on a server that requires it).
-- Only the loaded area (roughly 100 tiles around online players) exists on the server. World queries and spawns
-  outside it fail; teleport a player there first.
-- Player names: the `player` argument accepts the account name or the character name and may be omitted when exactly
-  one player is online.
-- Escape hatches: `lua_eval_server` runs arbitrary Lua on the server, `lua_eval_client` on a client, `module_install`
-  hot-loads a persistent Lua module without a restart, `server_console` sends raw admin console commands (dedicated
-  servers reached over ssh). `api_search` and `lua_examples` look up engine signatures and vanilla Lua usage before
-  you write Lua. Prefer the curated tools when one fits: they validate arguments and report what happened.
-- `events_poll` returns deaths, joins, tool errors and chat-like notes appended by the game since your last call.
+SERVER_INSTRUCTIONS = """\
+Zomboid MCP controls a running Project Zomboid (Build 42) game through the ZomboidMCP mod. It is scripting-first:
+you write Lua and run it live.
+
+- `run_lua_server` runs Lua in the server (or single-player host) Lua state; `run_lua_client` runs Lua on every
+  connected client or one player's client. `script_install` makes a server script persistent (re-run on every bridge
+  load and server start), `script_list` / `script_remove` manage them. Before writing Lua, read the "zomboid engine
+  handbook" skill (skill/SKILL.md in the mod) and use `api_search` (engine signatures with Lua call hints) and
+  `lua_examples` (how vanilla Lua calls it). The handbook's gotchas are real: Kahlua has no `io`/`bit`, overloads are
+  chosen by argument count, `tostring()` without an argument throws, `require` of new files fails at runtime.
+- A handful of curated tools cover the most common operations with validated arguments: `status`, `players_list`,
+  `texture_upload`, `model_upload`, `spawn_item`, `spawn_vehicle`, `spawn_zombies`, `world_sprite`,
+  `object_3d_static`, `object_3d_moving`, `falling_items`, `set_weather`, `set_time`, `server_console`. Everything
+  else is a script.
+- Authority: the server owns zombies, items, world objects, vehicles, weather, time, XP, traits and god mode; code
+  run on the server takes effect for everybody at once. A player's position, body damage, infection, appearance,
+  stats and everything drawn on screen (overlays, textures, sprites, 3D models) belong to that player's client, so
+  run that code with `run_lua_client`; it reaches players running the ZomboidMCP mod (all players on a server that
+  requires it).
+- Every tool call is a file in the game's Zomboid/Lua directory executed by the server-side bridge on the next game
+  tick (well under a second). The server ticks only while a player is online: a dedicated server with PauseEmpty=true
+  is frozen when empty and calls time out with a "server paused" error. Call `status` first (never blocks) and
+  `wait_for` to block until somebody joins. `server_console` works even while paused.
+- Only the loaded area (roughly 100 tiles around online players) exists on the server; squares outside it are nil.
+- `player` arguments accept the account name or the character name and may be omitted when exactly one player is
+  online. `events_poll` returns what the game appended since your last call (script errors, joins, deaths, notes).
 - Everything you do is visible to real players immediately. Anything destructive or affecting a player's character
   (hordes, killing, teleporting, changing traits) should be what they asked for.
 """
@@ -84,9 +89,10 @@ def _arr(desc, items, **kw):
 
 
 PLAYER = _s("Account name or character name of an online player. Optional when exactly one player is online.")
-X = _i("World tile x (east). Use players_list / player_info for a reference position.")
+X = _i("World tile x (east). Use players_list for a reference position.")
 Y = _i("World tile y (south).")
 Z = _i("Floor level, 0 = ground.", default=0, minimum=-32, maximum=32)
+TIMEOUT = _n("How long to wait for the result, in seconds.", default=20, minimum=1, maximum=600)
 
 TOOLS = []
 
@@ -96,13 +102,100 @@ def tool(name, description, schema, game=None, local=None):
                   "game": game, "local": local})
 
 
+# ------------------------------------------------------------------ scripting (primary)
+tool("run_lua_server", """
+Run a Lua chunk in the server Lua state (the dedicated server, or the host in single-player / co-op) and return what
+it returns. THE primary tool: anything the engine can do, you can script here. Consult %s first, then `api_search`
+for exact signatures.
+
+Where it runs: on the game thread between two ticks, with full engine access (getOnlinePlayers(), getCell(),
+getClimateManager(), sendServerCommand(...), ZMCP helpers: ZMCP.player(name), ZMCP.players(), ZMCP.square(x,y,z),
+ZMCP.zombiesNear(x,y,z,r), ZMCP.toClients(cmd, args[, player]), ZMCP.event(kind, data), ZMCP.readFile/writeFile).
+Authority: server-owned state (zombies, items, world objects, vehicles, weather, time, XP, traits, god mode) changes
+for everyone immediately and is saved with the world. Client-owned state (player position, body/infection,
+appearance, stats, anything drawn) cannot be changed reliably from here: use run_lua_client.
+Return values: use `return`; one value comes back as JSON, several as an array. Tables become JSON objects/arrays,
+Java objects are stringified (return fields such as p:getX() instead). nil returns null.
+Errors: compile errors and runtime errors come back as a tool error with the Lua message and line; the server keeps
+running. print() output goes to the server console, not to you (use server_console or return the text).
+Limits: the chunk blocks the whole server while it runs, so keep it under ~100 ms and never loop waiting for
+something (use ZMCP.tickHooks.<name> = function(t) ... end for periodic work, and script_install for anything that
+must survive a reload). Only the loaded area near players exists. Globals persist between calls in the same Lua
+state; `require` of new files does not work at runtime (paste the code instead).
+""" % HANDBOOK, _obj({
+    "code": _s("Lua source. Example: 'local p = ZMCP.player(\"niach\"); return {x = p:getX(), y = p:getY()}'."),
+    "timeout_s": TIMEOUT,
+}, ["code"]), game="lua_eval")
+
+tool("run_lua_client", """
+Run a Lua chunk on players' clients: every connected client with the ZomboidMCP mod, or one player's client. Use it
+for everything the client owns or draws: overlays and screen apps (ISUIElement, drawTextureScaled, isoToScreenX/Y),
+runtime textures and world sprites, 3D models on world items, camera, sounds only one player should hear, and
+client-authoritative player state (position via setX/setY/setZ, body damage and infection, appearance via
+getHumanVisual() + sendHumanVisual, stats via getStats()). See %s for the drawing and world-anchoring recipes.
+
+Where it runs: the code is chunked over sendServerCommand (about 3 kB per message) to the target clients, executed
+there with loadstring, and each client sends its return value back; the round trip takes two ticks plus network.
+`getPlayer()` is the local player on each client; `isClient()` is true; server-only functions are unavailable.
+Authority: effects are client-side. Visuals are seen only by the clients that ran the code (all of them when
+`player` is omitted); position/body/appearance changes are then synced by the engine to everyone. Nothing here
+changes the saved world; use run_lua_server for that.
+Return values: one value per client, as {player: value} (JSON-encoded like run_lua_server). Clients that did not
+answer within timeout_s are listed as missing.
+Errors: per-client Lua errors come back in the result (and in events_poll as 'client_error'); a broken chunk never
+crashes a client's game, but an infinite loop freezes that player's game: keep it short and hook into Events or a
+UI element's render/update for continuous work.
+Limits: requires the client mod (players without it silently receive nothing). Not persistent: late joiners do not
+get it unless `persist` is true, in which case it is re-sent to every player who joins until cleared with
+run_lua_client({code: 'ZMCPClient.clear()'}) or a server restart.
+""" % HANDBOOK, _obj({
+    "code": _s("Lua source to run on the client. `getPlayer()` is the local player."),
+    "player": _s("Only this player's client; default all connected clients."),
+    "persist": _b("Also send to players who join later.", default=False),
+    "timeout_s": _n("How long to wait for client replies.", default=10, minimum=1, maximum=120),
+}, ["code"]), game="lua_eval_client")
+
+tool("script_install", """
+Install or update a persistent server script module: the Lua source is written to the game's Lua directory as
+zmcp_mod_<name>.lua, executed right now in the server Lua state (like run_lua_server), and recorded so it runs again
+on every bridge reload and server start, before players join. Use it for anything that must keep working: new tools
+(ZMCP.tool(name, desc, fn) makes them appear in tools/list), tick hooks (ZMCP.tickHooks.<name> = function(t) end),
+event handlers, and client code that should be pushed to every player on join (ZMCP.toClients from a handler).
+Return value: the module's return value plus the file name and whether it was persisted.
+Errors: a compile or runtime error is returned and the module is not recorded (the previous version, if any, stays).
+Rules from %s: make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers and
+Events.X.Remove them before adding again), keep big data in files rather than ModData, and never block the tick.
+Server-authoritative like run_lua_server; scripts are stored on the server only (single-player: the host's save).
+""" % HANDBOOK, _obj({
+    "name": _s("Module name (letters, digits, _ and -). Reusing a name replaces that module.",
+               pattern="^[A-Za-z0-9_-]{1,64}$"),
+    "code": _s("Lua source of the module."),
+}, ["name", "code"]), game="module_install", local="script_install")
+
+tool("script_list", """
+List installed persistent server script modules with file name and install time. Read-only, server-side. Use
+run_lua_server with ZMCP.readFile('zmcp_mod_<name>.lua') to read a module's source.
+""", _obj({}), game="module_list")
+
+tool("script_remove", """
+Forget a persistent script module so it no longer runs on bridge reloads and restarts. The file stays in the Lua
+directory and anything the module already registered (tools, tick hooks, event handlers) stays active until the
+module's own cleanup code runs or the server restarts; to undo immediately, run the cleanup with run_lua_server.
+""", _obj({"name": _s("Module name.")}, ["name"]), game="module_remove")
+
 # ------------------------------------------------------------------ discover
 tool("status", """
 Snapshot of the game as seen by the MCP process: bridge liveness (live / paused / stale / not_running with a hint),
 heartbeat age, online players with position and health, in-game time, bridge version, registered game tools and
-installed modules, and how this MCP is connected. Answered from the heartbeat file the server writes every 2 s, so it
-never blocks and works while the server is paused. Call it first in a session and whenever a tool times out.
+installed script modules, and how this MCP is connected. Answered from the heartbeat file the server writes every 2 s,
+so it never blocks and works while the server is paused. Call it first in a session and whenever a tool times out.
 """, _obj({}), local="status")
+
+tool("players_list", """
+List online players: account name, character name, position (x,y,z), health and dead/alive. Server-side, read-only,
+instant. In single-player the local player is returned. For anything more (traits, skills, inventory, infection, what
+is around them) write a run_lua_server chunk using ZMCP.player(name).
+""", _obj({}), game="players_list")
 
 tool("wait_for", """
 Block until the game bridge is alive and a condition holds: a named player is online, or at least `min_players`
@@ -114,27 +207,16 @@ condition is met or a timeout error.
     "timeout_s": _n("Give up after this many seconds.", default=300, minimum=1, maximum=3600),
 }), local="wait_for")
 
-tool("players_list", """
-List online players: account name, character name, position (x,y,z), health, dead/alive, and what the server knows
-about their state. Server-side, read-only, instant. In single-player the local player is returned.
-""", _obj({}), game="players_list")
-
-tool("player_info", """
-Detailed server-side view of one player: position, health, infection flag as the server sees it (the client owns the
-truth), traits, skill levels, equipped weapon, inventory summary, nearby zombie count. Read-only.
-""", _obj({"player": PLAYER}), game="player_info")
-
-tool("world_query", """
-Inspect the world around a point: the grid square (room, outside, sprites), objects with their sprite names, items on
-the ground, zombies, vehicles and players within `radius` tiles. Server-side, read-only, limited to the loaded area
-(near online players) and to a radius of 50 tiles. Use it to find sprite names to reuse with place_object and to check
-what spawn/place tools did.
+tool("events_poll", """
+Events the game appended since your last call: script/tool errors, client errors from run_lua_client, bridge reloads,
+module installs, player deaths and joins, and notes your own scripts write with ZMCP.event(kind, data). Each event is
+{t: unix seconds, kind, data}. The first call in a session returns the recent tail; pass the returned `cursor` (a byte
+offset) to resume explicitly. Read-only and works while the server is paused.
 """, _obj({
-    "x": X, "y": Y, "z": Z,
-    "radius": _i("Radius in tiles (1..50).", default=5, minimum=0, maximum=50),
-    "include": _arr("Categories to include; default all.", {
-        "type": "string", "enum": ["square", "objects", "items", "zombies", "vehicles", "players"]}),
-}, ["x", "y"]), game="world_query")
+    "cursor": _i("Byte offset returned by the previous call; omit to continue from where this session left off."),
+    "limit": _i("Return at most this many (newest) events.", default=100, minimum=1, maximum=2000),
+    "kinds": _arr("Only these event kinds, e.g. ['client_error','module_error'].", {"type": "string"}),
+}), local="events_poll")
 
 tool("api_search", """
 Search the Project Zomboid engine API index: every Java class the Lua VM can reach (fields, constructors, methods
@@ -163,139 +245,63 @@ call shape the engine expects.
     "context": _i("Context lines for the grep fallback only.", default=0, minimum=0, maximum=20),
 }, ["query"]), local="lua_examples")
 
-tool("events_poll", """
-Events the game appended since your last call: player deaths and joins, tool errors, bridge reloads, chat-like notes
-from server modules. Each event is {t: unix seconds, kind, data}. The first call in a session returns the recent tail;
-pass the returned `cursor` (a byte offset) to resume explicitly. Read-only and works while the server is paused.
+# ------------------------------------------------------------------ curated: assets
+tool("texture_upload", """
+Upload a PNG (base64) to every connected client and register it under a texture id for world_sprite, object_3d_*
+and your own run_lua_client drawing code (ZMCPClient.texture(id) returns the Texture). Client-side: the image is
+chunked over the network (~3 kB per message, about 1 s per 30 kB), written into each client's Zomboid/Lua folder under
+a fresh file name (textures are cached by path) and loaded with getTexture. Nothing is stored on the server. Late
+joiners receive all uploaded textures. Keep images ≤ 256×256 and ≤ 100 kB where possible. Returns the texture id
+and which clients loaded it (with width/height).
 """, _obj({
-    "cursor": _i("Byte offset returned by the previous call; omit to continue from where this session left off."),
-    "limit": _i("Return at most this many (newest) events.", default=100, minimum=1, maximum=2000),
-    "kinds": _arr("Only these event kinds, e.g. ['death','join','tool_error'].", {"type": "string"}),
-}), local="events_poll")
+    "id": _s("Texture id to reference later, e.g. 'snail'."),
+    "png_base64": _s("PNG file contents, base64-encoded. Large values are passed to the game as a file automatically."),
+}, ["id", "png_base64"]), game="texture_upload")
 
-# ------------------------------------------------------------------ players
-tool("teleport", """
-Move a player to a tile or next to another player. Position is client-authoritative: the move is pushed to that
-player's client mod and confirmed on the next tick, so the player needs the mod. Everyone sees the player appear at
-the target. The target square need not be loaded (the client loads it). Affects a character: only when asked.
+tool("model_upload", """
+Upload a 3D model (Wavefront .obj or PZ .fbx/.x, plus an optional texture id from texture_upload) to every connected
+client and register it as a runtime ModelScript under a model id, for object_3d_static / object_3d_moving and for
+your own run_lua_client code (ZMCPClient.model(id)). Client-side, chunked like texture_upload; keep meshes small
+(a few thousand triangles, ≤ 300 kB). Late joiners receive all uploaded models. Returns the model id and which
+clients loaded it.
 """, _obj({
-    "player": PLAYER, "x": X, "y": Y, "z": Z,
-    "to_player": _s("Instead of x/y/z: teleport next to this online player."),
-}), game="teleport")
+    "id": _s("Model id, e.g. 'snail_mesh'."),
+    "model_base64": _s("Model file contents, base64-encoded. Large values are passed to the game as a file automatically."),
+    "format": _s("Model file format.", enum=["obj", "fbx", "x"], default="obj"),
+    "texture": _s("Texture id from texture_upload to apply; omit for the model's own material."),
+}, ["id", "model_base64"]), game="model_upload")
 
-tool("heal", """
-Restore a player to full body health: wounds, bleeding, fractures, pain, and reset moodle-driving stats (hunger,
-thirst, fatigue, panic). Body state is client-authoritative, so the fix is pushed to the player's client mod; the
-server-side vanilla sync is applied as well. Visible to everyone within a second. Does not remove zombie infection
-(use cure).
-""", _obj({"player": PLAYER}), game="heal")
-
-tool("cure", """
-Remove the zombie infection (Knox virus) and infected wounds from a player. Client-authoritative like heal; without
-the client mod the server-side attempt is overwritten by the client within seconds. Reports whether the client
-confirmed the cure.
-""", _obj({"player": PLAYER}), game="cure")
-
-tool("god_mode", """
-Toggle invincibility for a player (the server's godmode flag, same as the admin command). Server-authoritative and
-synced to the player's client; other players see nothing but the player takes no damage. Persists until turned off.
-""", _obj({"player": PLAYER, "enabled": _b("true to enable, false to disable.", default=True)}, ["enabled"]),
-     game="god_mode")
-
-tool("set_traits", """
-Add and/or remove character traits by their CharacterTrait constant name (e.g. 'BRAVE', 'HANDY', 'CLUMSY'; use
-api_search 'CharacterTrait' for the list). Server-authoritative and persisted with the character; effects apply on
-the player's next update. Affects a character: only when asked.
-""", _obj({
-    "player": PLAYER,
-    "add": _arr("Trait constants to add.", {"type": "string"}),
-    "remove": _arr("Trait constants to remove.", {"type": "string"}),
-}), game="set_traits")
-
-tool("set_skills", """
-Set skill (perk) levels 0..10 by perk name (e.g. 'Aiming', 'Woodwork', 'Fitness', 'Strength'; api_search 'Perks' for
-names). Server-authoritative via XP grants without multipliers; the client shows the new level within a tick. Lowering
-a level is not supported by the engine and is reported as skipped.
-""", _obj({
-    "player": PLAYER,
-    "skills": {"type": "object", "description": "Map of perk name to target level 0..10.",
-               "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 10}},
-}, ["skills"]), game="set_skills")
-
-tool("set_appearance", """
-Change hair style, beard style and hair colour of a player. Appearance is client-authoritative: pushed to the player's
-client mod and then broadcast by the engine, so everyone sees it. Style names come from media/hairStyles/*.xml
-(lua_examples 'hairStyles'). Unverified in 42.21 for some fields; the result says what was applied.
-""", _obj({
-    "player": PLAYER,
-    "hair": _s("Hair style id, e.g. 'Bald', 'Long', 'Mohawk'."),
-    "beard": _s("Beard style id, or '' for none."),
-    "hair_color": _arr("RGB 0..1, e.g. [0.9, 0.1, 0.1].", {"type": "number", "minimum": 0, "maximum": 1},
-                       minItems=3, maxItems=3),
-}), game="set_appearance")
-
-tool("give_item", """
-Put items straight into a player's main inventory. Server-authoritative (AddItem + sendAddItemToContainer): the item
-appears for the player at once and is real for everyone. Item type is 'Module.Name' like 'Base.Axe', 'Base.Banana';
-count is capped at 100 per call. Weight limits are ignored (the player may become overloaded).
-""", _obj({
-    "player": PLAYER,
-    "item": _s("Full item type, e.g. 'Base.Katana'."),
-    "count": _i("How many.", default=1, minimum=1, maximum=100),
-}, ["item"]), game="give_item")
-
-tool("snapshot", """
-Save a named snapshot of a player's character: skills, traits, inventory (item types and conditions), position, health.
-Stored server-side in mod data (survives restarts). Use restore to bring it back, e.g. after a death. Read-only for
-the player.
-""", _obj({"player": PLAYER, "name": _s("Snapshot name; default 'auto'.", default="auto")}), game="snapshot")
-
-tool("restore", """
-Restore a player's character from a snapshot: skills and traits (server-authoritative), inventory (re-created
-server-side), and optionally position (pushed to the client). Overwrites the current character state. Affects a
-character: only when asked.
-""", _obj({
-    "player": PLAYER,
-    "name": _s("Snapshot name; default 'auto'.", default="auto"),
-    "position": _b("Also teleport to the saved position.", default=False),
-}), game="restore")
-
-# ------------------------------------------------------------------ world
+# ------------------------------------------------------------------ curated: spawning
 tool("spawn_item", """
-Drop items on the ground at a tile (real world items everyone can see and pick up). Server-authoritative
-(AddWorldInventoryItem). The square must be loaded (near a player). Up to 100 per call; large counts spread over
-`radius` tiles. Use give_item for inventories and falling_items for a visible fall from the sky.
+Create real items: on the ground at a tile, or in a player's main inventory. Server-authoritative
+(AddWorldInventoryItem / AddItem + sendAddItemToContainer): everyone sees them at once and can pick them up. Item
+type is 'Module.Name' like 'Base.Axe', 'Base.Banana'. Ground spawns need a loaded square (near a player); up to 100
+per call, spread over `radius` tiles. Inventory spawns ignore weight limits.
 """, _obj({
     "item": _s("Full item type, e.g. 'Base.Banana'."),
-    "x": X, "y": Y, "z": Z,
     "count": _i("How many.", default=1, minimum=1, maximum=100),
-    "radius": _i("Scatter within this many tiles.", default=0, minimum=0, maximum=20),
-}, ["item", "x", "y"]), game="spawn_item")
+    "player": _s("Put the items in this player's inventory instead of on the ground."),
+    "x": X, "y": Y, "z": Z,
+    "radius": _i("Scatter ground items within this many tiles.", default=0, minimum=0, maximum=20),
+}, ["item"]), game="spawn_item")
 
 tool("spawn_vehicle", """
 Spawn a vehicle by script name (e.g. 'Base.CarNormal', 'Base.PickUpTruck', 'Base.SportsCar'; api_search 'Vehicles'
-or lua_examples 'addVehicleDebug' for names) at a tile, facing a direction. Server-authoritative, appears for everyone
-at once, on loaded squares only. The vehicle spawns in random condition; use vehicle_fix to repair and refuel it.
+or lua_examples 'addVehicleDebug' for names) at a tile, facing a direction. Server-authoritative (addVehicleDebug):
+appears for everyone at once, on loaded squares only. `fixed` repairs every part and fills the tank; otherwise the
+vehicle spawns in random condition.
 """, _obj({
     "script": _s("Vehicle script name, e.g. 'Base.CarNormal'."),
     "x": X, "y": Y, "z": Z,
     "direction": _s("Facing direction.", enum=["N", "NE", "E", "SE", "S", "SW", "W", "NW"], default="S"),
+    "fixed": _b("Repair all parts and refuel after spawning.", default=True),
 }, ["script", "x", "y"]), game="spawn_vehicle")
-
-tool("vehicle_fix", """
-Repair all parts and/or fill the gas tank of the vehicle a player is in or the nearest vehicle to a tile. Server-
-authoritative (vehicle:repair, part mod data transmit); other players see the repaired state. Only loaded vehicles.
-""", _obj({
-    "player": _s("Use this player's current or nearest vehicle."),
-    "x": X, "y": Y, "z": Z,
-    "repair": _b("Repair every part to full condition.", default=True),
-    "refuel": _b("Fill the gas tank.", default=True),
-}), game="vehicle_fix")
 
 tool("spawn_zombies", """
 Spawn a group of zombies at a tile (addZombiesInOutfit). Server-authoritative: real zombies for everyone. `count` is
 capped at 50 per call; the square must be loaded. Optional outfit name (e.g. 'Police', 'Fireman', 'Nurse';
-lua_examples 'Outfit' for names). This is a horde event: dangerous for players, do it only when asked.
+lua_examples 'Outfit' for names). This is a horde event: dangerous for players, do it only when asked. For passive
+puppet actors (zombies that do not attack) see the handbook's zombies guide and use run_lua_server.
 """, _obj({
     "x": X, "y": Y, "z": Z,
     "count": _i("Number of zombies (1..50).", default=5, minimum=1, maximum=50),
@@ -303,135 +309,16 @@ lua_examples 'Outfit' for names). This is a horde event: dangerous for players, 
     "female_chance": _i("Percent chance each zombie is female (0..100).", default=50, minimum=0, maximum=100),
 }, ["x", "y"]), game="spawn_zombies")
 
-tool("kill_zombies_area", """
-Kill every zombie within `radius` tiles of a point (or of a player). Server-authoritative; bodies drop for everyone.
-Limited to the loaded area and a radius of 80. Returns the number killed.
-""", _obj({
-    "player": _s("Centre on this player instead of x/y/z."),
-    "x": X, "y": Y, "z": Z,
-    "radius": _i("Radius in tiles (1..80).", default=10, minimum=1, maximum=80),
-}), game="kill_zombies_area")
-
-tool("place_object", """
-Place a vanilla tile sprite as a new world object on a square (IsoObject + transmitAddObjectToSquare), e.g. walls
-('walls_exterior_house_01_0'), furniture, fences, lamps, decorations. Server-authoritative, persistent in the save,
-visible to everyone. The square must be loaded. Sprite names: world_query on an existing object, or lua_examples.
-Placed objects have no collision or function unless the sprite's properties provide them.
-""", _obj({
-    "sprite": _s("Tile sprite name, e.g. 'walls_exterior_house_01_0'."),
-    "x": X, "y": Y, "z": Z,
-    "name": _s("Optional object name (shown in world_query).", default="ZomboidMCP"),
-}, ["sprite", "x", "y"]), game="place_object")
-
-tool("remove_object", """
-Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Selects by
-sprite name and/or object index (from world_query); by default only objects created by place_object are removed, set
-`any` to true to delete vanilla map objects (irreversible without a map reset).
-""", _obj({
-    "x": X, "y": Y, "z": Z,
-    "sprite": _s("Only objects with this sprite name."),
-    "index": _i("Object index on the square, from world_query."),
-    "any": _b("Allow removing objects that were not placed by this mod.", default=False),
-}, ["x", "y"]), game="remove_object")
-
-tool("set_weather", """
-Change the weather for everyone: start rain of a given intensity, a storm, or clear the sky. Server-authoritative via
-the climate manager (transmitServerStartRain / TriggerStorm / StopWeather); clients follow within seconds. The
-simulation may drift back to natural weather over time.
-""", _obj({
-    "mode": _s("Weather to set.", enum=["rain", "storm", "clear"]),
-    "intensity": _n("Rain/storm intensity 0..1.", default=0.8, minimum=0, maximum=1),
-}, ["mode"]), game="set_weather")
-
-tool("set_time", """
-Set the in-game time of day (0..24 hours) for the whole server; day/month/year are left alone. Server-authoritative
-and synced to all clients. Sudden jumps affect darkness, zombie behaviour and player fatigue.
-""", _obj({"hour": _n("Hour of day, e.g. 6.5 for 06:30.", minimum=0, maximum=24)}, ["hour"]), game="set_time")
-
-tool("sound", """
-Play a named game sound at a tile or at a player (playServerSound). Server-authoritative: heard by every player in
-range. Sound names are the engine's sound bank names, e.g. 'ZombieThumpGeneric', 'BurglarAlarm', 'ChurchBell'
-(lua_examples 'playSound' for examples). Also attracts zombies like any world sound.
-""", _obj({
-    "name": _s("Sound bank name."),
-    "player": _s("Play at this player's position instead of x/y/z."),
-    "x": X, "y": Y, "z": Z,
-}, ["name"]), game="sound")
-
-tool("lightning", """
-Trigger a lightning flash (and optional strike sound / rumble) at a tile. Server-authoritative
-(transmitServerTriggerLightning): everyone nearby sees the flash. Purely audiovisual, no damage or fire.
-""", _obj({
-    "x": X, "y": Y, "z": Z,
-    "strike": _b("Play the strike sound.", default=True),
-    "light": _b("Flash the light.", default=True),
-    "rumble": _b("Distant rumble.", default=True),
-}, ["x", "y"]), game="lightning")
-
-tool("server_message", """
-Broadcast a text message to all players (server chat / on-screen server message). Server-authoritative. Keep it
-short; the chat window wraps at roughly 100 characters.
-""", _obj({"text": _s("Message text.", maxLength=500)}, ["text"]), game="server_message")
-
-# ------------------------------------------------------------------ visuals (client push)
-tool("client_exec", """
-Run a Lua chunk on every connected client (or one player's client) that has the ZomboidMCP mod. Client-side only:
-use it for UI, drawing, camera, local effects, or anything client-authoritative (position, body state). The code is
-chunked over sendServerCommand (≈3 kB per message, large sources are fine but slower) and executed with loadstring;
-errors are reported back through events_poll as 'client_error'. Returns which clients acknowledged. Not persistent:
-late joiners do not receive it unless `persist` is true.
-""", _obj({
-    "code": _s("Lua source to run on the client. `getPlayer()` is the local player."),
-    "player": _s("Only this player's client; default all."),
-    "persist": _b("Re-send to players who join later (until clear_visuals).", default=False),
-}, ["code"]), game="client_exec")
-
-tool("overlay_draw", """
-Draw shapes and text on players' screens, anchored to the screen (HUD) or to a world position (follows the camera and
-zoom). Client-side visual pushed to every client with the mod (or one player); nothing changes in the world. Each
-overlay has an id you can update or clear (clear_visuals). Shapes: rect, line, text, texture (id from texture_upload),
-circle. Colours are RGBA 0..1. Overlays are lost on relog unless `persist`.
-""", _obj({
-    "id": _s("Overlay id; reusing an id replaces it.", default="default"),
-    "player": _s("Only this player's screen; default everyone."),
-    "anchor": _s("'screen' uses pixel coordinates; 'world' uses tile coordinates x/y/z per shape.",
-                 enum=["screen", "world"], default="world"),
-    "shapes": _arr("Shapes to draw.", {
-        "type": "object",
-        "properties": {
-            "type": {"type": "string", "enum": ["rect", "line", "text", "texture", "circle"]},
-            "x": _n("X (pixels or tiles)."), "y": _n("Y (pixels or tiles)."), "z": _n("Floor for world anchor.", default=0),
-            "x2": _n("Line end x."), "y2": _n("Line end y."),
-            "w": _n("Width (pixels, or tiles for world anchor)."), "h": _n("Height."),
-            "r": _n("Circle radius."),
-            "text": _s("Text to draw."), "font": _s("Font name.", enum=["Small", "Medium", "Large", "Title"], default="Medium"),
-            "texture": _s("Texture id from texture_upload."),
-            "color": _arr("RGBA 0..1.", {"type": "number"}, minItems=3, maxItems=4),
-        },
-        "required": ["type"], "additionalProperties": True,
-    }),
-    "ttl_s": _n("Remove automatically after this many seconds (0 = keep).", default=0, minimum=0),
-    "persist": _b("Also send to players who join later.", default=False),
-}, ["shapes"]), game="overlay_draw")
-
-tool("texture_upload", """
-Upload a PNG (base64) to every connected client and register it under a texture id for world_sprite and
-overlay_draw. Client-side: the image is chunked over the network, written into each client's Zomboid folder and loaded
-as a Texture; nothing is stored on the server. Keep images small (≤ 512×512, a few hundred kB) — upload time is about
-1 s per 30 kB. Late joiners receive all uploaded textures. Returns the texture id and which clients loaded it.
-""", _obj({
-    "id": _s("Texture id to reference later, e.g. 'snail'."),
-    "png_base64": _s("PNG file contents, base64-encoded. Large values are passed to the game as a file automatically."),
-}, ["id", "png_base64"]), game="texture_upload")
-
+# ------------------------------------------------------------------ curated: visuals
 tool("world_sprite", """
 Show an uploaded texture (or a vanilla texture name) in the world at a tile position, scaled in tiles, optionally
 moving along a path over time. Client-side visual on every client with the mod: everyone sees it in the same place,
-scaled with the camera zoom, but it has no collision and is not an object. Reuse an id to move/replace, clear_visuals
-to remove.
+drawn bottom-centre at the point, scaled with the camera zoom, always on top (no wall occlusion), but it has no
+collision and is not a world object. Reuse an id to move or replace it; ttl_s or an empty `texture` removes it.
+Sent to late joiners while it exists.
 """, _obj({
     "id": _s("Sprite id; reusing replaces it."),
-    "texture": _s("Texture id from texture_upload, or a vanilla texture name such as 'Item_Banana'."),
+    "texture": _s("Texture id from texture_upload, or a vanilla texture name such as 'Item_Banana'. Empty removes the sprite."),
     "x": _n("Tile x (fractional allowed)."), "y": _n("Tile y."), "z": _n("Floor.", default=0),
     "scale": _n("Width in tiles.", default=1, minimum=0.05, maximum=50),
     "path": _arr("Optional way-points; the sprite moves linearly between them.", {
@@ -440,13 +327,46 @@ to remove.
         "required": ["x", "y", "t"]}),
     "loop": _b("Repeat the path.", default=False),
     "ttl_s": _n("Remove after this many seconds (0 = keep).", default=0, minimum=0),
-    "persist": _b("Also send to late joiners.", default=True),
 }, ["id", "texture", "x", "y"]), game="world_sprite")
 
+tool("object_3d_static", """
+Place a static 3D model in the world: a real world item on a square whose ModelScript is replaced at runtime by an
+uploaded model (model_upload) or a vanilla model name, with scale and rotation. Verified flicker-free. The item is
+server-authoritative and saved (everyone sees it, it survives restarts) while the model swap is pushed to clients and
+re-applied for late joiners. Loaded squares only. Reuse an id to update; `remove` deletes the item.
+""", _obj({
+    "id": _s("Object id; reusing updates it."),
+    "model": _s("Model id from model_upload, or a vanilla model script name."),
+    "x": _n("Tile x (fractional allowed)."), "y": _n("Tile y."), "z": _n("Floor.", default=0),
+    "scale": _n("Uniform scale, 1 = the model's own size.", default=1, minimum=0.01, maximum=100),
+    "rotation": _n("Rotation around the vertical axis in degrees.", default=0),
+    "remove": _b("Remove the object instead.", default=False),
+}, ["id"]), game="object_3d_static")
+
+tool("object_3d_moving", """
+Show a moving/animated 3D model: an uploaded or vanilla model attached to a dynamic carrier entity that can follow
+a path, turn and be animated without the flicker that animated world items show (chunk FBO caching). Client-side
+visual pushed to every client with the mod (late joiners included while it exists); it has no collision and is not
+saved. Reuse an id to update the path or model; ttl_s or `remove` deletes it.
+""", _obj({
+    "id": _s("Object id; reusing updates it."),
+    "model": _s("Model id from model_upload, or a vanilla model script name."),
+    "x": _n("Start tile x."), "y": _n("Start tile y."), "z": _n("Floor.", default=0),
+    "scale": _n("Uniform scale.", default=1, minimum=0.01, maximum=100),
+    "path": _arr("Way-points; the object moves and turns along them.", {
+        "type": "object", "properties": {"x": _n("Tile x."), "y": _n("Tile y."), "z": _n("Floor."),
+                                         "t": _n("Seconds from start when this point is reached.")},
+        "required": ["x", "y", "t"]}),
+    "loop": _b("Repeat the path.", default=True),
+    "speed": _n("Playback speed multiplier for the path and animation.", default=1, minimum=0.01, maximum=100),
+    "ttl_s": _n("Remove after this many seconds (0 = keep).", default=0, minimum=0),
+    "remove": _b("Remove the object instead.", default=False),
+}, ["id"]), game="object_3d_moving")
+
 tool("falling_items", """
-Make items visibly fall from the sky around a point and become real ground items when they land. The fall animation
-is a client-side visual pushed to everyone with the mod; the landing spawns real server-authoritative items (like
-spawn_item) that anyone can pick up. Count ≤ 100, area must be loaded.
+Make items visibly fall from the sky around a point (or a player) and become real ground items when they land. The
+fall animation is a client-side visual pushed to everyone with the mod; the landing spawns real server-authoritative
+items (like spawn_item) that anyone can pick up. Count ≤ 100, the area must be loaded.
 """, _obj({
     "item": _s("Full item type, e.g. 'Base.Banana'."),
     "count": _i("How many.", default=10, minimum=1, maximum=100),
@@ -457,68 +377,21 @@ spawn_item) that anyone can pick up. Count ≤ 100, area must be loaded.
     "duration_s": _n("Seconds over which the items fall.", default=3, minimum=0.2, maximum=60),
 }, ["item"]), game="falling_items")
 
-tool("clear_visuals", """
-Remove overlays, world sprites and persisted client_exec payloads: everything, one id, or for one player. Client-side.
-Uploaded textures stay cached unless `textures` is true.
+# ------------------------------------------------------------------ curated: environment
+tool("set_weather", """
+Change the weather for everyone: start rain of a given intensity, a storm, or clear the sky. Server-authoritative via
+the climate manager (transmitServerStartRain / TriggerStorm / StopWeather); clients follow within seconds. The
+simulation may drift back to natural weather over time. Lightning, fog, wind and temperature: run_lua_server with
+getClimateManager() (see the handbook's weather guide).
 """, _obj({
-    "id": _s("Only this overlay/sprite id."),
-    "player": _s("Only this player's client."),
-    "textures": _b("Also drop uploaded textures.", default=False),
-}), game="clear_visuals")
+    "mode": _s("Weather to set.", enum=["rain", "storm", "clear"]),
+    "intensity": _n("Rain/storm intensity 0..1.", default=0.8, minimum=0, maximum=1),
+}, ["mode"]), game="set_weather")
 
-# ------------------------------------------------------------------ power
-tool("lua_eval_server", """
-Run arbitrary Lua on the game server (loadstring on the server tick) and return its value(s) JSON-encoded. Full
-engine access: getOnlinePlayers(), getCell(), getClimateManager(), sendServerCommand(...), ZMCP helpers
-(ZMCP.player(name), ZMCP.square(x,y,z), ZMCP.zombiesNear(...), ZMCP.toClients(cmd,args)). Errors are returned as
-tool errors with the Lua message. Server-authoritative effects sync to everyone; client-owned state (position, body)
-cannot be changed from here reliably: use lua_eval_client. Long loops block the whole server: keep it under ~100 ms.
-Use `return` to get a value back; Java objects are stringified.
-""", _obj({
-    "code": _s("Lua source, e.g. 'return getGameTime():getTimeOfDay()'."),
-    "timeout_s": _n("How long to wait for the result.", default=20, minimum=1, maximum=600),
-}, ["code"]), game="lua_eval")
-
-tool("lua_eval_client", """
-Run Lua on one player's client (or all) and return the value(s) each client sent back. Client-side: use for
-client-authoritative state (position, body, stats, appearance), UI, camera, screenshots of state that only the client
-knows. Requires the client mod; the round trip needs two ticks. Blocking the client freezes that player's game.
-""", _obj({
-    "code": _s("Lua source; `getPlayer()` is the local player. Use `return` for a value."),
-    "player": _s("Target player; default all connected clients."),
-    "timeout_s": _n("How long to wait for replies.", default=10, minimum=1, maximum=120),
-}, ["code"]), game="lua_eval_client")
-
-tool("module_install", """
-Install or update a persistent server-side Lua module without restarting: the source is written into the game's Lua
-directory as zmcp_mod_<name>.lua, executed now with loadstring, and re-executed on every bridge (re)load. Use it to add
-new tools (ZMCP.tool(name, desc, fn)), tick hooks (ZMCP.tickHooks.name = function(t) end) and helpers. Make the code
-re-runnable (remove old handlers before adding). Errors are returned; the module is kept only if it ran cleanly.
-""", _obj({
-    "name": _s("Module name (letters, digits, _ and -).", pattern="^[A-Za-z0-9_-]{1,64}$"),
-    "code": _s("Lua source of the module."),
-}, ["name", "code"]), game="module_install", local="module_install")
-
-tool("module_list", """
-List installed persistent Lua modules with size, install time and whether the last load succeeded. Read-only.
-""", _obj({}), game="module_list")
-
-tool("module_remove", """
-Delete a persistent module so it no longer loads on bridge reloads. Tools it registered stay until the next reload.
-""", _obj({"name": _s("Module name.")}, ["name"]), game="module_remove")
-
-# ------------------------------------------------------------------ auto
-tool("guardian_config", """
-Configure the Guardian: an opt-in server-side watcher that automatically heals/cures/clears zombies around a player
-when their health drops below thresholds. Off by default. Server-authoritative (kills, god mode) plus client push for
-body state. Set `enabled` per player or globally; omit values to read the current config.
-""", _obj({
-    "enabled": _b("Turn the Guardian on or off."),
-    "player": _s("Only for this player; default all players."),
-    "heal_below": _i("Heal when overall health drops below this percent.", minimum=0, maximum=100),
-    "clear_radius": _i("Kill zombies within this radius when rescuing.", minimum=0, maximum=80),
-    "cure": _b("Also cure infection when rescuing."),
-}), game="guardian_config")
+tool("set_time", """
+Set the in-game time of day (0..24 hours) for the whole server; day/month/year are left alone. Server-authoritative
+and synced to all clients. Sudden jumps affect darkness, zombie behaviour and player fatigue.
+""", _obj({"hour": _n("Hour of day, e.g. 6.5 for 06:30.", minimum=0, maximum=24)}, ["hour"]), game="set_time")
 
 # ------------------------------------------------------------------ server admin
 tool("server_console", """
@@ -535,6 +408,7 @@ missing. Commands like 'quit' stop the server for everybody: ask first.
 
 
 BY_NAME = {t["name"]: t for t in TOOLS}
+GAME_NAMES = {t["game"] for t in TOOLS if t["game"]}
 
 
 def passthrough_tool(name, desc):

@@ -52,7 +52,7 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 CONSOLE_NOISE = re.compile(r"AnimState|Property Name|Ragdoll|Saving took|Saving GlobalModData|Saving finish")
-GAME_INTERNAL_TOOLS = {"ping", "lua_eval", "tools_list", "run_file", "status"}
+GAME_INTERNAL_TOOLS = {"ping", "tools_list", "run_file", "status"}   # bridge plumbing, never exposed
 
 
 class JsonRpcError(Exception):
@@ -172,8 +172,9 @@ class ZomboidMCP(object):
                 # status.tools (bridge >= 0.2.0) lists names even while the server is not answering requests
                 st = self.bridge.last_status or {}
                 names = st.get("tools") if isinstance(st.get("tools"), list) else []
+                hidden = GAME_INTERNAL_TOOLS | catalog.GAME_NAMES | set(catalog.BY_NAME)
                 for name in names:
-                    if isinstance(name, str) and name not in GAME_INTERNAL_TOOLS and name not in catalog.BY_NAME:
+                    if isinstance(name, str) and name not in hidden:
                         found[name] = catalog.passthrough_tool(name, None)
                 if live:
                     listed = self.bridge.call("tools_list", {}, timeout_s=3)
@@ -181,7 +182,7 @@ class ZomboidMCP(object):
                         if not isinstance(entry, dict):
                             continue
                         name = entry.get("name")
-                        if name and name not in GAME_INTERNAL_TOOLS and name not in catalog.BY_NAME:
+                        if name and name not in hidden:
                             found[name] = catalog.passthrough_tool(name, entry.get("desc"))
                     self._game_tools_at = time.monotonic()
                 else:
@@ -266,7 +267,7 @@ class ZomboidMCP(object):
         return self.index.lua_examples(str(args.get("query", "")), limit=int(args.get("limit") or 8),
                                        context=int(args.get("context") or 0))
 
-    def tool_module_install(self, args, t):
+    def tool_script_install(self, args, t):
         name = str(args.get("name", ""))
         if not re.match(r"^[A-Za-z0-9_-]{1,64}$", name):
             raise GameError("invalid module name %r" % name)
@@ -282,7 +283,7 @@ class ZomboidMCP(object):
             # Older bridge without module support: at least run it now.
             result = self.bridge.call("run_file", {"file": fname})
             return {"module": name, "file": fname, "persistent": False, "result": result,
-                    "note": "the running bridge has no module_install tool; the file was executed once with run_file "
+                    "note": "the running bridge has no module_install tool; the script was executed once with run_file "
                             "and will not reload automatically"}
 
     def tool_server_console(self, args, t):

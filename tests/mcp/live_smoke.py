@@ -4,7 +4,7 @@
 Opt-in: it needs the deployment details from ~/.config/zomboid-mcp/local.env
 (ZMCP_SSH, ZMCP_LUA_DIR, ZMCP_CONTAINER) or the equivalent flags. It only reads:
 `status`, `events_poll`, `server_console "players"` and, when the bridge is live,
-`lua_eval_server "return 1+1"` plus `players_list`. Nothing in the game changes.
+`run_lua_server "return 1+1"` plus `players_list`. Nothing in the game changes.
 
     python3 tests/mcp/live_smoke.py                 # uses ~/.config/zomboid-mcp/local.env
     ZMCP_LIVE=1 python3 -m unittest tests.mcp.live_smoke
@@ -57,7 +57,7 @@ class LiveSmoke(unittest.TestCase):
     def test_2_tools_list(self):
         tools = self.client.request("tools/list", timeout=60)["result"]["tools"]
         self.report["tools"] = len(tools)
-        self.assertGreaterEqual(len(tools), 43)
+        self.assertGreaterEqual(len(tools), 23)
 
     def test_3_events_poll(self):
         r = self.client.call("events_poll", {"limit": 5}, timeout=60)
@@ -73,16 +73,16 @@ class LiveSmoke(unittest.TestCase):
         self.report["console_s"] = round(time.time() - t0, 2)
         self.assertTrue(any("Players connected" in l or "player" in l.lower() for l in lines), lines)
 
-    def test_5_lua_eval_server(self):
+    def test_5_run_lua_server(self):
         if not getattr(type(self), "live", False):
-            self.report["lua_eval_server"] = "skipped: bridge not live (server paused with no players online, or the mod is not loaded)"
+            self.report["run_lua_server"] = "skipped: bridge not live (server paused with no players online, or the mod is not loaded)"
             self.skipTest("bridge not live")
-        r = self.client.call("lua_eval_server", {"code": "return 1+1"}, timeout=60)
+        r = self.client.call("run_lua_server", {"code": "return 1+1"}, timeout=60)
         self.assertFalse(r["isError"], text_of(r))
         self.assertEqual(text_of(r), "2")
         r = self.client.call("players_list", timeout=60)
         self.report["players_list"] = text_of(r)[:400]
-        self.report["lua_eval_server"] = "ok"
+        self.report["run_lua_server"] = "ok"
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ class FakeGame(threading.Thread):
             "blob_check": self._blob_check,
             "keep": lambda a: {"keep_files": True, "got": sorted(a)},
             "custom_thing": lambda a: {"custom": True, "args": a},
+            "module_list": lambda a: [],
         }
         self.last_status = 0.0
         self.version = "0.1.0-fake" if legacy else "0.2.0-fake"

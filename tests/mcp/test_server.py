@@ -68,15 +68,22 @@ class TestProtocol(FakeGameCase):
     def test_tools_list_complete(self):
         tools = self.client.request("tools/list")["result"]["tools"]
         names = {t["name"] for t in tools}
-        for expected in ("status", "players_list", "player_info", "world_query", "api_search", "lua_examples",
-                         "teleport", "heal", "cure", "god_mode", "set_traits", "set_skills", "set_appearance",
-                         "give_item", "snapshot", "restore", "spawn_item", "spawn_vehicle", "vehicle_fix",
-                         "spawn_zombies", "kill_zombies_area", "place_object", "remove_object", "set_weather",
-                         "set_time", "sound", "lightning", "server_message", "client_exec", "overlay_draw",
-                         "texture_upload", "world_sprite", "falling_items", "clear_visuals", "lua_eval_server",
-                         "lua_eval_client", "module_install", "module_list", "module_remove", "guardian_config",
-                         "events_poll", "wait_for", "server_console"):
+        for expected in ("run_lua_server", "run_lua_client", "script_install", "script_list", "script_remove",
+                         "status", "players_list", "wait_for", "events_poll", "api_search", "lua_examples",
+                         "texture_upload", "model_upload", "spawn_item", "spawn_vehicle", "spawn_zombies",
+                         "world_sprite", "object_3d_static", "object_3d_moving", "falling_items", "set_weather",
+                         "set_time", "server_console"):
             self.assertIn(expected, names)
+        # scripting-first: dropped tools (Guardian/Reborn, player edits, misc world ops) are not offered
+        for dropped in ("heal", "cure", "god_mode", "snapshot", "restore", "guardian_config", "teleport", "give_item",
+                        "place_object", "lua_eval_server", "client_exec", "module_install"):
+            self.assertNotIn(dropped, names)
+        # the primary tools point at the handbook and explain returns/errors/authority
+        for name in ("run_lua_server", "run_lua_client", "script_install"):
+            d = [t for t in tools if t["name"] == name][0]["description"]
+            self.assertIn("zomboid engine handbook", d)
+            self.assertIn("Authority", d) if name != "script_install" else None
+            self.assertIn("rror", d)
         # every description states authority or is a local/discovery tool
         for t in tools:
             self.assertTrue(len(t["description"]) > 60, t["name"])
@@ -85,8 +92,10 @@ class TestProtocol(FakeGameCase):
         self.assertIn("custom_thing", names)
         ct = [t for t in tools if t["name"] == "custom_thing"][0]
         self.assertIn("fake tool custom_thing", ct["description"])
-        self.assertNotIn("tools_list", names)
+        # game tools that the catalogue maps under another name are not duplicated
         self.assertNotIn("lua_eval", names)
+        self.assertNotIn("module_list", names)
+        self.assertNotIn("tools_list", names)
 
     def test_resources(self):
         res = self.client.request("resources/list")["result"]["resources"]
@@ -108,7 +117,7 @@ class TestTools(FakeGameCase):
         self.assertLess(st["heartbeat_age_s"], 5)
 
     def test_lua_eval_roundtrip_and_cleanup(self):
-        r = self.client.call("lua_eval_server", {"code": "return 1+1"})
+        r = self.client.call("run_lua_server", {"code": "return 1+1"})
         self.assertFalse(r["isError"])
         self.assertEqual(text_of(r), "2")
         self.assertEqual(self.game.calls[-1], ("lua_eval", {"code": "return 1+1"}))
@@ -137,7 +146,7 @@ class TestTools(FakeGameCase):
         self.assertEqual(self.game.requests_seen[-1]["args"]["text"], "Zoë ☃")
 
     def test_game_error_is_tool_error(self):
-        r = self.client.call("lua_eval_server", {"code": "error('kaboom')"})
+        r = self.client.call("run_lua_server", {"code": "error('kaboom')"})
         self.assertTrue(r["isError"])
         self.assertIn("kaboom", text_of(r))
 
@@ -145,17 +154,17 @@ class TestTools(FakeGameCase):
         r = self.client.call("spawn_vehicle", {"script": "Base.CarNormal", "x": 1, "y": 2})
         self.assertTrue(r["isError"])
         self.assertIn("does not implement", text_of(r))
-        self.assertIn("lua_eval_server", text_of(r))
+        self.assertIn("run_lua_server", text_of(r))
 
     def test_argument_validation(self):
-        r = self.client.call("give_item", {"player": "x"})
+        r = self.client.call("spawn_item", {"player": "x"})
         self.assertTrue(r["isError"])
         self.assertIn("missing required argument 'item'", text_of(r))
         r = self.client.call("spawn_zombies", {"x": 1, "y": 1, "count": 500})
         self.assertIn("<= 50", text_of(r))
         r = self.client.call("set_weather", {"mode": "snow"})
         self.assertIn("one of", text_of(r))
-        r = self.client.call("teleport", {"x": 1.0, "y": 2.0, "z": 0})   # floats that are integral are fine
+        r = self.client.call("spawn_item", {"item": "Base.Axe", "x": 1.0, "y": 2.0, "z": 0})   # integral floats are fine
         self.assertNotIn("must be a", text_of(r))
         r = self.client.request("tools/call", {"name": 5})
         self.assertEqual(r["error"]["code"], -32602)
@@ -195,14 +204,14 @@ class TestTools(FakeGameCase):
         r = self.client.call("events_poll", {"kinds": ["death"]})
         self.assertEqual(r["structuredContent"]["events"], [])
 
-    def test_module_install_fallback_to_run_file(self):
-        r = self.client.call("module_install", {"name": "hello", "code": "print('hi')"})
+    def test_script_install_fallback_to_run_file(self):
+        r = self.client.call("script_install", {"name": "hello", "code": "print('hi')"})
         self.assertFalse(r["isError"], text_of(r))
         sc = r["structuredContent"]
         self.assertFalse(sc["persistent"])
         self.assertEqual(sc["result"]["ran"], "zmcp_mod_hello.lua")
         self.assertTrue(os.path.exists(os.path.join(self.lua_dir, "zmcp_mod_hello.lua")))
-        r = self.client.call("module_install", {"name": "../evil", "code": "x"})
+        r = self.client.call("script_install", {"name": "../evil", "code": "x"})
         self.assertTrue(r["isError"])
 
     def test_api_search_missing_index_is_clear(self):
@@ -248,7 +257,7 @@ class TestPaused(FakeGameCase):
         json.dump(st, open(os.path.join(self.lua_dir, "zmcp_status.json"), "w"))
         r = self.client.call("status")
         self.assertEqual(r["structuredContent"]["bridge"], "paused")
-        r = self.client.call("lua_eval_server", {"code": "return 1", "timeout_s": 1})
+        r = self.client.call("run_lua_server", {"code": "return 1", "timeout_s": 1})
         self.assertTrue(r["isError"])
         self.assertIn("server paused (no players online)", text_of(r))
         # the request was cleaned up, not left for later
@@ -336,7 +345,7 @@ class TestLegacyBridge(FakeGameCase):
     game_kwargs = {"legacy": True}
 
     def test_roundtrip_and_passthrough_discovery(self):
-        r = self.client.call("lua_eval_server", {"code": "return 1+1"})
+        r = self.client.call("run_lua_server", {"code": "return 1+1"})
         self.assertFalse(r["isError"], text_of(r))
         self.assertEqual(text_of(r), "2")
         names = {t["name"] for t in self.client.request("tools/list")["result"]["tools"]}
@@ -550,8 +559,8 @@ class TestHttp(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertIsNone(body)
         status, _, body = self.client.request("tools/list")
-        self.assertGreater(len(body["result"]["tools"]), 40)
-        r = self.client.call("lua_eval_server", {"code": "return 1+1"})
+        self.assertGreaterEqual(len(body["result"]["tools"]), 23)
+        r = self.client.call("run_lua_server", {"code": "return 1+1"})
         self.assertEqual(text_of(r), "2")
         r = self.client.call("status")
         self.assertEqual(r["structuredContent"]["bridge"], "live")
@@ -632,10 +641,10 @@ class TestUnits(unittest.TestCase):
 
     def test_validate_args_unknown_key(self):
         import zomboid_mcp
-        schema = zmcp_catalog.BY_NAME["heal"]["inputSchema"]
+        schema = zmcp_catalog.BY_NAME["players_list"]["inputSchema"]
         with self.assertRaises(ValueError):
             zomboid_mcp.validate_args(schema, {"plyer": "x"})
-        zomboid_mcp.validate_args(schema, {"player": "x"})
+        zomboid_mcp.validate_args(schema, {})
 
 
 if __name__ == "__main__":
