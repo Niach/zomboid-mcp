@@ -215,3 +215,60 @@ function getScriptManager()
     m.addModelScript = function(_, ms) SIM.models[ms.name] = ms end
     return m
 end
+
+-- 3D scene layer (zombie.vehicles.UI3DScene): orthographic iso view, 1 scene unit = 45.2548 px at zoom 1,
+-- i.e. one world tile along x when the entity code calibrates k = 1 at zoom 1 (32 px = 45.2548 * cos 45)
+SIM.scene = nil
+local function vec3(x, y, z)
+    local v = { x = x or 0, y = y or 0, z = z or 0 }
+    function v:set(a, b, c) if b == nil then b, c = a, a end self.x, self.y, self.z = a, b, c; return self end
+    return v
+end
+UI3DScene = { new = function(tbl)
+    local J = { objects = {}, calls = {}, zoom = 1, view = nil, rot = nil, S = 45.2548 }
+    SIM.scene = J
+    for _, m in ipairs({ "setX", "setY", "setWidth", "setHeight", "setAnchorLeft", "setAnchorRight", "setAnchorTop", "setAnchorBottom" }) do J[m] = function() end end
+    function J:setConsumeMouseEvents(v) SIM.consume3d = v end
+    function J:getAbsoluteX() return 0 end
+    function J:getAbsoluteY() return 0 end
+    function J:sceneToUIX(x, y, z) return 960 + (x - z) * 0.70711 * self.S end
+    function J:sceneToUIY(x, y, z) return 540 + (x + z) * 0.35355 * self.S - y * 0.86603 * self.S end
+    local function obj(name) local o = J.objects[name]; if not o then error("no scene object " .. tostring(name)) end return o end
+    function J:fromLua0(c) self.calls[#self.calls + 1] = c; if c == "getView" then return self.view end end
+    function J:fromLua1(c, a)
+        self.calls[#self.calls + 1] = c
+        if c == "setView" then self.view = a
+        elseif c == "setZoom" then self.zoom = a
+        elseif c == "removeObject" then self.objects[a] = nil
+        elseif c == "getObjectExists" then return self.objects[a] ~= nil
+        elseif c == "getObjectTranslation" then return obj(a).t
+        elseif c == "getObjectRotation" then return obj(a).r
+        elseif c == "getObjectScale" then return obj(a).s
+        elseif c == "setGizmoVisible" then self.gizmo = a
+        elseif c == "setDrawGrid" then self.grid = a end
+    end
+    function J:fromLua2(c, a, b)
+        self.calls[#self.calls + 1] = c
+        if c == "createModel" then
+            if not SIM.models[b] and not SIM.vanillaModels[b] then error("Failed to load asset " .. tostring(b)) end
+            self.objects[a] = { model = b, t = vec3(), r = vec3(), s = vec3(1, 1, 1), visible = true }
+        elseif c == "setObjectVisible" then obj(a).visible = b end
+    end
+    function J:fromLua3(c, a, b, d) self.calls[#self.calls + 1] = c; if c == "setViewRotation" then self.rot = { a, b, d } end end
+    function J:fromLua4(c) self.calls[#self.calls + 1] = c end
+    return J
+end }
+SIM.vanillaModels = { RadioBlue_Ground = true }
+-- inverse of the isoToScreen mocks above (camera centred on world 0,0 at screen 960,540)
+function screenToIsoX(pn, u, v, z)
+    local zoom = SIM.zoom or 1
+    local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
+    return (A + B) / 2
+end
+function screenToIsoY(pn, u, v, z)
+    local zoom = SIM.zoom or 1
+    local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
+    return (B - A) / 2
+end
+function ISUIElement:getAbsoluteX() return self.x end
+function ISUIElement:getAbsoluteY() return self.y end

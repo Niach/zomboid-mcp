@@ -78,9 +78,22 @@ that fades after ttl seconds, 'halo' is text floating over the player's head, 'c
 | [`visuals_list`](#visuals_list) | Everything the visual subsystem knows: uploaded textures [{id, gen, chars|pixel}], registered 3D models [{id, name,
 gen, scale}], persistent world sprites, client scripts [{name, file}], connected clients with their mod version and
 what they loaded, the outgoing queue length and pending item landings |
-| [`clear_visuals`](#clear_visuals) | Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices
-and every script hook (textures, models and client scripts stay); or one category: sprites, overlays, falling,
+| [`clear_visuals`](#clear_visuals) | Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices,
+every script hook and the moving 3D entities (textures, models and client scripts stay); or one category: sprites, overlays, falling,
 notices, textures, models, hooks |
+| [`entity3d_spawn`](#entity3d_spawn) | Show a MOVING 3D entity on every connected client: an uploaded model (model_upload id) or a vanilla ModelScript
+name (e.g |
+| [`entity3d_move`](#entity3d_move) | Move a 3D entity smoothly on every client: tween to x,y,z over `duration` seconds (or at `speed` tiles per second,
+`ease` for a soft start and stop), or follow a `path` of waypoints from its current position at `speed` with a
+`loop` mode |
+| [`entity3d_rotate`](#entity3d_rotate) | Change how a 3D entity is oriented and animated on every client: base rotation in degrees (rx, ry, rz), a
+constant spin, the rolling radius (0 = stop rolling), facing the travel direction, its height above the ground
+or its scale |
+| [`entity3d_remove`](#entity3d_remove) | Remove one moving 3D entity (id) or every entity (all = true) from every client and from the server registry, so
+late joiners do not get it either |
+| [`entity3d_list`](#entity3d_list) | The moving 3D entities the server knows, with their current position computed from the stored motion:
+[{id, model, x, y, z, h, scale, rotation [rx, ry, rz], spin, roll, face, motion (static|path|to), moving, loop,
+clients {user: {ok, model, err}}}] |
 | [`server_console`](#server_console) | Send a raw command to the dedicated server's admin console (e.g |
 
 ## Scripting (primary)
@@ -390,7 +403,7 @@ No arguments.
 
 ### `model_place`
 
-*game*. Place an uploaded 3D model in the world as a STATIC object: the server spawns a carrier world item on the square (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper occlusion and no flicker. Server-authoritative in single-player (verified); in multiplayer the carrier item syncs but the model assignment is unverified. Offsets are fractions of the tile, oz lifts the model. Remove it like any ground item (world_query then run_lua_server). Moving 3D objects are a separate feature (entity3d_* tools when available). Returns {placed, x, y, z, item}.
+*game*. Place an uploaded 3D model in the world as a STATIC object: the server spawns a carrier world item on the square (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper occlusion and no flicker. Server-authoritative in single-player (verified); in multiplayer the carrier item syncs but the model assignment is unverified. Offsets are fractions of the tile, oz lifts the model. Remove it like any ground item (world_query then run_lua_server). Moving 3D objects are entity3d_spawn / entity3d_move (a transparent 3D layer, smooth but no occlusion). Returns {placed, x, y, z, item}.
 
 | argument | type | description |
 |---|---|---|
@@ -511,13 +524,90 @@ No arguments.
 
 ### `clear_visuals`
 
-*game*. Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices and every script hook (textures, models and client scripts stay); or one category: sprites, overlays, falling, notices, textures, models, hooks. With `id` only that sprite / overlay / texture / model / hook name. Server-side registries are updated too (unless only one player is targeted), so late joiners do not receive removed sprites.
+*game*. Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices, every script hook and the moving 3D entities (textures, models and client scripts stay); or one category: sprites, overlays, falling, notices, textures, models, hooks. With `id` only that sprite / overlay / texture / model / hook name. Server-side registries are updated too (unless only one player is targeted), so late joiners do not receive removed sprites.
 
 | argument | type | description |
 |---|---|---|
 | `what` | `all` \| `sprites` \| `overlays` \| `falling` \| `notices` \| `textures` \| `models` \| `hooks` | What to clear. (default `all`) |
 | `id` | string | Only this id / hook name. |
 | `player` | string | Only this player's client (account or character name); default: every connected client. |
+
+## Moving 3D entities (client push)
+
+### `entity3d_spawn`
+
+*game*. Show a MOVING 3D entity on every connected client: an uploaded model (model_upload id) or a vanilla ModelScript name (e.g. 'RadioBlue_Ground'), drawn on a transparent full-screen 3D layer (UI3DScene) synced to the iso camera, so it moves and rotates smoothly every frame without the chunk-cache flicker of world items. Always drawn on top of the world (no wall occlusion) and below the HUD; pure client side, every player with the mod sees the same motion (late joiners too). Give it a start position, optional height h (tiles above the ground; defaults to roll), extra scale, a base rotation in degrees, and either a constant spin, a wheel radius (roll: faces the direction of travel and rolls like a coin), a path with speed and loop mode, or a tween target (tox/toy/toz + duration or speed). Returns {id, model, x, y, z, h, motion}; each client reports client_entity3d events (ok or the createModel error) in events_poll. Units are tiles (1 model unit = 1 tile at scale 1). See docs/recipes/entity3d.md.
+
+| argument | type | description |
+|---|---|---|
+| `model` * | string | model_upload id, or a vanilla ModelScript name. |
+| `x` * | number | World x in tiles (fractions allowed; east). |
+| `y` * | number | World y in tiles (fractions allowed; south). |
+| `z` | number | Floor level, 0 = ground. (default `0`, 0..31) |
+| `id` | string | Entity id (letters, digits, _ . -). |
+| `h` | number | Height of the model origin above the ground in tiles. (-5..50) |
+| `scale` | number | Extra scale on top of the ModelScript scale. (default `1`, 0.001..100) |
+| `rx` | number | Base rotation about X in degrees. |
+| `ry` | number | Base rotation about Y (vertical) in degrees. |
+| `rz` | number | Base rotation about Z in degrees (applied first, in model space). |
+| `spin` | string | Constant rotation 'dx,dy,dz' in degrees per second about the model X, Y and Z axes; '' stops it. |
+| `roll` | number | Wheel radius in tiles: the entity turns into its travel direction and rolls about its model Z axis by distance / radius (the Claude star: mesh radius 0.45 x scale 3 = 1.35). 0 turns rolling off. (0..) |
+| `face` | boolean | Turn into the travel direction (rotation about Y) without rolling. |
+| `path` | string | Waypoints after the start position, 'x,y,z;x,y,z;...' (z optional), walked at `speed` tiles per second. |
+| `speed` | number | Tiles per second along the path, or for a tween the speed that sets its duration. (default `1`, 0..) |
+| `loop` | `loop` \| `pingpong` \| `once` | How the path repeats. (default `loop`) |
+| `tox` | number | Tween target x (tiles). |
+| `toy` | number | Tween target y. |
+| `toz` | number | Tween target level. |
+| `duration` | number | Tween duration in seconds (alternative: speed). (0..) |
+| `ease` | boolean | Tween with a smooth start and stop (smoothstep) instead of constant speed. (default `False`) |
+
+### `entity3d_move`
+
+*game*. Move a 3D entity smoothly on every client: tween to x,y,z over `duration` seconds (or at `speed` tiles per second, `ease` for a soft start and stop), or follow a `path` of waypoints from its current position at `speed` with a `loop` mode. With x,y,z and no duration/speed it jumps. A new motion starts from wherever the entity is right now; a rolling entity keeps rolling. Returns {id, x, y, z, motion, duration}.
+
+| argument | type | description |
+|---|---|---|
+| `id` * | string | Entity id (letters, digits, _ . -). |
+| `x` | number | World x in tiles (fractions allowed; east). |
+| `y` | number | World y in tiles (fractions allowed; south). |
+| `z` | number | Floor level, 0 = ground. (default `0`, 0..31) |
+| `duration` | number | Tween duration in seconds. (0..) |
+| `speed` | number | Tiles per second along the path, or for a tween the speed that sets its duration. (default `1`, 0..) |
+| `ease` | boolean | Tween with a smooth start and stop (smoothstep) instead of constant speed. (default `False`) |
+| `path` | string | Waypoints after the start position, 'x,y,z;x,y,z;...' (z optional), walked at `speed` tiles per second. |
+| `loop` | `loop` \| `pingpong` \| `once` | How the path repeats. (default `loop`) |
+
+### `entity3d_rotate`
+
+*game*. Change how a 3D entity is oriented and animated on every client: base rotation in degrees (rx, ry, rz), a constant spin, the rolling radius (0 = stop rolling), facing the travel direction, its height above the ground or its scale. Only the arguments given change. Returns the new rotation state.
+
+| argument | type | description |
+|---|---|---|
+| `id` * | string | Entity id (letters, digits, _ . -). |
+| `rx` | number | Rotation about X in degrees. |
+| `ry` | number | Rotation about Y (vertical) in degrees. |
+| `rz` | number | Rotation about Z in degrees. |
+| `spin` | string | Constant rotation 'dx,dy,dz' in degrees per second about the model X, Y and Z axes; '' stops it. |
+| `roll` | number | Wheel radius in tiles: the entity turns into its travel direction and rolls about its model Z axis by distance / radius (the Claude star: mesh radius 0.45 x scale 3 = 1.35). 0 turns rolling off. (0..) |
+| `face` | boolean | Turn into the travel direction (rotation about Y) without rolling. |
+| `h` | number | Height above the ground in tiles. (-5..50) |
+| `scale` | number | Extra scale. (0.001..100) |
+
+### `entity3d_remove`
+
+*game*. Remove one moving 3D entity (id) or every entity (all = true) from every client and from the server registry, so late joiners do not get it either. Uploaded models stay registered (clear_visuals {what: 'models'} forgets them).
+
+| argument | type | description |
+|---|---|---|
+| `id` | string | Entity id (letters, digits, _ . -). |
+| `all` | boolean | Remove every entity. (default `False`) |
+
+### `entity3d_list`
+
+*game*. The moving 3D entities the server knows, with their current position computed from the stored motion: [{id, model, x, y, z, h, scale, rotation [rx, ry, rz], spin, roll, face, motion (static|path|to), moving, loop, clients {user: {ok, model, err}}}]. `clients` shows which player's client created the scene object (or the createModel error), so you can tell whether the entity is actually visible.
+
+No arguments.
 
 ## Server admin
 

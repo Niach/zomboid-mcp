@@ -37,8 +37,9 @@ you write Lua and run it live; nothing needs a restart or a Workshop update.
 - Curated tools cover the common operations with validated arguments: `status`, `players_list`, `player_info`,
   `world_query`, `spawn_item`, `give_item`, `spawn_vehicle`, `vehicle_fix`, `spawn_zombies`, `kill_zombies_area`,
   `place_object`, `remove_object`, `build_structure`, `set_weather`, `set_time`, `teleport`, `texture_upload`,
-  `texture_pixel`, `model_upload`, `model_place`, `world_sprite`, `falling_items`, `overlay_draw`,
-  `server_message`, `capture_input`, `visuals_list`, `clear_visuals`, `server_console`. Everything else is a script.
+  `texture_pixel`, `model_upload`, `model_place`, `entity3d_spawn/move/rotate/remove/list`, `world_sprite`,
+  `falling_items`, `overlay_draw`, `server_message`, `capture_input`, `visuals_list`, `clear_visuals`,
+  `server_console`. Everything else is a script.
 - Authority: the server owns zombies, items, world objects, vehicles, weather, time, XP, traits and god mode; code
   run on the server takes effect for everybody at once. A player's position, body damage, infection, appearance,
   stats and everything drawn on screen (overlays, textures, sprites, 3D models) belong to that player's client, so
@@ -487,8 +488,8 @@ Place an uploaded 3D model in the world as a STATIC object: the server spawns a 
 (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper
 occlusion and no flicker. Server-authoritative in single-player (verified); in multiplayer the carrier item syncs
 but the model assignment is unverified. Offsets are fractions of the tile, oz lifts the model. Remove it like any
-ground item (world_query then run_lua_server). Moving 3D objects are a separate feature (entity3d_* tools when
-available). Returns {placed, x, y, z, item}.
+ground item (world_query then run_lua_server). Moving 3D objects are entity3d_spawn / entity3d_move (a transparent 3D
+layer, smooth but no occlusion). Returns {placed, x, y, z, item}.
 """, _obj({
     "id": _s("Model id from model_upload."),
     "x": X, "y": Y, "z": Z,
@@ -498,6 +499,84 @@ available). Returns {placed, x, y, z, item}.
     "oz": _n("Height offset.", default=0, minimum=-5, maximum=10),
     "yrot": _n("Rotation around the vertical axis in degrees.", minimum=-360, maximum=360),
 }, ["id", "x", "y"]), game="model_place")
+
+ENTITY_ID = _s("Entity id (letters, digits, _ . -).", pattern="^[A-Za-z0-9_.-]+$")
+WX = _n("World x in tiles (fractions allowed; east).")
+WY = _n("World y in tiles (fractions allowed; south).")
+WZ = _n("Floor level, 0 = ground.", default=0, minimum=0, maximum=31)
+SPIN = _s("Constant rotation 'dx,dy,dz' in degrees per second about the model X, Y and Z axes; '' stops it.")
+ROLL = _n("Wheel radius in tiles: the entity turns into its travel direction and rolls about its model Z axis by distance / radius (the Claude star: mesh radius 0.45 x scale 3 = 1.35). 0 turns rolling off.", minimum=0)
+FACE = _b("Turn into the travel direction (rotation about Y) without rolling.")
+E_PATH = _s("Waypoints after the start position, 'x,y,z;x,y,z;...' (z optional), walked at `speed` tiles per second.")
+E_LOOP = _s("How the path repeats.", enum=["loop", "pingpong", "once"], default="loop")
+E_SPEED = _n("Tiles per second along the path, or for a tween the speed that sets its duration.", default=1, minimum=0)
+E_EASE = _b("Tween with a smooth start and stop (smoothstep) instead of constant speed.", default=False)
+
+tool("entity3d_spawn", """
+Show a MOVING 3D entity on every connected client: an uploaded model (model_upload id) or a vanilla ModelScript
+name (e.g. 'RadioBlue_Ground'), drawn on a transparent full-screen 3D layer (UI3DScene) synced to the iso camera,
+so it moves and rotates smoothly every frame without the chunk-cache flicker of world items. Always drawn on top
+of the world (no wall occlusion) and below the HUD; pure client side, every player with the mod sees the same
+motion (late joiners too). Give it a start position, optional height h (tiles above the ground; defaults to roll),
+extra scale, a base rotation in degrees, and either a constant spin, a wheel radius (roll: faces the direction of
+travel and rolls like a coin), a path with speed and loop mode, or a tween target (tox/toy/toz + duration or
+speed). Returns {id, model, x, y, z, h, motion}; each client reports client_entity3d events (ok or the createModel
+error) in events_poll. Units are tiles (1 model unit = 1 tile at scale 1). See docs/recipes/entity3d.md.
+""", _obj({
+    "model": _s("model_upload id, or a vanilla ModelScript name."),
+    "x": WX, "y": WY, "z": WZ,
+    "id": ENTITY_ID,
+    "h": _n("Height of the model origin above the ground in tiles.", minimum=-5, maximum=50),
+    "scale": _n("Extra scale on top of the ModelScript scale.", default=1, minimum=0.001, maximum=100),
+    "rx": _n("Base rotation about X in degrees."), "ry": _n("Base rotation about Y (vertical) in degrees."),
+    "rz": _n("Base rotation about Z in degrees (applied first, in model space)."),
+    "spin": SPIN, "roll": ROLL, "face": FACE,
+    "path": E_PATH, "speed": E_SPEED, "loop": E_LOOP,
+    "tox": _n("Tween target x (tiles)."), "toy": _n("Tween target y."), "toz": _n("Tween target level."),
+    "duration": _n("Tween duration in seconds (alternative: speed).", minimum=0),
+    "ease": E_EASE,
+}, ["model", "x", "y"]), game="entity3d_spawn")
+
+tool("entity3d_move", """
+Move a 3D entity smoothly on every client: tween to x,y,z over `duration` seconds (or at `speed` tiles per second,
+`ease` for a soft start and stop), or follow a `path` of waypoints from its current position at `speed` with a
+`loop` mode. With x,y,z and no duration/speed it jumps. A new motion starts from wherever the entity is right
+now; a rolling entity keeps rolling. Returns {id, x, y, z, motion, duration}.
+""", _obj({
+    "id": ENTITY_ID,
+    "x": WX, "y": WY, "z": WZ,
+    "duration": _n("Tween duration in seconds.", minimum=0),
+    "speed": E_SPEED, "ease": E_EASE,
+    "path": E_PATH, "loop": E_LOOP,
+}, ["id"]), game="entity3d_move")
+
+tool("entity3d_rotate", """
+Change how a 3D entity is oriented and animated on every client: base rotation in degrees (rx, ry, rz), a
+constant spin, the rolling radius (0 = stop rolling), facing the travel direction, its height above the ground
+or its scale. Only the arguments given change. Returns the new rotation state.
+""", _obj({
+    "id": ENTITY_ID,
+    "rx": _n("Rotation about X in degrees."), "ry": _n("Rotation about Y (vertical) in degrees."),
+    "rz": _n("Rotation about Z in degrees."),
+    "spin": SPIN, "roll": ROLL, "face": FACE,
+    "h": _n("Height above the ground in tiles.", minimum=-5, maximum=50),
+    "scale": _n("Extra scale.", minimum=0.001, maximum=100),
+}, ["id"]), game="entity3d_rotate")
+
+tool("entity3d_remove", """
+Remove one moving 3D entity (id) or every entity (all = true) from every client and from the server registry, so
+late joiners do not get it either. Uploaded models stay registered (clear_visuals {what: 'models'} forgets them).
+""", _obj({
+    "id": ENTITY_ID,
+    "all": _b("Remove every entity.", default=False),
+}), game="entity3d_remove")
+
+tool("entity3d_list", """
+The moving 3D entities the server knows, with their current position computed from the stored motion:
+[{id, model, x, y, z, h, scale, rotation [rx, ry, rz], spin, roll, face, motion (static|path|to), moving, loop,
+clients {user: {ok, model, err}}}]. `clients` shows which player's client created the scene object (or the
+createModel error), so you can tell whether the entity is actually visible.
+""", _obj({}), game="entity3d_list")
 
 tool("world_sprite", """
 Show a texture in the world for everyone (or one player), anchored bottom-centre at a tile position, scaled with the
@@ -604,8 +683,8 @@ clients so their entries refresh for the next call.
 """, _obj({}), game="visuals_list")
 
 tool("clear_visuals", """
-Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices
-and every script hook (textures, models and client scripts stay); or one category: sprites, overlays, falling,
+Remove client visuals on every client (or one player): 'all' clears world sprites, overlays, falling items, notices,
+every script hook and the moving 3D entities (textures, models and client scripts stay); or one category: sprites, overlays, falling,
 notices, textures, models, hooks. With `id` only that sprite / overlay / texture / model / hook name. Server-side
 registries are updated too (unless only one player is targeted), so late joiners do not receive removed sprites.
 """, _obj({
