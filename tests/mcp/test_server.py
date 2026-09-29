@@ -215,7 +215,9 @@ class TestTools(FakeGameCase):
         self.assertTrue(r["isError"])
 
     def test_api_search_missing_index_is_clear(self):
-        r = self.client.call("api_search", {"query": "addLamppost"})
+        client = StdioClient(["--lua-dir", self.lua_dir, "--timeout", "3", "--api-index", os.path.join(self.lua_dir, "no-index")])
+        self.addCleanup(client.close)
+        r = client.call("api_search", {"query": "addLamppost"})
         self.assertFalse(r["isError"])
         self.assertIn("not available", r["structuredContent"]["error"])
 
