@@ -17,6 +17,8 @@ FILES = [
     "client/ZomboidMCP/ClientSprites.lua",
     "client/ZomboidMCP/ClientFalling.lua",
     "client/ZomboidMCP/ClientOverlay.lua",
+    "client/ZomboidMCP/ClientInput.lua",
+    "client/ZomboidMCP/ClientModels.lua",
     "client/ZomboidMCP/Client.lua",
 ]
 
@@ -133,26 +135,88 @@ r = tool("client_exec", {"code": code, "id": "e1"})
 check(r["chunks"] == 3, "exec split into 3 chunks")
 lua("SIM.tick(1)")
 res = tool("client_results", {"id": "e1"})
-check(res["niach"]["ok"] is True and res["niach"]["res"] == "hi 0.2.0", "execResult came back with the return value")
+check(res["results"]["niach"]["ok"] is True and res["results"]["niach"]["res"] == "hi 0.3.0" and res["done"] is True, "execResult came back with the return value, done=true")
+r = tool("run_lua_client", {"code": "return {a = 1}", "id": "e0"})
+check(list(r["to"].values()) == ["niach"], "run_lua_client records recipients")
+check(tool("client_results", {"id": "e0"})["done"] is False and list(tool("client_results", {"id": "e0"})["pending"].values()) == ["niach"], "pending until the client answers")
+lua("SIM.tick(1)")
+check(tool("client_results", {"id": "e0"})["results"]["niach"]["res"] == '{"a":1}', "table results are JSON-encoded")
 check(len([d for d in lua("return SIM.render()").values() if d["kind"] == "rect"]) >= 1, "pushed render hook draws")
 tool("client_exec", {"code": "error('boom')", "id": "e2"})
 lua("SIM.tick(1)")
-check("boom" in tool("client_results", {"id": "e2"})["niach"]["res"], "runtime error reported")
+check("boom" in tool("client_results", {"id": "e2"})["results"]["niach"]["res"], "runtime error reported")
 tool("client_exec", {"code": "this is not lua", "id": "e3"})
 lua("SIM.tick(1)")
-check(tool("client_results", {"id": "e3"})["niach"]["res"].startswith("compile"), "compile error reported")
+check(tool("client_results", {"id": "e3"})["results"]["niach"]["res"].startswith("compile"), "compile error reported")
+
+# --- hook registry + input capture (screen app)
+tool("run_lua_client", {"id": "app", "code": """
+local C = ZMCPClient
+APP = { keys = {}, clicks = {}, ticks = 0, frames = 0 }
+C.on('app', 'render', function(ui) APP.frames = APP.frames + 1 ui:drawText('flappy', 10, 10, 1, 1, 1, 1) end)
+C.on('app', 'tick', function(t) APP.ticks = APP.ticks + 1 end)
+C.on('app', 'keyDown', function(k) APP.keys[#APP.keys + 1] = k end)
+C.on('app', 'mouseDown', function(x, y, b) APP.clicks[#APP.clicks + 1] = x .. ',' .. y .. ',' .. b end)
+C.capture(true)
+return 'app up'
+"""})
+lua("SIM.tick(1)")
+lua("SIM.fire('OnKeyStartPressed', 57); SIM.fire('OnMouseDown', 5, 6); ZMCPClient.overlay:onMouseDown(7, 8); ZMCPClient.overlay:onRightMouseDown(1, 2)")
+lua("SIM.render()")
+check(lua("return APP.keys[1] == 57 and #APP.keys == 1"), "keyDown hook received the key")
+check(lua("return #APP.clicks == 2 and APP.clicks[1] == '7,8,0' and APP.clicks[2] == '1,2,1'"), "captured: overlay mouse events reach hooks, global ones are ignored")
+check(g.SIM.consume is True and g.SIM.onTop is True, "capture(true): overlay consumes mouse events and is on top")
+check(lua("return APP.ticks >= 1 and APP.frames >= 1"), "tick and render hooks ran")
+tool("run_lua_client", {"code": "ZMCPClient.on('bad', 'render', function() error('kaboom') end)"})
+lua("SIM.tick(1); SIM.render(); SIM.render()")
+check(lua("return ZMCPClient.renderHooks.bad == nil"), "a throwing render hook is removed after the first error")
+tool("capture_input", {"on": False})
+lua("SIM.tick(1)")
+check(g.SIM.consume is False and g.SIM.onTop is False, "capture_input off releases the mouse")
+lua("SIM.fire('OnMouseDown', 9, 9)")
+check(lua("return #APP.clicks == 3 and APP.clicks[3] == '9,9,0'"), "uncaptured: global mouse events reach hooks")
+tool("clear_visuals", {"what": "hooks"})
+lua("SIM.tick(1); SIM.fire('OnKeyStartPressed', 1)")
+check(lua("return #APP.keys == 1 and ZMCPClient.renderHooks.app == nil"), "clear_visuals hooks removes every hook")
+
+# --- runtime 3D model: files under Lua/media + ModelScript registration + placement
+g.SIM.fs["zmcp_model_star.x.b64"] = base64.b64encode(b"xof 0303txt 0032\nMesh { 3; 0;0;0;, 1;0;0;, 0;1;0;; }").decode()
+g.SIM.fs["zmcp_model_star.png.b64"] = base64.b64encode(snail).decode()
+lua("ZMCP.visuals.PER_TICK = 4")
+r = tool("model_upload", {"id": "star", "scale": 3})
+check(r["name"] == "zmcp_star_1" and r["chunks"] == 9, f"model upload streams mesh + texture ({r['chunks']} chunks)")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.list.star == nil"), "not registered while chunks are still in flight")
+lua("SIM.tick(2); ZMCP.visuals.PER_TICK = 12")
+b64x = base64.b64encode(b"xof 0303txt 0032").decode()
+lua(f"""ZMCPClient.onCommand('model', {{id = 'w', gen = 1, mesh = 'media/w.x', texture = 'media/w.png', scale = 1}})
+WAITING = ZMCPClient.models.waiting.w ~= nil
+ZMCPClient.onCommand('file', {{id = 'w.x', gen = 1, part = 1, total = 1, data = '{b64x}', path = 'media/w.x'}})
+ZMCPClient.onCommand('file', {{id = 'w.png', gen = 1, part = 1, total = 1, data = '{b64x}', path = 'media/w.png'}})""")
+check(lua("return WAITING and ZMCPClient.models.waiting.w == nil and ZMCPClient.models.name('w') == 'zmcp_w_1'"), "model command before its files: registered once both files arrive")
+lua("ZMCPClient.onCommand('file', {id = 'evil', gen = 1, part = 1, total = 1, data = 'AA==', path = '../evil'})")
+check(g.SIM.fs["../evil"] is None, "path traversal in file push refused")
+check((g.SIM.fs["media/zmcp_model_star_1.x"] or "").startswith("xof 0303txt"), "mesh written under Lua/media/")
+check(lua_digest("media/zmcp_model_star_1.png") == digest(snail), "model texture written byte-identical")
+check(lua("return ZMCPClient.models.name('star') == 'zmcp_star_1' and ZMCPClient.models.list.star.ok == true"), "ModelScript registered as zmcp_star_1")
+check(lua("return SIM.models.zmcp_star_1 ~= nil and SIM.models.zmcp_star_1.module.name == 'Base' and SIM.models.zmcp_star_1.def:find('scale = 3') ~= nil"), "registration used the Base module and the scale")
+check(events("client_model")[-1]["data"]["ok"] is True, "client reported modelResult ok")
+r = tool("model_place", {"id": "star", "x": 6080, "y": 5385, "yrot": 45})
+check(r["placed"] == "zmcp_star_1" and g.SIM.spawned[len(g.SIM.spawned)]["model"] == "zmcp_star_1", "model_place spawned a carrier item with the world model")
+check(len(tool("model_list")) == 1, "model listed")
 
 # --- client modules + late joiner
 tool("module_client_install", {"name": "hud", "code": "ZMCPClient.renderHooks.hud = function(ui) ui:drawText('hud', 5, 5, 1, 1, 1, 1) end return 'installed'"})
 lua("SIM.tick(1)")
 check(lua("return ZMCPClient.modules.hud ~= nil and ZMCPClient.renderHooks.hud ~= nil"), "client module installed and running")
 check(len(tool("module_client_list")) == 1, "module listed")
-lua("SIM.sent = {}; SIM.player = SIM.newPlayer('friend', 6080, 5380, 0); ZMCPClient.tex.loaded = {}; ZMCPClient.sprites.list = {}; ZMCPClient.modules = {}; ZMCPClient.renderHooks = {}")
+lua("SIM.sent = {}; SIM.player = SIM.newPlayer('friend', 6080, 5380, 0); ZMCPClient.tex.loaded = {}; ZMCPClient.sprites.list = {}; ZMCPClient.modules = {}; ZMCPClient.renderHooks = {}; ZMCPClient.models.list = {}; ZMCPClient.files.done = {}")
 lua("SIM.fire('OnGameStart')")
 lua("SIM.tick(3)")
 check(lua("return ZMCPClient.tex.loaded.snail ~= nil and ZMCPClient.tex.loaded.snail.gen == 2"), "late joiner received the texture (latest gen)")
 check(lua("return ZMCPClient.sprites.list.s1 ~= nil"), "late joiner received the persistent sprite")
 check(lua("return ZMCPClient.modules.hud ~= nil"), "late joiner received the client module")
+check(lua("return ZMCPClient.models.name('star') == 'zmcp_star_1'"), "late joiner registered the model")
 check(events("client_hello")[-1]["data"]["user"] == "friend", "hello logged for the second player")
 tool("module_client_remove", {"name": "hud"})
 lua("SIM.tick(1)")
@@ -194,7 +258,7 @@ check(len(rects) == 2, f"pixel sprite drawn as 2 rects ({len(rects)})")
 g.SIM.fs["zmcp_req_1.json"] = json.dumps({"n": 1, "t": g.SIM.now, "tool": "visuals_status", "args": {}})
 lua("SIM.tick(1)")
 res = json.loads(g.SIM.fs["zmcp_res_1.json"])
-check(res["ok"] and res["result"]["textures"] == 2, "visuals_status via request file")
+check(res["ok"] and res["result"]["textures"] == 2 and res["result"]["models"] == 1, "visuals_status via request file")
 
 # --- base64 round trip
 enc = lua("return ZMCPClient.b64.encode('hello, zomboid!')")
@@ -202,7 +266,7 @@ check(enc == base64.b64encode(b"hello, zomboid!").decode(), "b64 encode")
 check(lua("return ZMCPClient.b64.decode('aGVsbG8sIHpvbWJvaWQh')") == "hello, zomboid!", "b64 decode")
 
 errs = [l for l in g.SIM.out.values() if "error" in l.lower() or "failed" in l.lower() or "removed" in l.lower()]
-expected = ("exec e2 error", "exec e3 compile", "module hud removed")
+expected = ("exec e2 error", "exec e3 compile", "module hud removed", "hook 'bad' (render) removed", "render hook 'bad' removed")
 unexpected = [l for l in errs if not any(x in l for x in expected)]
 check(not unexpected, "no unexpected errors in the log: " + "; ".join(unexpected[:5]))
 

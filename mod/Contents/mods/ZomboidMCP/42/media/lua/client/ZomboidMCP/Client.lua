@@ -1,11 +1,15 @@
 -- Zomboid MCP client: receives "zmcp" server commands (Events.OnServerCommand) and renders visuals.
 -- Protocol: docs/CLIENT_PROTOCOL.md. Server side: server/ZomboidMCP/Api/Visuals.lua.
 --
+-- Scripting first: "exec" runs chunked Lua on this client (run_lua_client) and reports the result back;
+-- scripts register hooks with ZMCPClient.on(name, "render"|"tick"|"keyDown"|..., fn) (ClientInput.lua).
 -- Commands handled (args are flat tables of strings/numbers/booleans):
 --   exec        chunked Lua {id, part, total, code, module?}  -> loadstring, run, reply "execResult"
---   modRemove   {name}                    forget a persistent client module (+ its render/tick hooks)
+--   modRemove   {name}                    forget a persistent client module (+ every hook of that name)
 --   tex         {id, gen, part, total, data}   base64 PNG chunk -> file -> texture (ClientTextures)
 --   pixel       {id, def}                 pixel-sprite fallback (palette/rows JSON)
+--   file        {id, gen, part, total, data, path}   any file into the Lua dir (ClientModels)
+--   model       {id, gen, mesh, texture, scale}      runtime ModelScript registration (ClientModels)
 --   sprite      {id, tex, x, y, z, ...}   world sprite (ClientSprites)
 --   spriteRemove {id?}
 --   fall        {id, item, items, ...}    falling items (ClientFalling)
@@ -13,10 +17,11 @@
 --   notify      {text, ttl, ...}          on-screen message
 --   halo        {text, r, g, b, time}     overhead text on the local player
 --   say         {text}                    speech bubble
+--   capture     {on}                      overlay swallows the mouse / sits on top (screen apps)
 --   heal / cure / teleport {x, y, z}      client-authoritative body state / position
---   clear       {what = all|sprites|draw|fall|notices|textures, id?}
+--   clear       {what = all|sprites|draw|fall|notices|textures|hooks, id?}
 --   ping        {}                        -> "pong" with the client version
--- Replies go through sendClientCommand(player, "zmcp", cmd, args): hello, execResult, texResult, pong.
+-- Replies: sendClientCommand(player, "zmcp", cmd, args): hello, execResult, texResult, fileResult, modelResult, pong.
 --
 -- Everything is re-runnable (the server can push this file again through exec): state lives in the
 -- global ZMCPClient table, event handlers are removed before they are re-added.
@@ -27,10 +32,12 @@ require "ZomboidMCP/ClientTextures"
 require "ZomboidMCP/ClientSprites"
 require "ZomboidMCP/ClientFalling"
 require "ZomboidMCP/ClientOverlay"
+require "ZomboidMCP/ClientInput"
+require "ZomboidMCP/ClientModels"
 
 ZMCPClient = ZMCPClient or {}
 local C = ZMCPClient
-C.version = "0.2.0"
+C.version = "0.3.0"
 C.MODULE = "zmcp"
 C.commands = C.commands or {}        -- command -> function(args)
 C.renderHooks = C.renderHooks or {}  -- name -> function(overlay)   (pushed code draws here)
@@ -38,7 +45,7 @@ C.tickHooks = C.tickHooks or {}      -- name -> function(now)       (pushed code
 C.modules = C.modules or {}          -- persistent client modules: name -> source
 C.pendingExec = C.pendingExec or {}  -- id -> { total, parts }
 C.handlers = C.handlers or {}
-C.stats = C.stats or { commands = 0, errors = 0 }
+C.stats = C.stats or { commands = 0, errors = 0, execs = 0 }
 
 for ev, fn in pairs(C.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
 C.handlers = {}
@@ -48,6 +55,8 @@ function C.now() return getTimestampMs() / 1000 end
 function C.isEmpty(t) for _ in pairs(t) do return false end return true end   -- Kahlua has no next()
 function C.log(msg) print("[ZomboidMCP] " .. tostring(msg)) end
 function C.player() return getSpecificPlayer(0) end
+function C.screen() return getCore():getScreenWidth(), getCore():getScreenHeight() end
+function C.zoom() local z = getCore():getZoom(0); if not z or z <= 0 then return 1 end; return z end
 
 -- client -> server. In single player this still arrives at Events.OnClientCommand (SinglePlayerServer).
 function C.send(command, args)
@@ -72,10 +81,16 @@ function Overlay:new()
 end
 function Overlay:createChildren() self.javaObject:setConsumeMouseEvents(false) end
 function Overlay:render() ZMCPClient.render(self) end
-function Overlay:onMouseDown() return false end
+-- mouse callbacks reach the overlay only while ZMCPClient.capture(true) made it consume events
+function Overlay:onMouseDown(x, y) return ZMCPClient.input.overlayMouseDown(x, y) end
+function Overlay:onMouseUp(x, y) return ZMCPClient.input.overlayMouseUp(x, y) end
+function Overlay:onRightMouseDown(x, y) return ZMCPClient.input.overlayRightDown(x, y) end
+function Overlay:onRightMouseUp(x, y) return ZMCPClient.input.overlayRightUp(x, y) end
+function Overlay:onMouseMove(dx, dy) return ZMCPClient.input.overlayMouseMove(dx, dy) end
+function Overlay:onMouseWheel(del) return ZMCPClient.input.overlayMouseWheel(del) end
 
 function C.render(ui)
-    local sw, sh = getCore():getScreenWidth(), getCore():getScreenHeight()
+    local sw, sh = C.screen()
     if ui:getWidth() ~= sw or ui:getHeight() ~= sh then ui:setWidth(sw); ui:setHeight(sh) end
     local ok, err = pcall(C.sprites.render, ui)
     if not ok then C.log("sprites render: " .. tostring(err)) end
@@ -100,8 +115,9 @@ function C.ensureOverlay()
     return o
 end
 
----------------------------------------------------------------- code push
+---------------------------------------------------------------- code push (run_lua_client)
 -- exec {id, part, total, code, module?}: chunks are concatenated in order, then loadstring + pcall.
+-- The chunk's return value (or the error) goes back as execResult {id, ok, res, ms, module?}.
 local function runChunk(id, src, moduleName)
     local fn, err = loadstring(src, "=zmcp:" .. tostring(moduleName or id))
     if not fn then
@@ -109,10 +125,17 @@ local function runChunk(id, src, moduleName)
         C.send("execResult", { id = id, ok = false, res = "compile: " .. tostring(err), module = moduleName })
         return
     end
+    local t0 = C.now()
     local ok, res = pcall(fn)
+    local ms = math.floor((C.now() - t0) * 1000 + 0.5)
+    C.stats.execs = C.stats.execs + 1
     if moduleName then C.modules[moduleName] = src end
-    C.log("exec " .. tostring(id) .. (ok and " ok" or (" error: " .. tostring(res))))
-    C.send("execResult", { id = id, ok = ok, res = truncate(res == nil and "nil" or res, 4000), module = moduleName })
+    if type(res) == "table" then
+        local okj, json = pcall(ZMCPJson.encode, res)
+        res = okj and json or tostring(res)
+    end
+    C.log("exec " .. tostring(id) .. (ok and " ok" or (" error: " .. tostring(res))) .. " (" .. ms .. " ms)")
+    C.send("execResult", { id = id, ok = ok, res = truncate(res == nil and "nil" or res, 4000), ms = ms, module = moduleName })
 end
 
 C.commands.exec = function(a)
@@ -131,19 +154,21 @@ end
 C.commands.modRemove = function(a)
     local name = tostring(a.name or "")
     C.modules[name] = nil
-    C.renderHooks[name] = nil
-    C.tickHooks[name] = nil
+    C.off(name)
     C.log("module " .. name .. " removed")
 end
 
 ---------------------------------------------------------------- visuals
 C.commands.tex = function(a) C.tex.onChunk(a) end
 C.commands.pixel = function(a) C.tex.onPixel(a) end
+C.commands.file = function(a) C.files.onChunk(a) end
+C.commands.model = function(a) C.models.onModel(a) end
 C.commands.sprite = function(a) C.ensureOverlay(); C.sprites.set(a) end
 C.commands.spriteRemove = function(a) C.sprites.remove(a.id) end
 C.commands.fall = function(a) C.ensureOverlay(); C.falling.add(a) end
 C.commands.draw = function(a) C.ensureOverlay(); C.draw.add(a) end
 C.commands.notify = function(a) C.ensureOverlay(); C.draw.notify(a) end
+C.commands.capture = function(a) C.ensureOverlay(); C.capture(a.on == true or a.on == 1 or a.on == "1" or a.on == "true") end
 
 C.commands.clear = function(a)
     local what, id = tostring(a.what or "all"), a.id
@@ -152,7 +177,8 @@ C.commands.clear = function(a)
     if what == "all" or what == "fall" then C.falling.clear(id) end
     if what == "all" or what == "notices" then C.draw.notices = {} end
     if what == "textures" then C.tex.clear(id) end
-    if what == "all" and not id then C.renderHooks = {} end
+    if what == "hooks" then if id then C.off(id) else C.offAll() end end
+    if what == "all" and not id then C.offAll() end
 end
 
 C.commands.halo = function(a)
@@ -227,7 +253,8 @@ C.commands.teleport = function(a)
 end
 
 C.commands.ping = function()
-    C.send("pong", { version = C.version, sprites = #C.sprites.info(), textures = #C.tex.list() })
+    C.send("pong", { version = C.version, sprites = #C.sprites.info(), textures = #C.tex.list(), models = #C.models.info(),
+        execs = C.stats.execs, captured = C.input.captured })
 end
 
 ---------------------------------------------------------------- dispatch
@@ -260,6 +287,7 @@ C.handlers.OnTick = function()
         if not ok then C.tickHooks[name] = nil; C.log("tick hook '" .. tostring(name) .. "' removed: " .. tostring(err)) end
     end
 end
+for ev, fn in pairs(C.input.globalHandlers) do C.handlers[ev] = fn end
 for ev, fn in pairs(C.handlers) do if Events[ev] then Events[ev].Add(fn) end end
 
 -- re-run while in game (pushed through exec): keep the overlay, re-announce

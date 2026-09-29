@@ -6,10 +6,11 @@
 -- joiners get everything again when their client says "hello". Texture data stays in files in the Lua
 -- cache dir (zmcp_tex_<id>.b64), never in ModData or Lua memory (server heap), and is streamed in chunks.
 --
--- Tools: client_exec, client_results, clients_list, module_client_install/remove/list,
+-- Tools: run_lua_client (alias client_exec), client_results, clients_list, module_client_install/remove/list,
 --        texture_upload, texture_pixel, texture_list, texture_remove,
+--        model_upload, model_list, model_remove, model_place,
 --        world_sprite, world_sprite_remove, world_sprite_list,
---        falling_items, overlay_draw, overlay_clear, clear_visuals, notify, halo, visuals_status
+--        falling_items, overlay_draw, overlay_clear, clear_visuals, notify, halo, capture_input, visuals_status
 if isClient() then return end
 if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Visuals.lua") end
 
@@ -17,12 +18,12 @@ local Z = ZMCP
 local J = ZMCPJson
 Z.visuals = Z.visuals or {}
 local V = Z.visuals
-V.version = "0.2.0"
+V.version = "0.3.0"
 V.CHUNK = 3000            -- characters per sendServerCommand (see docs/ENGINE_NOTES.md)
 V.PER_TICK = 12           -- queued messages sent per tick (~10 ticks/s)
 V.MAX_B64 = 1200000       -- refuse textures above this many base64 characters (~900 KB PNG)
 V.queue = V.queue or {}   -- outgoing { player, cmd, args }
-V.results = V.results or {}   -- exec id -> { [user] = { ok, res, t } }
+V.results = V.results or {}   -- exec id -> { to = {users}, sent, results = { [user] = { ok, res, ms, t } } }
 V.resultOrder = V.resultOrder or {}
 V.clients = V.clients or {}   -- user -> { version, t, textures = {id -> {ok, w, h}} }
 V.pendingSpawns = V.pendingSpawns or {}
@@ -42,6 +43,7 @@ local function store()
     if type(vis.textures) ~= "table" then vis.textures = {} end
     if type(vis.sprites) ~= "table" then vis.sprites = {} end
     if type(vis.cmodules) ~= "table" then vis.cmodules = {} end
+    if type(vis.models) ~= "table" then vis.models = {} end
     return vis
 end
 V.store = store
@@ -113,6 +115,22 @@ function V.sendTexture(id, player)
     return V.enqueueChunked("tex", { id = id, gen = t.gen }, "data", b64, player)
 end
 
+-- push a base64 file from the Lua dir to clients as <path> under their Lua dir
+function V.sendFile(id, srcFile, path, gen, player)
+    local b64 = Z.readFile(srcFile)
+    if not b64 or b64 == "" then error("file not found or empty in Lua dir: " .. srcFile) end
+    if #b64 > V.MAX_B64 then error("base64 too large: " .. #b64 .. " chars (max " .. V.MAX_B64 .. ")") end
+    return V.enqueueChunked("file", { id = id, gen = gen, path = path }, "data", b64, player)
+end
+
+function V.sendModel(id, player)
+    local m = store().models[id]
+    if not m then error("unknown model '" .. id .. "'") end
+    local chunks = V.sendFile(id .. ".x", m.meshSrc, m.mesh, m.gen, player) + V.sendFile(id .. ".png", m.texSrc, m.texture, m.gen, player)
+    V.enqueue("model", { id = id, gen = m.gen, mesh = m.mesh, texture = m.texture, scale = m.scale }, player)
+    return chunks
+end
+
 function V.sendSprite(id, player)
     local sp = store().sprites[id]
     if sp then V.enqueue("sprite", sp, player) end
@@ -134,9 +152,36 @@ function V.sendAllTo(player)
         local ok, err = pcall(V.sendTexture, id, player)
         if ok then n.textures = n.textures + 1 else print("[ZomboidMCP] resend texture " .. id .. ": " .. tostring(err)) end
     end
+    n.models = 0
+    for id in pairs(s.models) do
+        local ok, err = pcall(V.sendModel, id, player)
+        if ok then n.models = n.models + 1 else print("[ZomboidMCP] resend model " .. id .. ": " .. tostring(err)) end
+    end
     for name in pairs(s.cmodules) do V.sendModule(name, player); n.modules = n.modules + 1 end
     for id in pairs(s.sprites) do V.sendSprite(id, player); n.sprites = n.sprites + 1 end
     return n
+end
+
+---------------------------------------------------------------- exec result tracking
+-- remember which players a script went to, so client_results can say when everyone answered
+function V.track(id, to)
+    local r = V.results[id]
+    if not r then
+        r = { to = {}, sent = Z.now(), results = {} }
+        V.results[id] = r
+        V.resultOrder[#V.resultOrder + 1] = id
+        if #V.resultOrder > 50 then V.results[table.remove(V.resultOrder, 1)] = nil end
+    end
+    if to then r.to = to; r.sent = Z.now() end
+    return r
+end
+
+function V.resultStatus(id)
+    local r = V.results[id]
+    if not r then return nil end
+    local pending = {}
+    for _, user in ipairs(r.to) do if not r.results[user] then pending[#pending + 1] = user end end
+    return { id = id, to = arr(r.to), sent = r.sent, results = r.results, pending = arr(pending), done = #pending == 0 }
 end
 
 ---------------------------------------------------------------- client -> server
@@ -155,13 +200,17 @@ V.onClientCommand = function(module, command, player, args)
         Z.event("client_hello", { user = user, version = args.version, sent = n })
     elseif command == "execResult" then
         local id = tostring(args.id)
-        if not V.results[id] then
-            V.results[id] = {}
-            V.resultOrder[#V.resultOrder + 1] = id
-            if #V.resultOrder > 50 then V.results[table.remove(V.resultOrder, 1)] = nil end
-        end
-        V.results[id][user] = { ok = args.ok, res = args.res, t = Z.now(), module = args.module }
-        Z.event("client_exec_result", { id = id, user = user, ok = args.ok, res = args.res, module = args.module })
+        local r = V.track(id, nil)
+        r.results[user] = { ok = args.ok, res = args.res, ms = args.ms, t = Z.now(), module = args.module }
+        Z.event("client_exec_result", { id = id, user = user, ok = args.ok, res = args.res, ms = args.ms, module = args.module })
+    elseif command == "fileResult" then
+        Z.event("client_file", { id = args.id, gen = args.gen, path = args.path, user = user, ok = args.ok, bytes = args.bytes, err = args.err })
+    elseif command == "modelResult" then
+        local c = V.clients[user] or { textures = {} }
+        V.clients[user] = c
+        c.models = c.models or {}
+        c.models[tostring(args.id)] = { ok = args.ok, name = args.name, gen = args.gen, err = args.err }
+        Z.event("client_model", { id = args.id, gen = args.gen, name = args.name, user = user, ok = args.ok, err = args.err })
     elseif command == "texResult" then
         local c = V.clients[user] or { textures = {} }
         V.clients[user] = c
@@ -198,17 +247,29 @@ Z.tickHooks.visuals = function(t)
 end
 
 ---------------------------------------------------------------- tools: code
-Z.tool("client_exec", "Run Lua on players' clients (all, or args.player). args: {code, player?, id?}. Returns {id}; results arrive as 'client_exec_result' events and via client_results {id}. Client-side globals: ZMCPClient (renderHooks[name]=function(ui), tickHooks, tex, sprites, draw, send).", function(a)
+local function runLuaClient(a)
     if type(a.code) ~= "string" or a.code == "" then error("args.code (string) required") end
     local player = optPlayer(a.player)
-    local id = a.id and checkId(tostring(a.id), "id") or nextId("e")
+    local id = a.id and checkId(tostring(a.id), "id") or nextId("c")
+    local to = {}
+    if player then to[1] = userOf(player) else for _, p in ipairs(Z.players()) do to[#to + 1] = userOf(p) end end
+    V.track(id, to)
     local chunks = V.enqueueChunked("exec", { id = id }, "code", a.code, player)
-    return { id = id, chunks = chunks, to = player and userOf(player) or "all" }
+    return { id = id, chunks = chunks, to = arr(to), note = "poll client_results {id} (done=true when every client answered); events client_exec_result" }
+end
+Z.tool("run_lua_client", "Run Lua on every player's client (or args.player only). args: {code, player?, id?}. Returns {id, to}; each client answers with the chunk's return value (tables JSON-encoded) or error: poll client_results {id} until done, or watch client_exec_result events. Script API on the client: ZMCPClient.on(name, 'render'|'tick'|'keyDown'|'keyUp'|'keyHeld'|'mouseDown'|'mouseUp'|'mouseMove'|'mouseWheel', fn), ZMCPClient.off(name), ZMCPClient.capture(true) for screen apps, ZMCPClient.tex/sprites/draw/models, ZMCPClient.send(cmd, args), ZMCPJson, plus the whole vanilla client Lua API.", runLuaClient)
+Z.tool("client_exec", "Alias of run_lua_client.", runLuaClient)
+
+Z.tool("client_results", "Results of run_lua_client / client modules: args {id} -> {to, results = {user = {ok, res, ms}}, pending, done}. Without id: the status of every kept id (last 50).", function(a)
+    if a.id then return V.resultStatus(tostring(a.id)) or error("unknown script id " .. tostring(a.id)) end
+    local out = {}
+    for _, id in ipairs(V.resultOrder) do out[#out + 1] = V.resultStatus(id) end
+    return arr(out)
 end)
 
-Z.tool("client_results", "Results of client_exec / client modules so far: args {id?}. Without id: all kept ids (last 50).", function(a)
-    if a.id then return V.results[tostring(a.id)] or {} end
-    return V.results
+Z.tool("capture_input", "Screen apps: make every client's (or args.player's) overlay swallow mouse events and sit above the UI (on=true), or release it. args: {on, player?}. Scripts can also call ZMCPClient.capture(true) themselves.", function(a)
+    V.enqueue("capture", { on = a.on ~= false and a.on ~= 0 and a.on ~= "false" }, optPlayer(a.player))
+    return { on = a.on ~= false }
 end)
 
 Z.tool("clients_list", "Players whose Zomboid MCP client has said hello (or answered ping) this session: {user: {version, t, textures}}.", function()
@@ -225,6 +286,9 @@ Z.tool("module_client_install", "Install a persistent CLIENT module: args {name,
         if not Z.readFile(file) then error("file not found in Lua dir: " .. file) end
     else error("args.code or args.file required") end
     store().cmodules[name] = { file = file, installed = Z.now() }
+    local to = {}
+    for _, p in ipairs(Z.players()) do to[#to + 1] = userOf(p) end
+    V.track("mod:" .. name, to)
     local chunks = V.sendModule(name)
     Z.event("client_module_install", { name = name, file = file })
     return { name = name, file = file, chunks = chunks }
@@ -292,6 +356,56 @@ Z.tool("texture_remove", "Forget a runtime texture (clients keep the file; sprit
     store().textures[id] = nil
     V.enqueue("clear", { what = "textures", id = id })
     return { removed = id }
+end)
+
+---------------------------------------------------------------- tools: runtime 3D models (static)
+Z.tool("model_upload", "Register a runtime 3D model on every client (static models, see ENGINE_NOTES 'Runtime 3D models'). args: {id, mesh?, texture?, scale?}. Drop the base64 of the PZ .x text mesh into the Lua dir as zmcp_model_<id>.x.b64 and of the PNG as zmcp_model_<id>.png.b64 (or name other files with args.mesh / args.texture). Clients write them under Lua/media/ and run ModelScript registration; the model name is 'zmcp_<id>_<gen>' (model_list shows it; scripts use ZMCPClient.models.name(id)). Clients report client_model events.", function(a)
+    local id = checkId(a.id, "id")
+    local meshSrc = a.mesh or ("zmcp_model_" .. id .. ".x.b64")
+    local texSrc = a.texture or ("zmcp_model_" .. id .. ".png.b64")
+    for _, f in ipairs({ meshSrc, texSrc }) do
+        local t = Z.readFile(f)
+        if not t or t == "" then error("file not found or empty in Lua dir: " .. f) end
+        if #t > V.MAX_B64 then error("base64 too large: " .. f) end
+    end
+    local s = store()
+    local gen = (s.models[id] and tonumber(s.models[id].gen) or 0) + 1
+    s.models[id] = { meshSrc = meshSrc, texSrc = texSrc, gen = gen, scale = num(a.scale, 1),
+        mesh = "media/zmcp_model_" .. id .. "_" .. gen .. ".x", texture = "media/zmcp_model_" .. id .. "_" .. gen .. ".png", uploaded = Z.now() }
+    local chunks = V.sendModel(id, optPlayer(a.player))
+    Z.event("model_upload", { id = id, gen = gen, chunks = chunks })
+    return { id = id, gen = gen, name = "zmcp_" .. id .. "_" .. gen, chunks = chunks, note = "clients report client_model events" }
+end)
+
+Z.tool("model_list", "Registered runtime models: [{id, name, gen, scale, mesh, texture}].", function()
+    local out = {}
+    for id, m in pairs(store().models) do
+        out[#out + 1] = { id = id, name = "zmcp_" .. id .. "_" .. m.gen, gen = m.gen, scale = m.scale, mesh = m.mesh, texture = m.texture, uploaded = m.uploaded }
+    end
+    table.sort(out, function(x, y) return x.id < y.id end)
+    return arr(out)
+end)
+
+Z.tool("model_remove", "Forget a runtime model (clients keep the files and the registered ModelScript). args: {id}.", function(a)
+    local id = checkId(a.id, "id")
+    if not store().models[id] then error("unknown model: " .. id) end
+    store().models[id] = nil
+    return { removed = id }
+end)
+
+Z.tool("model_place", "Place a static 3D model in the world: spawns a carrier world item on the square and sets its world model (server side; sync of setWorldStaticModel to MP clients is unverified, single player verified). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees)}. Returns nothing to remove with yet: use run_lua_server / world tools.", function(a)
+    local id = checkId(a.id, "id")
+    local m = store().models[id]
+    if not m then error("unknown model: " .. id .. " (model_upload first)") end
+    local x, y = tonumber(a.x), tonumber(a.y)
+    if not x or not y then error("args.x and args.y required") end
+    local sq = Z.square(x, y, num(a.z, 0))
+    local item = sq:AddWorldInventoryItem(tostring(a.item or "Base.TirePiece"), num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0))
+    if not item then error("AddWorldInventoryItem returned nil") end
+    local name = "zmcp_" .. id .. "_" .. m.gen
+    item:setWorldStaticModel(name)
+    if a.yrot then pcall(function() item:setWorldYRotation(tonumber(a.yrot)) end) end
+    return { placed = name, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)), item = tostring(a.item or "Base.TirePiece") }
 end)
 
 ---------------------------------------------------------------- tools: world sprites
@@ -428,7 +542,7 @@ end)
 Z.tool("visuals_status", "Visual subsystem state: queue length, known clients, registry counts, pending landings.", function()
     local s = store()
     local function count(t) local n = 0 for _ in pairs(t) do n = n + 1 end return n end
-    return { version = V.version, queue = #V.queue, clients = V.clients, textures = count(s.textures),
+    return { version = V.version, queue = #V.queue, clients = V.clients, textures = count(s.textures), models = count(s.models),
         sprites = count(s.sprites), cmodules = count(s.cmodules), pendingSpawns = #V.pendingSpawns }
 end)
 

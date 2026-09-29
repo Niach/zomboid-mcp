@@ -136,7 +136,11 @@ CharacterStat = { PAIN = 1, PANIC = 2, STRESS = 3, FATIGUE = 4, ENDURANCE = 5, H
 function getCell()
     return { getGridSquare = function(_, x, y, z)
         if math.abs(x - SIM.player.x) > 50 or math.abs(y - SIM.player.y) > 50 then return nil end
-        return { AddWorldInventoryItem = function(_, item, ox, oy, oz) SIM.spawned[#SIM.spawned + 1] = { item = item, x = x, y = y, z = z, ox = ox, oy = oy } end,
+        return { AddWorldInventoryItem = function(_, item, ox, oy, oz)
+                local rec = { item = item, x = x, y = y, z = z, ox = ox, oy = oy }
+                SIM.spawned[#SIM.spawned + 1] = rec
+                return { setWorldStaticModel = function(_, n) rec.model = n end, setWorldYRotation = function(_, r) rec.yrot = r end }
+            end,
             getMovingObjects = function() return { size = function() return 0 end } end }
     end }
 end
@@ -177,4 +181,35 @@ function SIM.find(list, kind, field, value)
     local out = {}
     for _, m in ipairs(list) do if m[field or "cmd"] == value and (not kind or m.kind == kind) then out[#out + 1] = m end end
     return out
+end
+
+-- input + 3D models
+function isKeyDown(k) return SIM.keys and SIM.keys[k] or false end
+function isMouseButtonDown(b) return false end
+function getMouseX() return SIM.mx or 0 end
+function getMouseY() return SIM.my or 0 end
+function ISUIElement:bringToTop() SIM.onTop = true end
+local backMost = ISUIElement.backMost
+function ISUIElement:backMost() SIM.onTop = false end
+SIM.models = {}
+ModelScript = { new = function()
+    local ms = {}
+    function ms:setModule(m) ms.module = m end
+    function ms:InitLoadPP(name) ms.name = name end
+    function ms:Load(name, def)
+        if not ms.module then error("NPE: no module") end
+        local mesh = def:match("mesh = ([^,]+),")
+        if not mesh or not mesh:find("media/") then error("Failed to load asset " .. tostring(mesh)) end
+        local rel = mesh:gsub("^/home/sim/Zomboid/Lua/", "")
+        if not SIM.fs[rel] then error("mesh file missing: " .. rel) end
+        ms.def = def
+    end
+    return ms
+end }
+local sm = getScriptManager
+function getScriptManager()
+    local m = sm()
+    m.getModule = function(_, name) return { name = name } end
+    m.addModelScript = function(_, ms) SIM.models[ms.name] = ms end
+    return m
 end
