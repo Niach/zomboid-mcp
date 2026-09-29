@@ -1,0 +1,227 @@
+-- Shared helpers for the Zomboid MCP tool modules (Api/*.lua): argument validation, Java list iteration,
+-- item/object summaries and a tool registry with argument specs.
+-- Server only. Re-runnable (hot reload).
+require "ZomboidMCP/Bridge"
+
+local Z = ZMCP
+Z.util = Z.util or {}
+Z.specs = Z.specs or {}           -- name -> { desc, args = { {name, type, required, desc}, ... }, authority }
+local U = Z.util
+
+---------------------------------------------------------------- argument validation
+local function lower(s) return string.lower(tostring(s or "")) end
+U.lower = lower
+
+function U.num(a, key, default, min, max)
+    local v = a[key]
+    if v == nil or v == "" then
+        if default == nil then error("argument '" .. key .. "' (number) is required") end
+        v = default
+    end
+    if type(v) == "string" then v = tonumber(v) end
+    if type(v) ~= "number" then error("argument '" .. key .. "' must be a number") end
+    if min and v < min then error(string.format("argument '%s' must be >= %s", key, tostring(min))) end
+    if max and v > max then error(string.format("argument '%s' must be <= %s", key, tostring(max))) end
+    return v
+end
+
+function U.int(a, key, default, min, max)
+    local v = U.num(a, key, default, min, max)
+    return math.floor(v)
+end
+
+function U.str(a, key, default)
+    local v = a[key]
+    if v == nil or v == "" then
+        if default == nil then error("argument '" .. key .. "' (string) is required") end
+        return default
+    end
+    if type(v) ~= "string" then v = tostring(v) end
+    return v
+end
+
+function U.optStr(a, key)
+    local v = a[key]
+    if v == nil or v == "" then return nil end
+    return tostring(v)
+end
+
+function U.bool(a, key, default)
+    local v = a[key]
+    if v == nil then return default end
+    if type(v) == "string" then return v == "true" or v == "1" or v == "yes" end
+    return v and true or false
+end
+
+function U.tbl(a, key, default)
+    local v = a[key]
+    if v == nil then
+        if default == nil then error("argument '" .. key .. "' (list/object) is required") end
+        return default
+    end
+    if type(v) ~= "table" then error("argument '" .. key .. "' must be a list/object") end
+    return v
+end
+
+-- tile x, y, z from args (floored; z defaults to 0); errors if x or y missing
+function U.pos(a)
+    return U.int(a, "x"), U.int(a, "y"), U.int(a, "z", 0, 0, 31)
+end
+
+-- position from either a player name or x,y,z. Returns x, y, z, player|nil
+function U.posOrPlayer(a)
+    local name = U.optStr(a, "name")
+    if name or (a.x == nil and a.y == nil) then
+        local p = Z.player(name)
+        return p:getX(), p:getY(), p:getZ(), p
+    end
+    local x, y, z = U.pos(a)
+    return x, y, z, nil
+end
+
+function U.oneOf(a, key, options, default)
+    local v = lower(U.str(a, key, default))
+    for _, o in ipairs(options) do if v == o then return v end end
+    error("argument '" .. key .. "' must be one of: " .. table.concat(options, ", "))
+end
+
+---------------------------------------------------------------- java helpers
+-- iterate a Java List (ArrayList / PZArrayList): fn(element, index0)
+function U.each(list, fn)
+    if not list then return end
+    local n = list:size()
+    for i = 0, n - 1 do fn(list:get(i), i) end
+end
+
+function U.toList(list, map)
+    local out = {}
+    U.each(list, function(e, i) out[#out + 1] = map and map(e, i) or e end)
+    return out
+end
+
+-- pcall a getter chain; nil on error
+function U.try(fn, ...)
+    local ok, v = pcall(fn, ...)
+    if ok then return v end
+    return nil
+end
+
+function U.round(v, digits)
+    if type(v) ~= "number" then return v end
+    local m = 10 ^ (digits or 2)
+    return math.floor(v * m + 0.5) / m
+end
+
+function U.dist(x1, y1, x2, y2)
+    local dx, dy = x1 - x2, y1 - y2
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+-- find in a Java ArrayList<String> case-insensitively; returns the canonical entry or nil
+function U.findString(list, wanted)
+    local w = lower(wanted)
+    local found
+    U.each(list, function(s) if not found and lower(s) == w then found = s end end)
+    return found
+end
+
+function U.contains(text, query)
+    return string.find(lower(text), lower(query), 1, true) ~= nil
+end
+
+---------------------------------------------------------------- summaries
+function U.itemInfo(item)
+    if not item then return nil end
+    return {
+        type = U.try(function() return item:getFullType() end) or item:getType(),
+        name = U.try(function() return item:getDisplayName() end) or item:getName(),
+        category = U.try(function() return item:getDisplayCategory() end),
+        condition = U.try(function() return item:getCondition() end),
+        conditionMax = U.try(function() return item:getConditionMax() end),
+        weight = U.round(U.try(function() return item:getActualWeight() end) or 0, 2),
+        id = U.try(function() return item:getID() end),
+    }
+end
+
+function U.playerSummary(p)
+    return {
+        user = p:getUsername(), name = Z.charName(p),
+        x = U.round(p:getX(), 2), y = U.round(p:getY(), 2), z = math.floor(p:getZ()),
+        dead = p:isDead(),
+        health = U.round(U.try(function() return p:getBodyDamage():getOverallBodyHealth() end) or 0, 1),
+        accessLevel = U.try(function() return p:getAccessLevel() end),
+        onlineId = U.try(function() return p:getOnlineID() end),
+        inVehicle = U.try(function() local v = p:getVehicle(); return v and v:getScriptName() or nil end),
+    }
+end
+
+function U.objectInfo(o, index)
+    local sprite = U.try(function() return o:getSprite() and o:getSprite():getName() end)
+    return {
+        index = index,
+        sprite = sprite or U.try(function() return o:getSpriteName() end),
+        type = U.try(function() return o:getObjectName() end),
+        name = U.try(function() return o:getName() end),
+    }
+end
+
+function U.zombieInfo(zed)
+    local target = U.try(function()
+        local t = zed:getTarget()
+        if t and instanceof(t, "IsoPlayer") then return t:getUsername() end
+        return nil
+    end)
+    return {
+        id = U.try(function() return zed:getID() end),
+        x = U.round(zed:getX(), 2), y = U.round(zed:getY(), 2), z = math.floor(zed:getZ()),
+        outfit = U.try(function() return zed:getOutfitName() end),
+        crawling = U.try(function() return zed:isCrawling() end),
+        female = U.try(function() return zed:isFemale() end),
+        health = U.round(U.try(function() return zed:getHealth() end) or 0, 2),
+        target = target,
+    }
+end
+
+function U.vehicleInfo(v)
+    return {
+        id = U.try(function() return v:getId() end),
+        script = U.try(function() return v:getScriptName() end),
+        x = U.round(v:getX(), 2), y = U.round(v:getY(), 2), z = math.floor(v:getZ()),
+        speed = U.round(U.try(function() return v:getCurrentSpeedKmHour() end) or 0, 1),
+        engineRunning = U.try(function() return v:isEngineRunning() end),
+        engineQuality = U.try(function() return v:getEngineQuality() end),
+        driver = U.try(function()
+            local d = v:getDriver()
+            return d and instanceof(d, "IsoPlayer") and d:getUsername() or nil
+        end),
+    }
+end
+
+-- scan loaded squares in a (2r+1)^2 area around x,y at level z: fn(square, dx, dy); returns number of unloaded squares
+function U.scanSquares(x, y, z, radius, fn)
+    local cell = getCell()
+    local fx, fy, fz = math.floor(x), math.floor(y), math.floor(z or 0)
+    local missing = 0
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local sq = cell:getGridSquare(fx + dx, fy + dy, fz)
+            if sq then fn(sq, dx, dy) else missing = missing + 1 end
+        end
+    end
+    return missing
+end
+
+---------------------------------------------------------------- tool registry with specs
+-- U.def("name", { desc = "...", authority = "server|client|mixed", args = { {"x", "number", true, "tile x"}, ... } }, fn)
+function U.def(name, spec, fn)
+    local args = {}
+    for _, a in ipairs(spec.args or {}) do
+        args[#args + 1] = { name = a[1], type = a[2], required = a[3] and true or false, desc = a[4] }
+    end
+    Z.specs[name] = { desc = spec.desc, authority = spec.authority or "server", args = args }
+    Z.tool(name, spec.desc, fn)
+end
+
+Z.tool("tools_specs", "Tool argument specs registered by the Api modules (name -> {desc, authority, args}).", function()
+    return Z.specs
+end)
