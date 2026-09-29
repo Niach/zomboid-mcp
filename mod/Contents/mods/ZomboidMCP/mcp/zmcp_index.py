@@ -21,7 +21,7 @@ API_INDEX_NAME = "api_index.json.gz"
 LUA_EXAMPLES_NAME = "lua_examples.json.gz"
 MISSING_MSG = ("%s is not available (%s). Build it with `make api-index` / tools/build_api_index.py from the repo "
                "(needs the game's projectzomboid.jar and media/lua), or point --api-index at the directory that holds "
-               "it. Without it, use lua_eval_server to introspect the engine directly.")
+               "it. Without it, use run_lua_server to introspect the engine directly.")
 
 
 def default_index_dir(here):
