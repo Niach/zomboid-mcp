@@ -84,3 +84,24 @@ Tested in single-player 42.21 on Linux with the `dev/ZMCPDev` exec watcher:
 - **Owner preference:** world sprites are drawn **always on top** (no wall occlusion needed).
 - **Performance:** a 22 KB PNG (≈29 KB base64) decodes instantly. Keep textures ≤ 256×256 and ≤ 100 KB where possible (network chunks of ~3000 characters).
 - **Dev tip:** `dev/ZMCPDev` is a local-only mod (copy it to `~/Zomboid/mods/`). It runs `~/Zomboid/Lua/zmcp_dev_exec.lua` every time the file changes and writes `zmcp_dev_result.txt`. Draw hooks go in `ZMCPDev.hooks[name] = function(ui) ... end`. This gives a live single-player test loop without restarts. Note: `OnTick` doesn't run while the game is paused.
+
+## Runtime 3D models: VERIFIED 2026-09-30 (static)
+Tested live with the owner in single-player (see ZOM-11 for details):
+- **Files:** write the `.x` mesh (text) and the `.png` into a path containing `media/`, e.g. `~/Zomboid/Lua/media/<name>.x`. The model loader uses a mesh name verbatim only when it contains `media/` and an extension.
+- **Registration:**
+  ```lua
+  ms = ModelScript.new()
+  ms:setModule(getScriptManager():getModule("Base"))
+  ms:InitLoadPP(name)
+  ms:Load(name, "{ mesh = <abs>.x, texture = <abs>.png, scale = N, }")
+  getScriptManager():addModelScript(ms)
+  ```
+  Leaving out `setModule` makes `addModelScript` throw an NPE.
+- **Display:** a carrier world item, e.g. `sq:AddWorldInventoryItem("Base.TirePiece", ox, oy, oz)`, then `item:setWorldStaticModel(name)`.
+- **Model space is Y-up for world items.** An XY-plane disc stands upright, and `setWorldYRotation` rolls it like a wheel. The origin is at ground level, so lift it or put the mesh bottom at y=0.
+- **Static objects render perfectly. Animating them flickers:** B42 chunk FBO caching (`PerformanceSettings.fboRenderChunk`) plus the `WorldItemAtlas` get invalidated on every offset or rotation change. Moving 3D needs a dynamic carrier (ZOM-11).
+- **Not usable:** `ScriptManager.ParseScript` parses item scripts but doesn't finalize them ("Couldn't find item"), and `ScriptBucket` isn't exposed. Use vanilla carrier items plus `ModelScript`.
+
+## Coordination
+- Only one agent may drive the owner's running game (`dev/ZMCPDev`) at a time. Ask the owner or coordinator first.
+- A crashing render hook spams errors every frame and breaks the game, so always `pcall` hooks and remove them on error.
