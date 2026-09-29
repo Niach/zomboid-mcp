@@ -6,7 +6,7 @@ The project is in progress. See [docs/PLAN.md](docs/PLAN.md) for the architectur
 
 ## Layout
 - `mod/Contents/mods/ZomboidMCP/`: the Workshop item (`42/media/lua/{shared,server,client}/ZomboidMCP`). The MCP server ships inside the mod under `mcp/` and the skill under `skill/`.
-- `tools/`: the dev CLI (`pz`), Workshop upload and server deploy.
+- `tools/`: the dev CLI (`pz`), Workshop upload and server deploy, and `build_api_index.py` (regenerates the engine API index with `make api-index`, see [docs/API_INDEX.md](docs/API_INDEX.md)).
 - `spikes/`: experiments. `art/`: sample art.
 
 ## Install (target)

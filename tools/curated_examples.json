@@ -1,0 +1,44 @@
+{
+  "addLamppost": [
+    {"lua": "local light = getCell():addLamppost(x, y, z, 1.0, 0.8, 0.4, 10)", "note": "IsoCell:addLamppost(int x, int y, int z, float r, float g, float b, int radius) -> IsoLightSource. Not used by vanilla Lua; derived from the signature (server side, not verified live). Remove with getCell():removeLamppost(light)."}
+  ],
+  "transmitAddObjectToSquare": [
+    {"lua": "local obj = IsoObject.new(square, spriteName, nil); square:transmitAddObjectToSquare(obj, -1)", "note": "Verified live on 42.21 server (docs/ENGINE_NOTES.md): server-authoritative, synced to all clients. Remove with square:transmitRemoveItemFromSquare(obj)."}
+  ],
+  "addZombiesInOutfit": [
+    {"lua": "addZombiesInOutfit(x, y, z, count, outfitOrNil, femaleChance)", "note": "Verified live on 42.21 server (docs/ENGINE_NOTES.md): server-authoritative spawn, returns ArrayList<IsoZombie>."}
+  ],
+  "Kill": [
+    {"lua": "zombie:setAttackedBy(player); zombie:Kill(player)", "note": "Verified live on 42.21 server: Kill needs one argument (Kill(nil) works too)."}
+  ],
+  "sendAddItemToContainer": [
+    {"lua": "local item = inv:AddItem(\"Base.Banana\"); sendAddItemToContainer(inv, item)", "note": "Verified live on 42.21 server: server-side item give that syncs to the owning client."}
+  ],
+  "addXpNoMultiplier": [
+    {"lua": "addXpNoMultiplier(player, Perks.Cooking, Perks.Cooking:getTotalXpForLevel(5))", "note": "Verified live on 42.21 server."}
+  ],
+  "setGodMod": [
+    {"lua": "player:setGodMod(true, true); sendPlayerExtraInfo(player)", "note": "Verified live on 42.21 server: what the godmodeplayer console command does."}
+  ],
+  "addVehicleDebug": [
+    {"lua": "local vehicle = addVehicleDebug(\"Base.CarNormal\", IsoDirections.S, nil, square)", "note": "Verified live on 42.21 server."}
+  ],
+  "transmitServerTriggerLightning": [
+    {"lua": "getClimateManager():transmitServerTriggerLightning(x, y, true, true, true)", "note": "Verified live on 42.21 server (strike, light, rumble)."}
+  ],
+  "playServerSound": [
+    {"lua": "playServerSound(\"ZombieThumpGeneric\", square)", "note": "Verified live on 42.21 server."}
+  ],
+  "setHairModel": [
+    {"lua": "player:getHumanVisual():setHairModel(\"Messy\"); sendHumanVisual(player)", "note": "Client-authoritative in MP: run on the owning client, then sendHumanVisual (not verified live). Styles: media/hairStyles/hairStyles.xml."}
+  ],
+  "getTexture": [
+    {"lua": "local tex = getTexture(\"media/ui/Furniture_Pickup.png\")", "note": "Global getTexture(String) resolves a path inside the game/mod media folder; getTextureFromSaveDir(String, String) loads from the save dir. Absolute paths are unverified (spikes/texture_spike.lua)."}
+  ],
+  "sendServerCommand": [
+    {"lua": "sendServerCommand(player, \"ZomboidMCP\", \"exec\", {code = chunk}) -- client: Events.OnServerCommand.Add(function(module, command, args) end)", "note": "Verified live on 42.21: flat string/number values, chunk large payloads (~3000 chars)."}
+  ],
+  "sendClientCommand": [
+    {"lua": "sendClientCommand(player, \"ZomboidMCP\", \"hello\", {v = 1}) -- server: Events.OnClientCommand.Add(function(module, command, player, args) end)", "note": "Verified live on 42.21."}
+  ]
+}
