@@ -1,0 +1,11 @@
+"workshopitem"
+{
+	"appid"          "108600"
+	"publishedfileid" "@WORKSHOP_ID@"
+	"contentfolder"  "@CONTENT_FOLDER@"
+	"previewfile"    "@PREVIEW_FILE@"
+	"visibility"     "0"
+	"title"          "Zomboid MCP"
+	"description"    "Claude hacks the simulation: a live scripting bridge for Claude (or any MCP client) with runtime textures, world sprites, 3D models, falling items, overlays and screen apps pushed to every player. The MCP server ships inside the mod (mcp/zomboid_mcp.py, Python 3 stdlib) with the zomboid engine handbook skill. Source and docs: https://github.com/Niach/zomboid-mcp"
+	"changenote"     "@CHANGENOTE@"
+}
