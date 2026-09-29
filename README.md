@@ -38,8 +38,13 @@ Other MCP clients: `python3 zomboid_mcp.py --http 8765 ...` serves streamable HT
   through the file protocol in [docs/PROTOCOL.md](docs/PROTOCOL.md): one `zmcp_req_<n>.json` per call in the game's
   `Zomboid/Lua` directory, answered by `Bridge.lua` on the next server tick. Remote servers are reached over a persistent
   ssh ControlMaster (one ssh exchange per call).
-- The tool catalogue (`mcp/zmcp_catalog.py`) documents every tool with its authority (server vs client), who sees the
-  effect and its limits; tools the running game registers beyond the catalogue are exposed as passthrough tools.
+- Scripting-first: `run_lua_server` and `run_lua_client` (all clients or one player) plus persistent script modules
+  (`script_install` / `script_list` / `script_remove`) are the primary tools; a small curated set (status, players,
+  texture/model upload, spawn item/vehicle/zombies, world sprite, static/moving 3D objects, falling items, weather/time,
+  server_console) covers the most common operations. The catalogue (`mcp/zmcp_catalog.py`) documents every tool with
+  where the code runs, its authority (server vs client), who sees the effect, return/error handling and limits, and
+  points at the "zomboid engine handbook" skill. Tools the running game registers beyond the catalogue are exposed as
+  passthrough tools.
 - `api_search` / `lua_examples` answer from `mcp/api_index.json.gz` and `mcp/lua_examples.json.gz`
   ([docs/API_INDEX.md](docs/API_INDEX.md)); `events_poll` tails `zmcp_events.jsonl`; `wait_for` blocks until a player
   is online; `server_console` writes to the dedicated server's console FIFO and returns the new console output.

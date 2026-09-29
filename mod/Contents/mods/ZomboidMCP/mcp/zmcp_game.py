@@ -607,7 +607,7 @@ class GameBridge(object):
         err = str(err)
         if err.startswith("unknown tool"):
             return ("%s. The running mod does not implement the game side of '%s' (older mod version or module "
-                    "not loaded). Use lua_eval_server as a fallback, or module_install to add it." % (err, tool))
+                    "not loaded). Script it with run_lua_server instead, or add the tool with script_install." % (err, tool))
         return err
 
     # --- events --------------------------------------------------------------
