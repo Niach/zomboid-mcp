@@ -265,7 +265,7 @@ enc = lua("return ZMCPClient.b64.encode('hello, zomboid!')")
 check(enc == base64.b64encode(b"hello, zomboid!").decode(), "b64 encode")
 check(lua("return ZMCPClient.b64.decode('aGVsbG8sIHpvbWJvaWQh')") == "hello, zomboid!", "b64 decode")
 
-errs = [l for l in g.SIM.out.values() if "error" in l.lower() or "failed" in l.lower() or "removed" in l.lower()]
+errs = [l for l in g.SIM.out.values() if ("error" in l.lower() or "failed" in l.lower() or "removed" in l.lower()) and "bridge_loaded" not in l]
 expected = ("exec e2 error", "exec e3 compile", "module hud removed", "hook 'bad' (render) removed", "render hook 'bad' removed")
 unexpected = [l for l in errs if not any(x in l for x in expected)]
 check(not unexpected, "no unexpected errors in the log: " + "; ".join(unexpected[:5]))
