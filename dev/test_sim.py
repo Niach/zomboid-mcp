@@ -49,7 +49,7 @@ def tool(name, args=None):
     return fn(name, rt.table_from(args or {}, recursive=True))
 
 def events(kind):
-    return [json.loads(l) for l in (g.SIM.fs["zmcp_events.jsonl"] or "").splitlines() if json.loads(l)["kind"] == kind]
+    return [json.loads(l) for l in (g.SIM.fs["zmcp_events.log"] or "").splitlines() if json.loads(l)["kind"] == kind]
 
 # --- load + hello
 check(lua("return ZMCP.tools.texture_upload ~= nil and ZMCP.tools.world_sprite ~= nil"), "visual tools registered")

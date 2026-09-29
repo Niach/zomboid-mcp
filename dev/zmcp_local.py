@@ -52,7 +52,7 @@ if __name__ == "__main__":
     if cmd == "status":
         print(json.dumps(status(), indent=1))
     elif cmd == "events":
-        lines = open(os.path.join(LUA, "zmcp_events.jsonl")).read().splitlines()
+        lines = open(os.path.join(LUA, "zmcp_events.log")).read().splitlines()
         print("\n".join(lines[-int(sys.argv[2] if len(sys.argv) > 2 else 10):]))
     elif cmd == "eval":
         print(json.dumps(call("lua_eval", {"code": sys.argv[2]}), indent=1))
