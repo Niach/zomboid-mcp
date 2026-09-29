@@ -69,3 +69,18 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
   - SteamCMD / Workshop uploads
   - Spawning hordes
   - Anything that affects a player's character
+
+## Textures at runtime: VERIFIED 2026-09-30 (ZOM-7)
+Tested in single-player 42.21 on Linux with the `dev/ZMCPDev` exec watcher:
+- **Writing:** a pure-Lua base64 decode (arithmetic only), then `getFileOutput(name)` + `out:writeByte(b)` + `endFileOutput()`, writes a **byte-identical** PNG (md5 matches) to `~/Zomboid/Lua/<name>`.
+- **Loading:** `getTexture(getMyDocumentFolder()..sep.."Lua"..sep..name)` returns a real `Texture` (`w`/`h` correct, e.g. 160×128 and 256×256). The alpha channel works.
+- **New images:** use a **new file name** (e.g. `zmcp_tex_<id>_<n>.png`) for new content, because textures are cached by path.
+- **Drawing:** `ISUIElement:drawTextureScaled(tex, x, y, w, h, a, r, g, b)` from a full-screen overlay (`setConsumeMouseEvents(false)`). A negative width mirrors horizontally.
+- **World anchoring:**
+  - screen position is `isoToScreenX/Y(0, wx, wy, wz)`
+  - divide sizes by `getCore():getZoom(0)`
+  - draw the sprite bottom-centre at the point (`y - h`)
+  - Verified with a crawling snail and a 3-tile Claude logo standing next to the player.
+- **Owner preference:** world sprites are drawn **always on top** (no wall occlusion needed).
+- **Performance:** a 22 KB PNG (≈29 KB base64) decodes instantly. Keep textures ≤ 256×256 and ≤ 100 KB where possible (network chunks of ~3000 characters).
+- **Dev tip:** `dev/ZMCPDev` is a local-only mod (copy it to `~/Zomboid/mods/`). It runs `~/Zomboid/Lua/zmcp_dev_exec.lua` every time the file changes and writes `zmcp_dev_result.txt`. Draw hooks go in `ZMCPDev.hooks[name] = function(ui) ... end`. This gives a live single-player test loop without restarts. Note: `OnTick` doesn't run while the game is paused.
