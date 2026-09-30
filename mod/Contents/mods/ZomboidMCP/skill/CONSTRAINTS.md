@@ -35,6 +35,10 @@ or `print(obj:voidMethod())` fails with "Not enough arguments" (call it on its o
 else); and **a Java method cannot be referenced without calling it**: `obj:method and obj:method()` is a syntax error
 and `obj.method` is nil for Java objects, so feature-test with `pcall(function() return obj:method() end)` instead.
 
+- Inside a coroutine (scenes) an engine call that fires Lua events breaks the next `pcall` on that coroutine
+  (`coroutine changed in pcall`, dedicated server): scenes use `try` / `engine` (docs/SCENES.md), never `pcall`
+  around a world call.
+
 ## Files
 
 - Only the Lua cache dir (`~/Zomboid/Lua`) is reachable: `getFileWriter(name, create, append)` (text),
