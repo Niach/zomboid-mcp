@@ -326,13 +326,18 @@ end
 -- hello: announce this client and ask for everything (textures, models, scripts, sprites, placements, entities,
 -- scene lights). OnGameStart fires it, but on a reconnect (and sometimes on the first join) that hello reaches the
 -- server before the player object exists and is dropped (verified 2026-09-30), so it is repeated every few seconds
--- from OnTick until the server answers with any command ("welcome" is the reply to a hello).
+-- from OnTick until the server's "welcome" (sent straight back, outside the visuals queue) arrives. Capped at
+-- HELLO_MAX tries: every hello that does arrive makes the server re-send the whole state, so a server that never
+-- answers (older bridge without "welcome") must not get one every 5 s forever.
 C.HELLO_RETRY = 5
+C.HELLO_MAX = 24
 C.helloAcked = C.helloAcked or false
 C.lastHello = C.lastHello or 0
+C.helloTries = C.helloTries or 0
 function C.hello()
     C.ensureOverlay()
     C.lastHello = C.now()
+    C.helloTries = C.helloTries + 1
     C.send("hello", { version = C.version })
 end
 C.commands.welcome = function(a) C.helloAcked = true end
@@ -341,10 +346,10 @@ C.handlers.OnServerCommand = function(module, command, args)
     if module ~= C.MODULE then return end
     C.onCommand(command, args)
 end
-C.handlers.OnGameStart = function() C.helloAcked = false; C.hello() end
+C.handlers.OnGameStart = function() C.helloAcked = false; C.helloTries = 0; C.hello() end
 C.handlers.OnTick = function()
     local t = C.now()
-    if not C.helloAcked and t - C.lastHello >= C.HELLO_RETRY and C.player() then C.hello() end
+    if not C.helloAcked and C.helloTries < C.HELLO_MAX and t - C.lastHello >= C.HELLO_RETRY and C.player() then C.hello() end
     if C.isEmpty(C.tickHooks) then return end
     for name, fn in pairs(C.tickHooks) do
         local ok, err = pcall(fn, t)

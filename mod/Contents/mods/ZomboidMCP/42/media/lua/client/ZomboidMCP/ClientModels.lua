@@ -155,10 +155,13 @@ function M.applyPlacement(p)
     local result = "ok"
     if try(function() return item:getWorldStaticModel() end) ~= p.name then
         item:setWorldStaticModel(p.name)
-        if p.yrot then pcall(function() item:setWorldYRotation(tonumber(p.yrot)) end) end
         M.stats.reapplied = M.stats.reapplied + 1
         result = "restored"
     end
+    -- yrot is set on the server after the carrier was sent (the world object's constructor zeroes it), so the
+    -- client copy may lack it
+    local yrot = tonumber(p.yrot)
+    if yrot and try(function() return item:getWorldYRotation() end) ~= yrot then pcall(function() item:setWorldYRotation(yrot) end) end
     -- the chunk FBO may still hold the flat fallback sprite: ask for a redraw of that level
     if pcall(function() sq:invalidateRenderChunkLevel(M.DIRTY_ITEM_MODIFY) end) then M.stats.redraws = M.stats.redraws + 1 end
     return result

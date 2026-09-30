@@ -69,18 +69,17 @@ local function step(key, fn)
     log("built " .. key)
 end
 
--- a floor tile, synced: the old floor object is removed and the new one added at index 0 with the transmit
--- variants (server-side addFloor + transmitCompleteItemToClients left the clients with BOTH floors, verified live
--- 2026-09-30: 180 extra floor objects on the client)
+-- a floor tile the vanilla way. IsoGridSquare:addFloor (42.21 bytecode) removes the old floor (and grass overlays)
+-- with transmitRemoveItemFromSquare, adds the new object and sends it itself (transmitCompleteItemToClients =
+-- AddItemToMap) plus the roof / pathfinding / region updates. Do NOT transmit it again: a second
+-- transmitCompleteItemToClients ADDS another copy on every client (verified live 2026-09-30: 180 extra floor
+-- objects on the client).
 local function floor(x, y, fz, sprite)
     local cell = getCell()
     local sq = cell:getGridSquare(x, y, fz)
     if not sq then sq = cell:createNewGridSquare(x, y, fz, true) end
     if not sq then error("no square at " .. x .. "," .. y .. "," .. fz) end
-    local old = sq:getFloor()
-    if old then pcall(function() sq:transmitRemoveItemFromSquare(old) end) end
-    local obj = IsoObject.new(sq, sprite)
-    sq:transmitAddObjectToSquare(obj, 0)
+    local obj = sq:addFloor(sprite)
     pcall(function() sq:RecalcAllWithNeighbours(true) end)
     return obj
 end

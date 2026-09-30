@@ -215,7 +215,9 @@ V.onClientCommand = function(module, command, player, args)
     local user = userOf(player)
     if command == "hello" then
         V.clients[user] = { version = args.version, t = Z.now(), textures = {} }
-        V.enqueue("welcome", { version = Z.version }, player)     -- the ack the client waits for (it repeats hello until one arrives)
+        -- the ack the client waits for (it repeats hello every 5 s until one arrives). Sent at once, not queued: behind
+        -- a queue backlog (model files for another player) it would come late and every retry would re-send it all
+        pcall(Z.toClients, "welcome", { version = Z.version }, player)
         local n = V.sendAllTo(player)
         Z.event("client_hello", { user = user, version = args.version, sent = n })
     elseif command == "execResult" then
@@ -294,7 +296,7 @@ end
 
 -- re-apply one placement on its (loaded) square; returns "ok" | "restored" | "missing"
 function V.reapply(sq, pid, p)
-    local wo, item = V.findCarrier(sq, p)
+    local _, item = V.findCarrier(sq, p)
     if not item then
         if not p.missing then p.missing = true; Z.event("model_place_missing", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model }) end
         return "missing"
@@ -304,7 +306,9 @@ function V.reapply(sq, pid, p)
     if current == p.name then return "ok" end
     item:setWorldStaticModel(p.name)
     if p.yrot then pcall(function() item:setWorldYRotation(p.yrot) end) end
-    if isServer() then pcall(function() wo:transmitCompleteItemToClients() end) end
+    -- no transmitCompleteItemToClients here: it would ADD a second carrier on every client. A client that has this
+    -- square gets the name from its own LoadGridsquare / "place" re-apply (ClientModels.lua, by item id); a client
+    -- that loads the chunk later receives the server's (now fixed) copy.
     p.restored = (p.restored or 0) + 1
     Z.event("model_place_restored", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model, was = current })
     return "restored"
@@ -461,16 +465,21 @@ Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier wo
     local sq = Z.square(x, y, z)
     local carrier = tostring(a.item or "Base.TirePiece")
     local ox, oy, oz = num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0)
-    local item = sq:AddWorldInventoryItem(carrier, ox, oy, oz)
-    if not item then error("AddWorldInventoryItem returned nil") end
+    -- the model name goes into the item's ModData BEFORE the item is put down: AddWorldInventoryItem(item, ...) sends
+    -- the new world item to the clients exactly once (IsoWorldInventoryObject.transmitCompleteItemToClients, an
+    -- AddItemToMap packet, 42.21 bytecode) and that copy carries the name. Never re-send it afterwards: every
+    -- transmitCompleteItemToClients ADDS another copy on the clients (verified live 2026-09-30: 29 carriers on the
+    -- server, 58 on the client, half of them flat tire sprites).
     local name = "zmcp_" .. id .. "_" .. m.gen
+    local item = instanceItem(carrier)
+    if not item then error("unknown carrier item type: " .. carrier) end
     item:setWorldStaticModel(name)
+    item = sq:AddWorldInventoryItem(item, ox, oy, oz)
+    if not item then error("AddWorldInventoryItem returned nil") end
+    -- the IsoWorldInventoryObject constructor zeroes the X/Y rotation, so yrot can only be set now; clients get it
+    -- from the "place" record (ClientModels.applyPlacement) and from the chunk save later
     local yrot = tonumber(a.yrot)
     if yrot then pcall(function() item:setWorldYRotation(yrot) end) end
-    -- MP: AddWorldInventoryItem already sent the carrier to the clients, before the model name went into its
-    -- ModData. Re-sending the whole object (transmitCompleteItemToClients) DUPLICATES the carrier on every client
-    -- (verified live 2026-09-30: 29 carriers on the server, 58 on the client, half of them flat tire sprites), so
-    -- the clients get the model name from the "place" record instead (ClientModels re-applies it by item id).
     local pid = a.pid and checkId(tostring(a.pid), "pid") or nextId("p")
     local rec = { x = math.floor(x), y = math.floor(y), z = z, model = id, name = name, gen = m.gen, item = carrier,
         itemId = (pcall(function() return item:getID() end) and item:getID()) or nil,

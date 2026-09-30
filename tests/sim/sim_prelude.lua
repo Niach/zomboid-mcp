@@ -89,10 +89,14 @@ SIM.items = { ["Base.Banana"] = { icon = "Banana" }, ["Base.Apple"] = { icon = "
 function getScriptManager()
     return { getItem = function(_, t) local it = SIM.items[t]; if it then return { getIcon = function() return it.icon end } end return nil end }
 end
+SIM.carrierTypes = { ["Base.TirePiece"] = true }
+-- instanceItem(type): a detached InventoryItem (nil for unknown types); sq:AddWorldInventoryItem(item, ...) puts it down
 function instanceItem(t)
     local it = SIM.items[t]
-    if not it then return nil end
-    return { getTex = function() return texture("Item_" .. it.icon, 32, 32) end }
+    if not it and not SIM.carrierTypes[t] then return nil end
+    local item = SIM.newItem(t)
+    item.getTex = function() if it then return texture("Item_" .. it.icon, 32, 32) end return nil end
+    return item
 end
 
 -- world
@@ -227,10 +231,10 @@ function SIM.loadObject(sq, spriteId, name)
     sq.objects[#sq.objects + 1] = o
     return o
 end
-function SIM.addWorldItem(sq, itemType, ox, oy, oz, id)
+-- a detached item (instanceItem); SIM.addWorldItem puts it on a square
+function SIM.newItem(itemType, id)
     SIM.itemSeq = SIM.itemSeq + 1
-    local rec = { item = itemType, x = sq.x, y = sq.y, z = sq.z, ox = ox, oy = oy, oz = oz, id = id or SIM.itemSeq, modData = {}, modelSets = 0, transmits = 0 }
-    SIM.spawned[#SIM.spawned + 1] = rec
+    local rec = { item = itemType, id = id or SIM.itemSeq, modData = {}, modelSets = 0, transmits = 0 }
     local item = { rec = rec, __class = "InventoryItem" }
     item.getID = function() return rec.id end
     item.getFullType = function() return rec.item end
@@ -242,6 +246,19 @@ function SIM.addWorldItem(sq, itemType, ox, oy, oz, id)
     item.setWorldYRotation = function(_, r) rec.yrot = r end
     item.getWorldYRotation = function() return rec.yrot or 0 end
     item.getModData = function() return rec.modData end
+    return item
+end
+-- AddWorldInventoryItem(type or item, ox, oy, oz): the engine sends the new world item to the clients once
+-- (IsoWorldInventoryObject.transmitCompleteItemToClients = an AddItemToMap packet); rec.sentModel is the model name
+-- that send carried. A second transmitCompleteItemToClients adds ANOTHER copy on every client (rec.transmits counts
+-- those duplicates, verified live 2026-09-30). The IsoWorldInventoryObject constructor zeroes X/Y rotation.
+function SIM.addWorldItem(sq, itemOrType, ox, oy, oz, id)
+    local item = type(itemOrType) == "table" and itemOrType or SIM.newItem(itemOrType, id)
+    local rec = item.rec
+    rec.x, rec.y, rec.z, rec.ox, rec.oy, rec.oz = sq.x, sq.y, sq.z, ox, oy, oz
+    rec.yrot = nil
+    rec.sentModel = rec.model
+    SIM.spawned[#SIM.spawned + 1] = rec
     local wo = { __class = "IsoWorldInventoryObject", item = item, rec = rec }
     wo.getItem = function() return item end
     wo.getSquare = function() return sq end
@@ -279,11 +296,13 @@ function SIM.square(x, y, z)
     end
     sq.RecalcAllWithNeighbours = function() sq.recalcs = sq.recalcs + 1 end
     sq.invalidateRenderChunkLevel = function(_, flags) sq.invalidated = sq.invalidated + 1; sq.lastDirty = flags end
-    sq.AddWorldInventoryItem = function(_, itemType, ox, oy, oz) return SIM.addWorldItem(sq, itemType, ox, oy, oz) end
-    -- addFloor(sprite): the vanilla floor builder (ISWoodenFloor): replaces the floor object, returns it
+    sq.AddWorldInventoryItem = function(_, itemOrType, ox, oy, oz) return SIM.addWorldItem(sq, itemOrType, ox, oy, oz) end
+    -- addFloor(sprite): the vanilla floor builder (ISWoodenFloor): replaces the floor object, returns it, and sends
+    -- it to the clients itself; an extra transmitCompleteItemToClients would add a DUPLICATE floor on every client
+    -- (sq.floorDuplicates counts those, verified live 2026-09-30)
     sq.addFloor = function(_, spriteName)
         local o = IsoObject.new(sq, spriteName)
-        o.transmitCompleteItemToClients = function() sq.floorTransmits = (sq.floorTransmits or 0) + 1 end
+        o.transmitCompleteItemToClients = function() sq.floorDuplicates = (sq.floorDuplicates or 0) + 1 end
         if sq.floor then for i, x in ipairs(sq.objects) do if x == sq.floor then table.remove(sq.objects, i); break end end end
         table.insert(sq.objects, 1, o)
         sq.floor = o

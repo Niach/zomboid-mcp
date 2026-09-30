@@ -161,12 +161,29 @@ stored ModData + files, replays a hello and asserts the same models / placements
   writes that table (`KahluaTable.save`) plus `worldXRotation / worldYRotation / worldZRotation`
   (`javap -c zombie.inventory.InventoryItem`). `getWorldStaticModel` reads the same key (with a `Flatpack`
   special case). The item's ModData also travels with the item to clients. In MP `AddWorldInventoryItem` sends
-  the carrier before the name is set, so `model_place` calls `wo:transmitCompleteItemToClients()` afterwards
-  (`IsoObject`, re-sends the object with `InventoryItem.saveWithSize`; **unverified live**).
+  the new world item itself (`IsoWorldInventoryObject.transmitCompleteItemToClients`), so `model_place` creates
+  the carrier with `instanceItem`, sets the name first and only then calls `sq:AddWorldInventoryItem(item, ox, oy, oz)`:
+  the one send carries the name. The `IsoWorldInventoryObject(item, sq, x, y, z)` constructor zeroes
+  `worldXRotation / worldYRotation` (and randomizes Z when it is < 0), so `yrot` is set afterwards and reaches
+  clients through the `place` record (ClientModels re-applies name and `yrot` by item id).
+- **`transmitCompleteItemToClients` ADDS, it never updates** (verified live 2026-09-30, bytecode 42.21):
+  `IsoObject.transmitCompleteItemToClients` sends an `AddItemToMap` packet and the client adds a new object. Calling it
+  on an object that was already sent duplicates it on every client. Seen live: `model_place` re-sending the
+  carrier left 29 carriers on the server and 58 on the client (half of them flat tire sprites); the YSNP scene's
+  `sq:addFloor(sprite)` + `obj:transmitCompleteItemToClients()` left 180 extra floor objects on the client.
+  `sq:addFloor`, `sq:transmitAddObjectToSquare(obj, i)` (= `AddTileObject(obj, i)` + that transmit) and
+  `sq:AddWorldInventoryItem(...)` (4-argument forms) already transmit once on the server: never add a second one.
+  To change an object clients already have, remove and re-add it, or apply the change on the clients too.
+  `addFloor` also removes the old floor, grass overlays and similar with `transmitRemoveItemFromSquare`, keeps rugs,
+  and updates roof, pathfinding and `IsoRegions`; `getFloor()` returns the first object whose sprite has
+  `solidfloor` (not simply index 0).
+- **A reconnect's first `hello` can be lost** (verified live 2026-09-30): `OnGameStart` fires before the server has
+  the player object, and the server drops the command. The client repeats `hello` every 5 s (at most 24 times)
+  until the server's `welcome`, which the server sends at once instead of through the visuals queue.
 - **Safety net:** `model_place` records `{square, carrier type + item id, model name, offsets, yrot}` in
   `visuals.placements`; on every `LoadGridsquare` (fires on the server and on clients for each square a chunk
   brings in) the carrier is looked up (by item id, then by type + model name) and the model re-applied if it is
-  missing (`model_place_restored` event, `restored` counter in `visuals_list`); a carrier that is gone (picked up)
+  missing (`model_place_restored` event, `restored` counter in `visuals_list`; server-side only, never re-sent); a carrier that is gone (picked up)
   is flagged `missing`. Clients do the same from the streamed `place` commands (ClientModels.lua).
 - **A placed model whose ModelScript is not registered yet** (fresh client, model files still streaming): the
   engine draws the carrier item's flat sprite (a tire piece icon) instead. `ItemModelRenderer.renderMain` →

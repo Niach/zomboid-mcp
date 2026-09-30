@@ -72,6 +72,12 @@ check(lua("return ZMCP.tools.texture_upload ~= nil and ZMCP.tools.world_sprite ~
 lua("SIM.fire('OnGameStart')")
 check(g.SIM.uiAdded == 1 and g.SIM.consume is False, "overlay created once, click-through")
 check(len(events("client_hello")) == 1, "hello reached the server")
+lua("SIM.tick(80)")
+check(lua("return ZMCPClient.helloAcked == true and ZMCPClient.helloTries == 1") and len(events("client_hello")) == 1, "the server's welcome stopped the hello retries (one hello in 8 s)")
+lua("ZMCPClient.helloAcked = false; ZMCPClient.helloTries = 0; ZMCPClient.lastHello = SIM.now; SAVED_WELCOME = ZMCPClient.commands.welcome; ZMCPClient.commands.welcome = function() end")
+lua("SIM.tick(1400)")
+check(lua("return ZMCPClient.helloTries") == 24 and len(events("client_hello")) == 25, "without a welcome the hello repeats every 5 s, capped at 24 tries")
+lua("ZMCPClient.commands.welcome = SAVED_WELCOME; ZMCPClient.helloAcked = true")
 
 # --- texture upload: chunks -> file -> texture -> texResult
 r = tool("texture_upload", {"id": "snail", "png_base64_file": "zmcp_tex_snail.b64.txt"})
@@ -220,6 +226,7 @@ check(events("client_model")[-1]["data"]["ok"] is True, "client reported modelRe
 r = tool("model_place", {"id": "star", "x": 6080, "y": 5385, "yrot": 45})
 star_rec = g.SIM.spawned[len(g.SIM.spawned)]
 check(r["placed"] == "zmcp_star_1" and star_rec["model"] == "zmcp_star_1" and star_rec["yrot"] == 45, "model_place spawned a carrier item with the world model")
+check(star_rec["sentModel"] == "zmcp_star_1" and star_rec["transmits"] == 0, "the carrier went to the clients once, already carrying the model name (no second transmit that duplicates it)")
 pid1 = r["pid"]
 check(pid1.startswith("p") and r["itemId"] == star_rec["id"] and r["collide"] is None, "model_place records the placement (pid, carrier item id)")
 vl = tool("visuals_list")
@@ -232,8 +239,10 @@ sq = lua("return SIM.square(6080, 5385, 0)")
 check(sq["invalidated"] >= 1 and sq["lastDirty"] == 16, "client asked the chunk for a redraw (DIRTY_ITEM_MODIFY) after applying the placement")
 # the carrier lost its model (older save / client copy made before the name was set): square load re-applies it
 star_rec["model"] = None
+star_rec["yrot"] = None
 lua("SIM.loadSquare(6080, 5385, 0)")
-check(star_rec["model"] == "zmcp_star_1", "LoadGridsquare re-applied the world model to the carrier item")
+check(star_rec["model"] == "zmcp_star_1" and star_rec["yrot"] == 45, "LoadGridsquare re-applied the world model and yrot to the carrier item")
+check(star_rec["transmits"] == 0, "the restore did not re-send the carrier (that would duplicate it on the clients)")
 check(len(events("model_place_restored")) >= 1 and tool("visuals_list")["placements"][1]["restored"] >= 1, "restore counted in the registry and logged as an event")
 # a model placement with collision: the blocker sits on the same square
 r = tool("model_place", {"id": "star", "x": 6081, "y": 5385, "collide": True, "pid": "gate"})
