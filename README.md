@@ -15,6 +15,7 @@ what the engine can do. A curated set of tools covers the common operations with
 - [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md): verified engine facts, authority rules and pitfalls for B42.
 - [docs/recipes/](docs/recipes/README.md): the raw Lua behind each tool, and for things that are scripts only.
 - [docs/API_INDEX.md](docs/API_INDEX.md): the engine API index behind `api_search` / `lua_examples`.
+- [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md): the rules and limits in one page (authority, execution, Kahlua, files, sizes).
 - [docs/PLAN.md](docs/PLAN.md): direction, architecture and status.
 
 ## Install
@@ -36,8 +37,10 @@ what the engine can do. A curated set of tools covers the common operations with
    ```
 
    A repo checkout works the same way: `mod/Contents/mods/ZomboidMCP/mcp/zomboid_mcp.py`.
-3. Install the skill: `mcp/install.sh` (see `skill/SKILL.md`; the skill is the knowledge Claude needs to script the
-   engine well).
+3. Or let the installer do both steps: `mcp/install.sh [-- <server arguments>]` registers the MCP (`claude mcp add`,
+   user scope) and links the skill into `~/.claude/skills/zomboid-engine/` (`--copy` to copy instead; `mcp/install.py`
+   is the Windows fallback). The skill (`skill/SKILL.md`, guides, recipes, generated API reference) is the knowledge
+   Claude needs to script the engine well; the rules and limits are summarised in [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md).
 4. Check the connection: `python3 zomboid_mcp.py --check [--ssh ... --lua-dir ...]` prints the game status
    (`bridge: live | paused | stale | not_running` with a hint) and exits 0 when the bridge is live.
 

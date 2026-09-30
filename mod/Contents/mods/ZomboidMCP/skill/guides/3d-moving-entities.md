@@ -46,3 +46,62 @@ Vanilla models work without an upload: `entity3d_spawn {model: RadioBlue_Ground,
   could not load). `events_poll` shows `client_entity3d` results.
 - Verified offline against the mocked engine; the live picture (model size versus tiles, rotation sense, clipping) is
   tuned with `ZMCPClient.e3d.MODEL_SCALE / YAW / PITCH / ZOOM` through `run_lua_client` if it looks off.
+
+## Background: why not a world item (verified)
+
+A custom model on a world item (`3d-static-models.md`) renders perfectly while it stands still. Changing its offset or
+rotation every tick **flickers**: Build 42 renders map chunks into cached FBOs (`PerformanceSettings.fboRenderChunk`)
+and world items go through the `WorldItemAtlas`; every transform change invalidates the cache. Updating in `OnTick`
+instead of the render pass did not help. So "roll the star down the street" cannot be a world item.
+
+## Carriers that were evaluated (from `javap` of 42.21 and vanilla Lua)
+
+| carrier | verdict | why |
+|---|---|---|
+| world item with a "dynamic" flag | no | no per-object flag; only the global `fboRenderChunk` |
+| `IsoPhysicsObject` / `IsoBall` | no | not exposed to Lua; `IsoBall` draws a sprite, not a model |
+| zombie or animal carrying the model | partial | `createZombie(...)` + `setUseless(true)` + `setAttachedItem(location, item)` with `item:setStaticModel(name)` moves smoothly and syncs, but the model cannot be rotated per frame, the body cannot be hidden, and animals use another skeleton. Good for "a zombie carrying a thing" |
+| runtime vehicle script | no | `ScriptManager` has no `addVehicleScript`; vehicles need wheels, physics shapes and skins; physics fights manual rotation |
+| `UI3DScene` layer | **chosen** | the vehicle / attachment editor viewport is Lua-exposed, transparent (it clears only the depth buffer), can use the exact iso projection and any registered `ModelScript`, and is moved per frame from Lua |
+
+## Raw Lua: the layer by hand
+
+What `ZMCPClient.e3d` does, reduced to one model (use the tools; this is for understanding and for experiments on one
+player with `run_lua_client {player}`):
+
+```lua
+-- client: a transparent UI3DScene layer with one model (offline-verified maths; live picture tuned with the e3d knobs)
+My3D = My3D or {}
+local Layer = ISUIElement:derive("My3DLayer")
+function Layer:instantiate()
+    self.javaObject = UI3DScene.new(self)
+    self.javaObject:setWidth(self.width)
+    self.javaObject:setHeight(self.height)
+    self.javaObject:setConsumeMouseEvents(false)
+end
+if My3D.layer then My3D.layer:removeFromUIManager() end
+local layer = Layer:new(0, 0, getCore():getScreenWidth(), getCore():getScreenHeight())
+layer:initialise(); layer:instantiate(); layer:addToUIManager(); layer:backMost()
+My3D.layer = layer
+local J = layer.javaObject
+J:fromLua1("setView", "UserDefined")
+J:fromLua3("setViewRotation", 30, 315, 0)
+J:fromLua1("setZoom", 7)
+J:fromLua1("setDrawGrid", false); J:fromLua1("setDrawGridAxes", false); J:fromLua1("setDrawGridPlane", false)
+J:fromLua1("setGizmoVisible", "none")
+J:fromLua2("createModel", "star", ZMCPClient.models.name("star"))   -- or a vanilla ModelScript name
+My3D.pos = { x = getPlayer():getX() + 3, y = getPlayer():getY(), z = 0, h = 1.35, heading = 0, dist = 0 }
+function Layer:prerender()
+    local P = My3D.pos
+    local u0, v0 = J:sceneToUIX(0, 0, 0), J:sceneToUIY(0, 0, 0)
+    local ax, by = J:sceneToUIX(1, 0, 0) - u0, J:sceneToUIY(0, 1, 0) - v0
+    local zoom = getCore():getZoom(0)
+    local k, ky = (32 / zoom) / math.abs(ax), (96 / zoom) / math.abs(by)      -- scene units per tile / per floor
+    local cx, cy = screenToIsoX(0, u0, v0, 0), screenToIsoY(0, u0, v0, 0)       -- world point under the scene origin
+    J:fromLua1("getObjectTranslation", "star"):set((P.x - cx) * k, P.z * ky + P.h * k, (P.y - cy) * k)
+    J:fromLua1("getObjectRotation", "star"):set(0, P.heading, -math.deg(P.dist / P.h))
+    J:fromLua1("getObjectScale", "star"):set(k, k, k)
+end
+return "layer up"
+```
+
