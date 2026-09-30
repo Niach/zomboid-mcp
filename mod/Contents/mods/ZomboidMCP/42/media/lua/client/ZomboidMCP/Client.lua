@@ -46,7 +46,8 @@ C.tickHooks = C.tickHooks or {}      -- name -> function(now)       (pushed code
 C.modules = C.modules or {}          -- persistent client scripts: name -> source
 C.pendingExec = C.pendingExec or {}  -- id -> { total, parts }
 C.handlers = C.handlers or {}
-C.stats = C.stats or { commands = 0, errors = 0, execs = 0 }
+C.stats = C.stats or {}
+for k, v in pairs({ commands = 0, errors = 0, execs = 0 }) do if C.stats[k] == nil then C.stats[k] = v end end   -- fields survive a reload of an older version
 
 for ev, fn in pairs(C.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
 C.handlers = {}

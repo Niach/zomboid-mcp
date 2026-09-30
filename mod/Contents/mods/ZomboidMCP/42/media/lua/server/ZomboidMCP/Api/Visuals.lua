@@ -5,7 +5,7 @@
 -- Persistent state (small) lives in ModData "ZomboidMCP".visuals = { textures, models, sprites, cscripts,
 -- placements } (+ entities3d from Api/Models.lua) so late joiners get everything again when their client says
 -- "hello", in dependency order: textures, models, client scripts, sprites, model placements, moving entities.
--- Texture/model data stays in files in the Lua cache dir (zmcp_tex_<id>.b64, zmcp_model_<id>.*.b64), never in
+-- Texture/model data stays in files in the Lua cache dir (zmcp_tex_<id>.b64.txt, zmcp_model_<id>.*.b64.txt), never in
 -- ModData or Lua memory (server heap), and is streamed in chunks. ModData and the files survive a server restart,
 -- so the same stream reaches a fresh client after one (tests/sim/test_sim.py "restart").
 --
@@ -97,7 +97,7 @@ local function flushQueue()
 end
 
 ---------------------------------------------------------------- textures
-local function textureFile(id) return "zmcp_tex_" .. id .. ".b64" end
+local function textureFile(id) return "zmcp_tex_" .. id .. ".b64.txt" end
 
 local function readTexture(id)
     local t = store().textures[id]
@@ -427,7 +427,7 @@ end)
 ---------------------------------------------------------------- tools: runtime 3D models (static)
 Z.tool("model_upload", "Register a runtime 3D model on every client: args {id, mesh_base64 (PZ .x text mesh), png_base64 (texture), scale?}. Clients write both files under Lua/media/ and register a ModelScript named 'zmcp_<id>_<gen>' (ZMCPClient.models.name(id) in scripts); model_place puts it in the world. Clients report client_model events. See ENGINE_NOTES 'Runtime 3D models'.", function(a)
     local id = checkId(a.id, "id")
-    local meshSrc, texSrc = "zmcp_model_" .. id .. ".x.b64", "zmcp_model_" .. id .. ".png.b64"
+    local meshSrc, texSrc = "zmcp_model_" .. id .. ".x.b64.txt", "zmcp_model_" .. id .. ".png.b64.txt"
     storeBase64(meshSrc, Z.argText(a, "mesh_base64"), "mesh_base64")
     storeBase64(texSrc, Z.argText(a, "png_base64"), "png_base64")
     local s = store()

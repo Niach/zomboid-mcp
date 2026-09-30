@@ -32,7 +32,7 @@ function SIM.fire(ev, ...) for _, f in ipairs(Events[ev].fns) do f(...) end end
 -- text files in the Lua dir
 function getFileWriter(name, create, append)
     -- verified on 42.21: names ending in .lua or .jsonl and names without an extension are refused
-    if name:match("%.lua$") or name:match("%.jsonl$") or not name:match("%.[%w]+$") then return nil end
+    if not (name:match("%.txt$") or name:match("%.json$") or name:match("%.log$")) then return nil end   -- .lua, .jsonl, .b64, no extension: refused
     local w = { buf = {} }
     function w:write(s) self.buf[#self.buf + 1] = s end
     function w:close()
