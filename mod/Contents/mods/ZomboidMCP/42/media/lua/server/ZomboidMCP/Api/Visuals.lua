@@ -14,11 +14,8 @@
 --        plus the client side of script_install/list/remove (ZMCP.scriptSides.client).
 if isClient() then return end
 if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Visuals.lua") end
-if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
-if not (ZMCP and ZMCP.util and ZMCP.util.bool) then error("ZomboidMCP/Api/Common.lua must be loaded before Api/Visuals.lua") end
 
 local Z = ZMCP
-local U = Z.util
 local J = ZMCPJson
 Z.visuals = Z.visuals or {}
 local V = Z.visuals
@@ -39,6 +36,7 @@ V.handlers = {}
 
 local function arr(t) if J.array then return J.array(t) end return t end
 local function num(v, d) local n = tonumber(v); if n == nil then return d end; return n end
+local function flag(v) return v == true or v == 1 or v == "1" or v == "true" or v == "yes" end
 
 local function store()
     local s = ModData.getOrCreate("ZomboidMCP")
@@ -497,7 +495,7 @@ end
 Z.tool("model_remove", "Remove a placed static model (model_place): the carrier world item, its collision blocker (if collide was set) and the placement record, on every client too. args: {pid} or {all = true}. Squares that are not loaded keep their world item until the next visit; the record is dropped anyway (unloaded is reported).", function(a)
     local s = store()
     local targets = {}
-    if U.bool(a, "all", false) then
+    if flag(a.all) then
         for pid in pairs(s.placements) do targets[#targets + 1] = pid end
     else
         local pid = a.pid and checkId(tostring(a.pid), "pid") or error("args.pid or all = true required")
@@ -522,7 +520,7 @@ Z.tool("model_remove", "Remove a placed static model (model_place): the carrier 
         V.enqueue("placeRemove", { pid = pid })
     end
     V.pindex = nil
-    if U.bool(a, "all", false) then V.enqueue("placeRemove", {}) end
+    if flag(a.all) then V.enqueue("placeRemove", {}) end
     Z.event("model_remove", { pids = arr(targets), removed = res.removed, unloaded = res.unloaded })
     return res
 end)
