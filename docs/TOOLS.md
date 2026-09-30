@@ -117,7 +117,8 @@ and a pending waitSignal(signal) returns the data |
 | [`scene_template`](#scene_template) | Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start:
 merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real
 crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area),
-companion (follows the player and comments), flappy (a complete flappy bird screen app) |
+companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game
+inside a phone frame with the world visible around it) |
 | [`app_start`](#app_start) | Push a client screen app: a Lua chunk that runs on the player's client and draws on the overlay, e.g |
 | [`app_stop`](#app_stop) | Stop a screen app on every client or one player: its onExit runs, input capture and player movement are released, its
 hooks are gone |
@@ -736,11 +737,11 @@ No arguments.
 
 ### `scene_template`
 
-*local*. Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start: merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area), companion (follows the player and comments), flappy (a complete flappy bird screen app). Without a name it lists the templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name, kind, code, path, summary} is documentation, nothing runs.
+*local*. Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start: merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area), companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game inside a phone frame with the world visible around it). Without a name it lists the templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name, kind, code, path, summary} is documentation, nothing runs.
 
 | argument | type | description |
 |---|---|---|
-| `name` | string | Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy. Omit to list. |
+| `name` | string | Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy, flappy_phone. Omit to list. |
 
 ### `app_start`
 

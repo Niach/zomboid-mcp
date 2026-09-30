@@ -332,6 +332,7 @@ class ZomboidMCP(object):
         "haunted_house": ("scenes", "A persistent, trigger-driven haunted-house sequence with lights, sounds, puppets and a restorable area."),
         "companion": ("scenes", "A companion who follows the nearest player and comments on what happens."),
         "flappy": ("apps", "A complete flappy bird screen app drawn from shapes, score reported to the server."),
+        "flappy_phone": ("apps", "The flappy bird inside a phone frame in the middle of the screen, the world visible around it (the showcase capture)."),
     }
 
     def _examples_dirs(self):

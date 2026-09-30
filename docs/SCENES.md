@@ -6,7 +6,8 @@ it arrives, drift a sprite across the map, ask a player a question and react to 
 tracked and removed by `scene_stop`. A **screen app** is a Lua chunk that runs on a player's client (`app_start`),
 draws on the overlay and reads keys and mouse: a flappy bird, a HUD mini-game, a menu.
 
-Examples: `examples/scenes/*.lua` and `examples/apps/flappy.lua` (shipped inside the mod at `mod/Contents/mods/ZomboidMCP/examples/`, the repo root `examples/` is a symlink to it), served by `scene_template {name}`. Tools:
+Examples: `examples/scenes/*.lua`, `examples/apps/flappy.lua` and `examples/apps/flappy_phone.lua` (the same game inside a
+phone frame with the world visible around it; shipped inside the mod at `mod/Contents/mods/ZomboidMCP/examples/`, the repo root `examples/` is a symlink to it), served by `scene_template {name}`. Tools:
 `scene_start`, `scene_stop`, `scene_list`, `scene_logs`, `scene_signal`, `scene_template`, `app_start`, `app_stop`,
 `app_list` (docs/TOOLS.md). Client commands: docs/PROTOCOL.md part 2, "Scenes and apps".
 
@@ -199,7 +200,9 @@ Rules: a callback that throws stops the app and reports it (`app_result` event w
 still reach the game (Esc also opens the pause menu in single player, pick keys the game does not use). Movement is
 blocked with `IsoPlayer:setBlockMovement(true)` while a focused app runs and released on exit. Multiplayer: an app runs
 for one player or for all; shared state is optional through `app.send` + a scene's `onSignal("app:<name>")` +
-`scene_signal`/`server_message` back, or simply through `run_lua_client`. `examples/apps/flappy.lua` is the reference.
+`scene_signal`/`server_message` back, or simply through `run_lua_client`. `examples/apps/flappy.lua` is the reference;
+`examples/apps/flappy_phone.lua` draws the same game inside a phone frame (bezel, speaker slit) centred on the screen,
+clipping the game to the phone's screen by hand, so the world stays visible around it (the showcase capture).
 
 ## Offline testing
 

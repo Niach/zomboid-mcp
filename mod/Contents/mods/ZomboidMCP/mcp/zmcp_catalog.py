@@ -847,11 +847,12 @@ tool("scene_template", """
 Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start:
 merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real
 crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area),
-companion (follows the player and comments), flappy (a complete flappy bird screen app). Without a name it lists the
+companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game
+inside a phone frame with the world visible around it). Without a name it lists the
 templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name,
 kind, code, path, summary} is documentation, nothing runs.
 """, _obj({
-    "name": _s("Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy. Omit to list."),
+    "name": _s("Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy, flappy_phone. Omit to list."),
 }), local="scene_template")
 
 tool("app_start", """

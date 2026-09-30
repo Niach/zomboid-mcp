@@ -472,6 +472,17 @@ for name in ("merchant", "supply_drop", "meteor_shower", "haunted_house", "compa
     tool("scene_stop", {"name": "ex_" + name})
 check(scene("ex_merchant") is None and len(g.SIM.zombies) >= 3 and all(z["removed"] or z["dead"] for z in g.SIM.zombies.values()), "stopping the examples removed every puppet")
 flappy = open(os.path.join(EXAMPLES, "apps", "flappy.lua")).read()
+phone = open(os.path.join(EXAMPLES, "apps", "flappy_phone.lua")).read()
+tool("app_start", {"name": "flappy_phone", "code": phone})
+advance(0.4)
+check(lua("return ZMCPClient.apps.list.flappy_phone ~= nil and ZMCPClient.apps.list.flappy_phone.focus == true"), "flappy_phone app starts focused (%s)" % events("app_result")[-1]["data"].get("err"))
+lua("SIM.fire('OnKeyStartPressed', 57)")
+for _ in range(30):
+    g.SIM.now = g.SIM.now + 1 / 30.0
+    lua("SIM.fire('OnTick'); SIM.render()")
+check(lua("return ZMCPClient.apps.list.flappy_phone ~= nil") and len([d for d in lua("return SIM.render()").values() if d["kind"] == "rect"]) > 8, "flappy_phone draws the phone and the game and survives a second of play")
+tool("app_stop", {"name": "flappy_phone"})
+advance(0.2)
 tool("app_start", {"name": "flappy", "code": flappy})
 advance(0.4)          # the queue still holds the examples' removals (12 messages per tick)
 check(lua("return ZMCPClient.apps.list.flappy ~= nil and ZMCPClient.apps.list.flappy.focus == true"), "flappy app starts focused (%s)" % events("app_result")[-1]["data"].get("err"))
