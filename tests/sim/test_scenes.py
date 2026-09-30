@@ -493,7 +493,7 @@ advance(0.5)
 s = scene("ysnp")
 check(err is None and s["status"] == "error" and "not uploaded" in s["error"], "the scene refuses to start without its models (%s)" % (err or s["error"]))
 check("scale = 0.55" in s["error"], "the error names the pier's upload scale (%s)" % s["error"])
-YSNP_SCALE = {"ysnp_pier": 0.55, "ysnp_pier_broken": 0.55}   # scene.lua SCALE: 3.0-unit piers meet the deck one level up
+YSNP_SCALE = {"ysnp_pier": 0.55, "ysnp_pier_broken": 0.55, "ysnp_wizard": 0.6, "ysnp_wizard_up": 0.6, "ysnp_demon": 0.6}   # scene.lua SCALE: 3.0-unit piers meet the deck one level up
 for mid in YSNP_MODELS:
     tool("model_upload", {"id": mid, "mesh_base64": mesh_b64, "png_base64": png_b64, "scale": YSNP_SCALE.get(mid, 1)})
 advance(1.0)
@@ -537,34 +537,42 @@ check(lua("return SIM.square(%d, %d, 0).floor.spriteName" % (X0 + 5, Y0 - 11)) =
 check(s["state"]["arena"] is True and s["state"]["arena_radius"] == 12 and any(l.startswith("built arena") or "built arena" in l for l in logs("ysnp")), "state.arena records the radius (%s)" % s["state"]["arena_radius"])
 stairs = [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (X0, Y0 + 3)).values()]
 check("fixtures_stairs_01_8" in stairs and "fixtures_stairs_01_10" in [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (XE, Y0 + 1)).values()], "stairs at both ends (bottom south, top next to the deck)")
-ents = {e["id"]: e for e in tool("entity3d_list").values()}
-check(set(ents) >= {"ysnp_wizard", "ysnp_demon"} and ents["ysnp_wizard"]["z"] == 1 and ents["ysnp_demon"]["z"] == 0 and ents["ysnp_demon"]["h"] == 0
-      and ents["ysnp_demon"]["y"] == Y0 + 2.5, "the wizard stands on the deck, the demon waits in the lava south of the bridge (%s)" % sorted(ents))
-check(ents["ysnp_wizard"]["rotation"][2] == 75 and ents["ysnp_demon"]["rotation"][2] == 15, "the figures half-turn towards each other (ry %s / %s)"
-      % (ents["ysnp_wizard"]["rotation"][2], ents["ysnp_demon"]["rotation"][2]))
+def figs():
+    return {p["pid"]: p for p in tool("visuals_list")["placements"].values() if p["pid"] in ("ysnp_wizard", "ysnp_demon")}
+f = figs()
+check(set(f) == {"ysnp_wizard", "ysnp_demon"} and f["ysnp_wizard"]["z"] == 1 and f["ysnp_demon"]["z"] == 0 and f["ysnp_demon"]["oz"] == 0
+      and f["ysnp_demon"]["wy"] == Y0 + 2.5 and f["ysnp_wizard"]["wx"] == X0 + 4.5,
+      "the figures are world-anchored placements: the wizard on the deck, the demon on the lava south of the bridge (%s)" % sorted(f))
+check(f["ysnp_wizard"]["yaw"] == 150 and f["ysnp_demon"]["yaw"] == 210, "the figures half-turn towards each other (yaw %s / %s)" % (f["ysnp_wizard"]["yaw"], f["ysnp_demon"]["yaw"]))
+check(len(tool("entity3d_list")) == 0, "no figure on the 3D overlay layer any more")
+fig_items = lua("local n = 0 for _, r in ipairs(SIM.spawned) do if r.model and r.model:find('ysnp_wizard') then n = n + 1 end end return n")
 check(s["lights"] >= 9, "lava glow and the wizard's light (%d lights)" % s["lights"])
 errs_before = len(events("scene_error"))
 # a player walks onto the bridge: the cutscene runs (demon rises, flies, falls, is removed, returns)
 lua("SIM.player.x, SIM.player.y, SIM.player.z = %d + 0.5, %d + 0.5, 1" % (X0 + 6, Y0))
 advance(1.5)
 check(any("cutscene #1" in l for l in logs("ysnp")), "stepping onto the deck triggers the cutscene")
-advance(5.5)
-ents = {e["id"]: e for e in tool("entity3d_list").values()}
-advance(7.0)          # the staff strike comes 13 s into the cutscene; the trigger polls every 0.5 s
-ents = {e["id"]: e for e in tool("entity3d_list").values()}
-check("ysnp_demon" in ents and ents["ysnp_demon"]["z"] > 1 and abs(ents["ysnp_demon"]["x"] - (X0 + 4 + 3.5)) < 0.6, "the demon rose out of the lava and flew up to the wizard (z %.2f, x %.1f)" % (ents["ysnp_demon"]["z"], ents["ysnp_demon"]["x"]))
-check(ents["ysnp_wizard"]["model"] == "ysnp_wizard_up", "the wizard raised the staff")
+advance(3.0)
+f = figs()
+check(f["ysnp_demon"]["moving"] is True and 0 < f["ysnp_demon"]["wz"] < 1.05, "the demon is rising out of the lava (wz %.2f)" % f["ysnp_demon"]["wz"])
+advance(9.5)          # the staff strike comes 13 s into the cutscene; the trigger polls every 0.5 s
+f = figs()
+check(f["ysnp_demon"]["wz"] > 1 and abs(f["ysnp_demon"]["wx"] - (X0 + 4 + 3.5)) < 0.6 and f["ysnp_demon"]["x"] == XE - 2,
+      "the demon rose out of the lava and flew up to the wizard, its carrier still on its home square (wz %.2f, wx %.1f)" % (f["ysnp_demon"]["wz"], f["ysnp_demon"]["wx"]))
+check(f["ysnp_wizard"]["model"] == "ysnp_wizard_up", "the wizard raised the staff (model_swap on the same carrier)")
+check(lua("local n = 0 for _, r in ipairs(SIM.spawned) do if r.model and r.model:find('ysnp_wizard') then n = n + 1 end end return n") == fig_items,
+      "the staff swap did not spawn another carrier")
 advance(1.5)
 broken = [p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_") and "broken" in p["name"]]
 check(len(broken) >= 2, "the piers under the demon cracked (%d broken)" % len(broken))
 advance(8.0)
-ents = {e["id"]: e for e in tool("entity3d_list").values()}
-check("ysnp_demon" not in ents and ents["ysnp_wizard"]["model"] == "ysnp_wizard", "the demon fell and is gone, the staff is down")
+f = figs()
+check("ysnp_demon" not in f and f["ysnp_wizard"]["model"] == "ysnp_wizard", "the demon fell and is gone, the staff is down")
 broken = [p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_") and "broken" in p["name"]]
 check(len(broken) == 0 and len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_")]) == 10, "the piers are whole again")
 advance(14.0)
-ents = {e["id"]: e for e in tool("entity3d_list").values()}
-check("ysnp_demon" in ents and ents["ysnp_demon"]["h"] == 0 and ents["ysnp_demon"]["y"] == Y0 + 2.5 and scene("ysnp")["state"]["runs"] == 1, "the demon waits in the deep again; one run counted")
+f = figs()
+check("ysnp_demon" in f and f["ysnp_demon"]["oz"] == 0 and f["ysnp_demon"]["wy"] == Y0 + 2.5 and scene("ysnp")["state"]["runs"] == 1, "the demon waits in the deep again; one run counted")
 check(len(events("scene_error")) == errs_before, "no scene_error during the cutscene (%s)" % [e["data"] for e in events("scene_error")[errs_before:]])
 lua("SIM.player.x, SIM.player.y, SIM.player.z = %d, %d, 0" % (PX, PY))
 # a restart: the persistent scene comes back, nothing is rebuilt, lights and entities are re-created
