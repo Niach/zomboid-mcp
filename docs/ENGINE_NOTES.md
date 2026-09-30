@@ -166,8 +166,10 @@ invisible tile objects that carry the vanilla flags; the engine then treats them
   `2097676288 + kind` = `IsoWorld.getSpriteID(8000, 1, k)` = `1048576 + (8000 - 2) * 262144 + k`; vanilla tile
   ids end near 121 million (tileset 460), `IsoChunk.Fix2x` only remaps ids below ~250 000. `AddSprite(name)`
   without an id (what `getSprite(name)` does for unknown names) would leave id -1 and the object would lose its
-  sprite on reload. Registration is idempotent and runs at file load, `OnLoadedTileDefinitions` (each world init,
-  before chunks load), `OnGameStart` and `OnServerStarted`; `collision_place` also calls it lazily.
+  sprite on reload. `AddSprite(name, id)` on a name that already exists **replaces** the sprite object in both maps but keeps the
+  old id, so the registration reuses an existing named sprite and only re-sets its flags. It runs at file load,
+  `OnLoadedTileDefinitions` (each world init, before chunks load), `OnGameStart` and `OnServerStarted`;
+  `collision_place` also calls it lazily.
 - **Trade-offs:** (a) vanilla invisible tiles: only `solidtrans` exists, they are moveable (pick-up-able) and
   carry tent metadata; (b) flags on an existing visible sprite would change every instance of that tile on the map;
   (c) own sprites (chosen): nothing drawn, exact flags, persistent by id, but the client must run the same

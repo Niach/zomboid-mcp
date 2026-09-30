@@ -137,7 +137,8 @@ function M.findCarrier(sq, p)
             if try(function() return item:getFullType() end) == p.item then
                 local model = try(function() return item:getWorldStaticModel() end)
                 if model == p.name then return wo, item end
-                if (model == nil or model == "") and not best then best, bestWo = item, wo end
+                local ours = type(model) == "string" and string.sub(model, 1, 5) == "zmcp_"   -- another runtime model: not ours
+                if not ours and not best then best, bestWo = item, wo end
             end
         end
     end

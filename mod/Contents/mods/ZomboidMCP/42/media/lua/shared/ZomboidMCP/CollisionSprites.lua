@@ -15,7 +15,7 @@
 -- vanilla range (IsoWorld.getSpriteID: tileset 460 ends near 121 million; ours start at "tileset 8000") and is
 -- re-registered whenever the sprite manager is (re)built: at file load, OnLoadedTileDefinitions (every world
 -- init, before chunks load), OnGameStart (clients / SP host) and OnServerStarted (dedicated server). Registration
--- is idempotent (IsoSpriteManager.AddSprite returns the existing sprite for a known name).
+-- is idempotent (an existing named sprite is reused and only gets its flags set again).
 -- Hot-reload safe: handlers are kept in ZMCPCollision.handlers and removed before they are re-added.
 ZMCPCollision = ZMCPCollision or {}
 local CS = ZMCPCollision
@@ -56,8 +56,10 @@ local function registerKind(kind)
     local def = CS.KINDS[kind]
     local name, id = CS.spriteName(kind), CS.spriteId(kind)
     local sm = IsoSpriteManager.instance
-    local sprite = sm:getSprite(id)                      -- int overload: nil when the id is unknown
-    if not sprite then sprite = sm:AddSprite(name, id) end
+    -- AddSprite(name, id) on a known name replaces the sprite object (keeping the old id), so reuse an existing one;
+    -- getSprite(name) is only safe once the name exists (for unknown names it creates a blank sprite with id -1)
+    local sprite
+    if sm:getNamedMap():containsKey(name) then sprite = sm:getSprite(name) else sprite = sm:AddSprite(name, id) end
     if not sprite then error("AddSprite returned nil for " .. name) end
     local props = sprite:getProperties()
     for _, flag in ipairs(def.flags) do

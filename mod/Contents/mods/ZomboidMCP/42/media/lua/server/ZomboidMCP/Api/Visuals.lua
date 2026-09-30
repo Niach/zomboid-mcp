@@ -281,7 +281,10 @@ function V.findCarrier(sq, p)
             if typ == p.item then
                 local model = (pcall(function() return item:getWorldStaticModel() end) and item:getWorldStaticModel()) or nil
                 if model == p.name then return wo, item end
-                if (model == nil or model == "") and not best then best, bestWo = item, wo end
+                -- a carrier that lost the name reports nil or its vanilla world model (a TirePiece has one); never
+                -- steal a carrier that shows another runtime model
+                local ours = type(model) == "string" and string.sub(model, 1, 5) == "zmcp_"
+                if not ours and not best then best, bestWo = item, wo end
             end
         end
     end
