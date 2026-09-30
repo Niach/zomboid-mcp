@@ -159,13 +159,17 @@ end
 local function newSprite(name, id)
     local sp = { name = name, id = id or -1, props = newProps() }
     sp.getName = function() return sp.name end
+    sp.setName = function(_, n) sp.name = n end
+    sp.getID = function() return sp.id end
     sp.getProperties = function() return sp.props end
     return sp
 end
 SIM.sprites = { named = {}, ints = {} }
 IsoSpriteManager = { instance = {} }
 local ISM = IsoSpriteManager.instance
--- getSprite(String) creates a blank sprite for unknown names (the engine does too); getSprite(int) does not
+-- getSprite(String) creates a blank sprite for unknown names (the engine does too); getSprite(int) does not.
+-- The sim treats an unknown name as a vanilla tile it does not list (named, id -1: IsoObject.new(sq, 'graffiti_01_3')
+-- in the tests). AddSprite, like the engine's, never sets IsoSprite.name: only the tile definitions (SIM.tile) do.
 function ISM:getSprite(key)
     if type(key) == "number" then return SIM.sprites.ints[key] end
     local sp = SIM.sprites.named[key]
@@ -175,16 +179,18 @@ end
 function ISM:AddSprite(name, id)
     local sp = SIM.sprites.named[name]
     if sp then return sp end
-    sp = newSprite(name, id)
+    sp = newSprite(nil, id)
     SIM.sprites.named[name] = sp
     if id then SIM.sprites.ints[id] = sp end
     return sp
 end
 function ISM:getNamedMap() return { containsKey = function(_, k) return SIM.sprites.named[k] ~= nil end } end
+-- a vanilla tile as IsoWorld.LoadTileDefinitions makes it: registered with an id AND named
+function SIM.tile(name, id) local sp = ISM:AddSprite(name, id); sp:setName(name); return sp end
 -- a couple of vanilla sprites the tests may place
-ISM:AddSprite("walls_exterior_wooden_01_2", 1048576 + 2):getProperties():set(IsoFlagType.WallN)
+SIM.tile("walls_exterior_wooden_01_2", 1048576 + 2):getProperties():set(IsoFlagType.WallN)
 ISM:AddSprite("walls_exterior_wooden_01_2"):getProperties():set(IsoFlagType.collideN)
-ISM:AddSprite("floors_exterior_natural_01_0", 1048576 + 100)
+SIM.tile("floors_exterior_natural_01_0", 1048576 + 100)
 IsoObject = { new = function(sq, spriteName, name)
     local o = { __class = "IsoObject", sq = sq, spriteName = spriteName, name = name, modData = {} }
     o.sprite = ISM:getSprite(spriteName)
@@ -198,10 +204,25 @@ IsoObject = { new = function(sq, spriteName, name)
     o.getSquare = function() return sq end
     return o
 end }
--- an object loaded from a save: the engine resolves the sprite by its numeric id
+-- the chunk save of one object (IsoObject.save -> WorldDictionary.getIdForSpriteName(spriteName)): a registered
+-- sprite (id >= 0, not 20000000) without a name throws the NullPointerException that aborts the whole chunk save
+-- (ServerChunkLoader$SaveChunkThread); returns what would be written (the id, or the name as a string)
+function SIM.saveObject(o)
+    local spn = o.getSpriteName and o.getSpriteName() or nil
+    if spn == nil then return -1 end
+    local sp = SIM.sprites.named[spn]
+    if sp and sp.id >= 0 and sp.id ~= 20000000 then
+        if sp.name == nil then error("NullPointerException: sprite.name is null (DictionaryData.getIdForSpriteName: " .. spn .. ")") end
+        if sp.name == spn then return sp.id end
+    end
+    return spn
+end
+function SIM.saveSquare(sq) local n = 0; for _, o in ipairs(sq.objects) do SIM.saveObject(o); n = n + 1 end return n end
+-- an object loaded from a save: the engine resolves the sprite by its numeric id and then by the sprite's NAME
+-- (DictionaryData.getSpriteNameFromID returns IsoSprite.name, null for a nameless sprite: the object loses it)
 function SIM.loadObject(sq, spriteId, name)
     local sp = ISM:getSprite(spriteId)
-    if not sp then return nil end
+    if not sp or sp.name == nil then return nil end
     local o = IsoObject.new(sq, sp.name, name)
     sq.objects[#sq.objects + 1] = o
     return o

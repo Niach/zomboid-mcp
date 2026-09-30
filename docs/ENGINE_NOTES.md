@@ -150,7 +150,8 @@ Everything the runtime 3D system needs lives in three places that the engine bri
   entities3d` and `collision` (registries, metadata only). Bridge.lua reads it on every load.
 - **Files in the Lua cache dir**: `zmcp_model_<id>.x.b64` / `.png.b64`, `zmcp_tex_<id>.b64`, `zmcp_cscript_*.lua.txt`
   (the data; streamed to clients on demand, never held in the server heap).
-- **The chunk save**: carrier world items (`model_place`) and blocker objects (`collision_place`).
+- **The chunk save**: carrier world items (`model_place`) and blocker objects (`collision_place`). The save only
+  works while every sprite on the chunk has a name (see "Placed objects and the chunk save").
 Every client `hello` (join, reconnect) is answered with the whole state in dependency order: textures, models,
 client scripts, world sprites, **model placements**, **moving entities** (`V.sendAllTo` in Api/Visuals.lua calls
 `Api/Models.lua` last). `tests/sim/test_sim.py` ("server restart") wipes the Lua state, reloads the mod from the
@@ -177,6 +178,35 @@ stored ModData + files, replays a hello and asserts the same models / placements
 - **Moving entities** are pure client state driven by the `e3d` stream: nothing to save on clients; the server
   registry (`entities3d`) plus the hello resend (with `elapsed`) is the persistence.
 
+## Placed objects and the chunk save (verified live 2026-09-30)
+- **A registered sprite without a name breaks the whole chunk save.** `IsoObject.save` looks the object's
+  `spriteName` up with `WorldDictionary.getIdForSpriteName` → `DictionaryData.getIdForSpriteName(name)`: for a
+  name not in the dictionary it takes `IsoSpriteManager.getSprite(name)` and, if that sprite's `id >= 0` (and not
+  `20000000`), calls `sprite.name.equals(name)`. `IsoSpriteManager.AddSprite(name)` / `AddSprite(name, id)` never
+  set `IsoSprite.name` (only `LoadTileDefinitions` does for vanilla tiles), so an object on a sprite registered by
+  `AddSprite(name, id)` threw `NullPointerException: "sprite.name" is null at DictionaryData.getIdForSpriteName`
+  in `ServerChunkLoader$SaveChunkThread` on every save. The chunk was then **never written**: at the next load
+  (walk away and back, restart) it came back from the map, and **everything** our tools had put on it was gone
+  (tiles from `place_object`, carrier items, blockers, runtime floors at z = 1). This was our collision sprites
+  (`zmcp_collision_*`); fixed by `sprite:setName(name)` in `CollisionSprites.lua` (server and clients; the load
+  side, `DictionaryData.getSpriteNameFromID`, also returns `sprite.name`, null for a nameless sprite).
+- **Rule:** every sprite a mod creates with `AddSprite` must get `setName(name)`; never call
+  `IsoSpriteManager.getSprite(name)` for unknown names (it adds a nameless id -1 sprite: harmless for the save,
+  but the object loses its sprite at reload). Vanilla tile sprites (`place_object`, `build_structure`, `addFloor`)
+  are named and save fine. World items (`IsoWorldInventoryObject`) have no `spriteName` and sprite id `20000000`,
+  both skipped by the dictionary. Check a live area for offenders: objects whose `getSprite():getName()` is nil
+  while `getSpriteName()` is set and `getSprite():getID() >= 0`; repair in place with `getSprite():setName(spriteName)`
+  (the objects share the sprite instance, so fixing the registered sprite fixes all of them).
+- **Evidence:** before the fix every periodic save logged the NPE; after `setName` (server via `pz load`, the
+  owner's client via `run_lua_client`) no NPE in the following saves, and an unload test (owner teleported ~300
+  tiles away, chunks unloaded and saved, back after ~2 min, chunk objects re-created) kept a `place_object` wall,
+  a `collision_place` blocker (square still `isSolid`), a `model_place` carrier with its world model, the YSNP
+  scene's blockers and z = 1 rails, and a runtime z = 1 floor.
+- **Runtime squares above ground persist.** `IsoCell.createNewGridSquare(x, y, 1, true)` on the server goes through
+  `ServerMap.setGridSquare` → `IsoChunk.setSquare`, which widens the chunk's `minLevel / maxLevel`
+  (`setMinMaxLevel`); `IsoChunk.Save` writes those levels. A floor added there (`addFloor` or
+  `IsoObject.new` + `transmitAddObjectToSquare`) survived the unload test; no `setModified` or extra call needed.
+
 ## Collision blockers for custom 3D models (ZOM-14, bytecode-verified 2026-09-30, live test pending)
 Custom models (`model_place` carriers, `entity3d_*` scene objects) have no collision. `collision_place` places
 invisible tile objects that carry the vanilla flags; the engine then treats them as walls / solid objects.
@@ -200,9 +230,11 @@ invisible tile objects that carry the vanilla flags; the engine then treats them
   `OnServerStarted`. `PropertyContainer.CreateKeySet()` only rebuilds the key list (no derived flags).
 - **Our sprites** (`shared/ZomboidMCP/CollisionSprites.lua`, loaded by the server and by every client):
   `zmcp_collision_solid {invisible, solid}`, `_solidtrans {invisible, solidtrans}`, `_wall_n {invisible, WallN,
-  collideN, cutN}`, `_wall_w {…W}`, `_wall_nw {both}`. `IsoObject.save` writes only the **numeric sprite id**
-  (`sprite.id`, -1 without a sprite) and `load` resolves it through `IsoSpriteManager.getSprite(int)` (after
-  `WorldConverter.tilesetConversions`), so the sprites are created with **fixed ids** via `AddSprite(name, id)`:
+  collideN, cutN}`, `_wall_w {…W}`, `_wall_nw {both}`. `IsoObject.save` writes the **numeric sprite id**
+  (`sprite.id`, -1 without a sprite) plus the object's `spriteName` as a dictionary id (see "Placed objects and the
+  chunk save": this needs `IsoSprite.name`, so every sprite is also given its name with `setName`), and `load`
+  resolves the sprite through `IsoSpriteManager.getSprite(int)` (after `WorldConverter.tilesetConversions`), so the
+  sprites are created with **fixed ids** via `AddSprite(name, id)`:
   `2097676288 + kind` = `IsoWorld.getSpriteID(8000, 1, k)` = `1048576 + (8000 - 2) * 262144 + k`; vanilla tile
   ids end near 121 million (tileset 460), `IsoChunk.Fix2x` only remaps ids below ~250 000. `AddSprite(name)`
   without an id (what `getSprite(name)` does for unknown names) would leave id -1 and the object would lose its

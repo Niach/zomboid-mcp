@@ -258,6 +258,17 @@ r = tool("collision_place", {"x": 6070, "y": 5390, "w": 3, "h": 2, "kind": "soli
 check(r["placed"] == 0 and r["existing"] == 6, "placing again is a no-op (one blocker per kind per square)")
 r = tool("collision_place", {"x": 6070, "y": 5390, "kind": "wall_n"})
 check(r["placed"] == 1 and len(lua("return SIM.square(6070, 5390, 0)")["objects"]) == 2, "a second kind stacks on the same square")
+# the chunk save: a registered sprite without a NAME throws in WorldDictionary.getIdForSpriteName (the live server's
+# SaveChunkThread NullPointerException that kept whole chunks from being written, so everything on them vanished)
+check(lua("for _, k in ipairs(ZMCPCollision.ORDER) do local n = ZMCPCollision.spriteName(k); if IsoSpriteManager.instance:getSprite(n):getName() ~= n then return false end end return true"), "every collision sprite carries its name (AddSprite alone leaves IsoSprite.name nil)")
+check(lua("local sq = SIM.square(6070, 5390, 0); return SIM.saveSquare(sq) == 2 and SIM.saveObject(sq.objects[1]) == ZMCPCollision.spriteId('solidtrans')"), "chunk save of the blocker square works and writes the fixed sprite id")
+r = tool("place_object", {"x": 6073, "y": 5390, "sprite": "walls_exterior_wooden_01_2", "name": "probe"})
+check(lua("return SIM.saveSquare(SIM.square(6073, 5390, 0)) == 1"), "chunk save of a place_object tile works")
+lua("IsoSpriteManager.instance:getSprite('zmcp_collision_solidtrans'):setName(nil)")      # a sprite from the old registration
+check(lua("return not pcall(SIM.saveSquare, SIM.square(6070, 5390, 0))"), "a nameless registered sprite breaks the save (the bug)")
+lua("ZMCPCollision.register()")
+check(lua("return pcall(SIM.saveSquare, SIM.square(6070, 5390, 0))"), "re-registration names an existing nameless sprite, the save works again")
+tool("remove_object", {"x": 6073, "y": 5390, "name": "probe"})
 wq = tool("world_query", {"x": 6071, "y": 5390, "radius": 2, "what": "objects"})
 names = sorted(set(o["sprite"] for o in wq["objects"].values()))
 check(wq["objectCount"] == 7 and names == ["zmcp_collision_solidtrans", "zmcp_collision_wall_n"] and all(o["name"] == "ZMCP_collision" for o in wq["objects"].values()), "world_query lists the blockers by sprite and name")

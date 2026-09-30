@@ -39,6 +39,15 @@ and `obj.method` is nil for Java objects, so feature-test with `pcall(function()
   (`coroutine changed in pcall`, dedicated server): scenes use `try` / `engine` (docs/SCENES.md), never `pcall`
   around a world call.
 
+## Persistence of placed objects
+
+- Tiles, blockers, carrier items and runtime squares (also `createNewGridSquare` at z > 0) are saved with their
+  chunk. **One object whose sprite has an id but no name** (`IsoSpriteManager.AddSprite(name, id)` without
+  `sprite:setName(name)`) makes the server's chunk save throw (`"sprite.name" is null at
+  DictionaryData.getIdForSpriteName`), the chunk is never written and everything on it vanishes at the next load.
+  Place vanilla sprites (named) or register runtime sprites with a fixed id **and** `setName`; never
+  `getSprite(name)` for unknown names.
+
 ## Files
 
 - Only the Lua cache dir (`~/Zomboid/Lua`) is reachable: `getFileWriter(name, create, append)` (text),

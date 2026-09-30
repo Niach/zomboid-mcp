@@ -482,7 +482,7 @@ ysnp = open(os.path.join(EXAMPLES, "scenes", "you_shall_not_pass", "scene.lua"))
 mesh_b64 = base64.b64encode(b"xof 0303txt 0032\nMesh { 3; 0;0;0;, 1;0;0;, 0;1;0;; }").decode()
 png_b64 = base64.b64encode(open(os.path.join(ROOT, "art", "snail.png"), "rb").read()).decode()
 YSNP_MODELS = ("ysnp_pier", "ysnp_pier_broken", "ysnp_rock", "ysnp_stalagmite", "ysnp_lava", "ysnp_demon", "ysnp_wizard", "ysnp_wizard_up")
-lua("for _, n in ipairs({'fixtures_stairs_01_8', 'fixtures_stairs_01_9', 'fixtures_stairs_01_10'}) do IsoSpriteManager.instance:AddSprite(n) end")
+lua("for _, n in ipairs({'fixtures_stairs_01_8', 'fixtures_stairs_01_9', 'fixtures_stairs_01_10'}) do SIM.tile(n) end")
 lua("ZMCP.visuals.PER_TICK = 400")
 # the real object, collision and 3D-entity tools (the earlier sections mock the world tools)
 for f in ("shared/ZomboidMCP/CollisionSprites.lua", "server/ZomboidMCP/Api/Common.lua", "server/ZomboidMCP/Api/TileSheets.lua",
