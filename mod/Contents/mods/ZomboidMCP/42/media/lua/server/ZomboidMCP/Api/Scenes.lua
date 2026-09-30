@@ -18,6 +18,8 @@
 -- Tools: scene_start, scene_stop, scene_list, scene_logs, scene_signal, app_start, app_stop, app_list.
 if isClient() then return end
 if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("Bridge.lua must be loaded before Api/Scenes.lua") end
+-- the game loads Api/ alphabetically (Scenes before Visuals): pull Visuals in first (no-op in a loadstring bundle)
+if not (ZMCP.visuals and ZMCP.visuals.enqueue) then pcall(require, "ZomboidMCP/Api/Visuals") end
 if not (ZMCP.visuals and ZMCP.visuals.enqueue) then error("Api/Visuals.lua must be loaded before Api/Scenes.lua") end
 
 local Z = ZMCP
