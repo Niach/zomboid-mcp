@@ -1,6 +1,7 @@
 # remove_object
 
-Tool: `remove_object` (server). Remove a tile object by sprite name or index; synced.
+Tool: `remove_object` (server). Remove a tile object by sprite name, object name (`name`, as `world_query` lists it) or
+index; synced.
 
 ```lua
 -- server
@@ -10,7 +11,7 @@ if not sq then error("square not loaded") end
 local objs, removed = sq:getObjects(), {}
 for i = objs:size() - 1, 0, -1 do                     -- backwards: removal shifts indices
     local o = objs:get(i)
-    local name = o:getSprite() and o:getSprite():getName()
+    local name = o:getSpriteName()                    -- or o:getName() to match an object name such as "ZMCP_collision"
     if name == sprite and o ~= sq:getFloor() then
         sq:transmitRemoveItemFromSquare(o)            -- removes locally and on clients
         removed[#removed + 1] = i

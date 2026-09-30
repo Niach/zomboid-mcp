@@ -23,9 +23,9 @@ level, bleeding parts, asleep, god mode, invisible), hours survived, zombie kill
 [{id, name, level, xp}], inventory summary (item types by count, weight), equipped and worn items, moodles and stats.
 Read-only |
 | [`world_query`](#world_query) | Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players,
-objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and
-vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many
-squares in the area were not loaded |
+objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or
+'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to
+place_object, e.g |
 | [`wait_for`](#wait_for) | Block until the game bridge is alive and a condition holds: a named player is online, or at least `min_players`
 are |
 | [`events_poll`](#events_poll) | Events the game appended since your last call: script errors, client results and client texture/model loads, tool
@@ -149,7 +149,7 @@ per-client results (ok / error / running / stopped) and the last score each clie
 
 ### `script_install`
 
-*game*. Install or replace a persistent script. side 'server' (default): the Lua source is written to the game's Lua directory as zmcp_script_<name>.lua.txt, executed right now in the server Lua state (like run_lua_server) and recorded so it runs again on every bridge reload and server start, before players join. side 'client': the source is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them. Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list), tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. Return value: {name, side, file, result} (server: the chunk's return value; client: chunks sent and the recipients). Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays). Rules from the "zomboid engine handbook" skill (skill/SKILL.md in the mod: a categorized map of every Lua-reachable engine function, guides for overlays and screen apps, textures, 3D models, world/tiles, items, zombies, vehicles, weather, players and scenes, tested snippets and every known B42 gotcha): make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
+*game*. Install or replace a persistent script. side 'server' (default): the Lua source is written to the game's Lua directory as zmcp_script_<name>.lua.txt, executed right now in the server Lua state (like run_lua_server) and recorded so it runs again on every bridge reload and server start, before players join. side 'client': the source is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them. Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list), tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. While a server script's chunk runs (on install and on every replay) the tools and tick hooks it registers are recorded under the script name, so script_remove can unregister them again. Return value: {name, side, file, result, tools, hooks} (server: the chunk's return value plus the tool and tick-hook names it registered; client: chunks sent and the recipients). Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays). Rules from the "zomboid engine handbook" skill (skill/SKILL.md in the mod: a categorized map of every Lua-reachable engine function, guides for overlays and screen apps, textures, 3D models, world/tiles, items, zombies, vehicles, weather, players and scenes, tested snippets and every known B42 gotcha): make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
 
 | argument | type | description |
 |---|---|---|
@@ -165,7 +165,7 @@ No arguments.
 
 ### `script_remove`
 
-*game*. Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the file stays and anything the script already registered (tools, tick hooks, event handlers) stays active until its own cleanup runs or the server restarts; to undo immediately, run the cleanup with run_lua_server. Client side: every client drops the hooks registered under the script's name at once.
+*game*. Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the tools (ZMCP.tool) and tick hooks (ZMCP.tickHooks.<name>) the script registered are unregistered at once (a core tool the script had overridden comes back) and returned as {tools, hooks}; the file stays, and Events handlers or globals the script set up stay active until its own cleanup runs (run it with run_lua_server) or the server restarts. Client side: every client drops the hooks registered under the script's name at once.
 
 | argument | type | description |
 |---|---|---|
@@ -197,7 +197,7 @@ No arguments.
 
 ### `world_query`
 
-*game*. Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players, objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find sprite names and object indexes for place_object / remove_object and to check what spawn tools did.
+*game*. Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players, objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or 'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to place_object, e.g. 'ZMCP_collision' for blockers), ground items [{x, y, type, name, condition}] and vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find the sprite, name or index that remove_object takes when cleaning up place_object / build_structure / collision_place results, and to check what spawn tools did.
 
 | argument | type | description |
 |---|---|---|
@@ -353,14 +353,15 @@ No arguments.
 
 ### `remove_object`
 
-*game*. Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by sprite name (first match, or every match with `all`) or by object index from world_query. Without sprite or index it only lists the square's objects. Floors are refused unless `force`. Removing vanilla map objects is irreversible without a map reset. Returns what was removed and the remaining objects.
+*game*. Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by sprite name and/or object name as world_query lists them (first match, or every match with `all`; both must match when both are given) or by object index from world_query. Without sprite, name or index it only lists the square's objects [{index, sprite, type, name, floor}]. Floors are refused unless `force`. Removing vanilla map objects is irreversible without a map reset. Returns what was removed and the remaining objects.
 
 | argument | type | description |
 |---|---|---|
 | `x` * | integer | World tile x (east). Use players_list for a reference position. |
 | `y` * | integer | World tile y (south). |
 | `z` | integer | Floor level, 0 = ground. (default `0`, 0..31) |
-| `sprite` | string | Remove objects with this sprite name. |
+| `sprite` | string | Remove objects with this sprite name (world_query 'sprite'). |
+| `name` | string | Remove objects with this object name (world_query 'name'), e.g. 'ZMCP_collision' or the name given to place_object. |
 | `index` | integer | Object index on the square, from world_query or a previous listing. (0..) |
 | `all` | boolean | Remove every object matching the sprite, not just the first. (default `False`) |
 | `force` | boolean | Allow removing the floor tile. (default `False`) |

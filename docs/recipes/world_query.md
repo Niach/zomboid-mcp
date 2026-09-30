@@ -27,8 +27,11 @@ for dx = -r, r do
             for i = 0, objs:size() - 1 do
                 local o = objs:get(i)
                 if o ~= floor then
-                    res.objects[#res.objects + 1] = { x = sq:getX(), y = sq:getY(), index = i,
-                        sprite = o:getSprite() and o:getSprite():getName() or o:getSpriteName(),
+                    -- getSpriteName() first: a placed IsoObject answered nil to getSprite():getName() on the live
+                    -- server; the tool (Api/Common.lua U.spriteName) also falls back to getParentObjectName / getTextureName
+                    local sprite = o:getSpriteName()
+                    if not sprite or sprite == "" then sprite = o:getSprite() and o:getSprite():getName() end
+                    res.objects[#res.objects + 1] = { x = sq:getX(), y = sq:getY(), index = i, sprite = sprite,
                         type = o:getObjectName(), name = o:getName() }
                 end
             end
@@ -53,4 +56,5 @@ return res
 Notes:
 - Keep the radius small for objects (a 21×21 area already has hundreds of tiles); the tool caps it at 40 (80 for zombies).
 - `ZMCP.zombiesNear(x, y, z, radius)` returns the zombie list directly; `ZMCP.square(x, y, z)` errors nicely when unloaded.
-- Object index (`i`) is what `remove_object` takes; `o:getObjectName()` is the Java class name (IsoObject, IsoDoor, IsoTree, IsoWindow...).
+- `remove_object` takes the `sprite`, the `name` (what `place_object` / `collision_place` set, e.g. `ZMCP_collision`)
+  or the object index (`i`); `o:getObjectName()` is the Java class name (IsoObject, IsoDoor, IsoTree, IsoWindow...).

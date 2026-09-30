@@ -178,8 +178,11 @@ recorded so it runs again on every bridge reload and server start, before player
 is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who
 joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them.
 Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list),
-tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps.
-Return value: {name, side, file, result} (server: the chunk's return value; client: chunks sent and the recipients).
+tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. While a server script's chunk runs (on install
+and on every replay) the tools and tick hooks it registers are recorded under the script name, so script_remove can
+unregister them again.
+Return value: {name, side, file, result, tools, hooks} (server: the chunk's return value plus the tool and tick-hook
+names it registered; client: chunks sent and the recipients).
 Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays).
 Rules from %s: make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers
 and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
@@ -196,10 +199,11 @@ run_lua_server with ZMCP.readFile(file) to read a script's source.
 """, _obj({}), game="script_list")
 
 tool("script_remove", """
-Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the file stays and
-anything the script already registered (tools, tick hooks, event handlers) stays active until its own cleanup runs
-or the server restarts; to undo immediately, run the cleanup with run_lua_server. Client side: every client drops the
-hooks registered under the script's name at once.
+Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the tools (ZMCP.tool)
+and tick hooks (ZMCP.tickHooks.<name>) the script registered are unregistered at once (a core tool the script had
+overridden comes back) and returned as {tools, hooks}; the file stays, and Events handlers or globals the script set
+up stay active until its own cleanup runs (run it with run_lua_server) or the server restarts. Client side: every
+client drops the hooks registered under the script's name at once.
 """, _obj({
     "name": _s("Script name."),
     "side": _s("Where it lives.", enum=["server", "client"], default="server"),
@@ -231,11 +235,14 @@ Read-only. Moodles, stats and infection are the server's copy of client-owned st
 
 tool("world_query", """
 Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players,
-objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and
-vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many
-squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the
-centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find sprite
-names and object indexes for place_object / remove_object and to check what spawn tools did.
+objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or
+'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to
+place_object, e.g. 'ZMCP_collision' for blockers), ground items [{x, y, type, name, condition}] and vehicles [{id,
+script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the
+area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must
+be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find the sprite, name or index that
+remove_object takes when cleaning up place_object / build_structure / collision_place results, and to check what
+spawn tools did.
 """, _obj({
     "x": X, "y": Y, "z": Z,
     "radius": _i("Radius in tiles.", default=10, minimum=0, maximum=80),
@@ -391,12 +398,14 @@ Returns the object's index on the square (for remove_object).
 
 tool("remove_object", """
 Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by
-sprite name (first match, or every match with `all`) or by object index from world_query. Without sprite or index
-it only lists the square's objects. Floors are refused unless `force`. Removing vanilla map objects is irreversible
-without a map reset. Returns what was removed and the remaining objects.
+sprite name and/or object name as world_query lists them (first match, or every match with `all`; both must match
+when both are given) or by object index from world_query. Without sprite, name or index it only lists the square's
+objects [{index, sprite, type, name, floor}]. Floors are refused unless `force`. Removing vanilla map objects is
+irreversible without a map reset. Returns what was removed and the remaining objects.
 """, _obj({
     "x": X, "y": Y, "z": Z,
-    "sprite": _s("Remove objects with this sprite name."),
+    "sprite": _s("Remove objects with this sprite name (world_query 'sprite')."),
+    "name": _s("Remove objects with this object name (world_query 'name'), e.g. 'ZMCP_collision' or the name given to place_object."),
     "index": _i("Object index on the square, from world_query or a previous listing.", minimum=0),
     "all": _b("Remove every object matching the sprite, not just the first.", default=False),
     "force": _b("Allow removing the floor tile.", default=False),

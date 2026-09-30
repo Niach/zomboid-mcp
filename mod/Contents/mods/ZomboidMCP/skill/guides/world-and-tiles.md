@@ -87,7 +87,7 @@ are in the mod (`ZMCP.tileSheets["walls_exterior_wooden_01"]` = count). Check th
 ```lua
 -- server: a 4x4 wooden hut with a floor, around cx,cy (what the tile-house recipe does)
 local cx, cy, z = 6420, 5510, 0
-local WALL_W, WALL_N, FLOOR = "walls_exterior_wooden_01_0", "walls_exterior_wooden_01_1", "floors_interior_wood_01_0"
+local WALL_W, WALL_N, FLOOR = "walls_exterior_wooden_01_0", "walls_exterior_wooden_01_1", "floors_interior_tilesandwood_01_40"
 local plan = {}
 for i = 0, 3 do
     plan[#plan + 1] = { x = cx, y = cy + i, sprite = WALL_W }        -- west wall

@@ -30,6 +30,10 @@ No `io`, no `bit` (use arithmetic), **no `next()`** (`for _ in pairs(t) do retur
 `tostring()` needs an argument, `os.date` works, Java overloads resolve by argument count, Java lists are
 `:size()` / `:get(i)` from 0, strings are Java strings (`string.byte` gives UTF-16 units), pattern sets must not start
 a range with an escaped char (`[%]-~]` is not a range). Return plain tables/strings/numbers/booleans from chunks.
+Two more traps with Java objects: a **void Java method returns no value at all**, so `tostring(zed:pathToLocation(x, y, z))`
+or `print(obj:voidMethod())` fails with "Not enough arguments" (call it on its own line, then `tostring` something
+else); and **a Java method cannot be referenced without calling it**: `obj:method and obj:method()` is a syntax error
+and `obj.method` is nil for Java objects, so feature-test with `pcall(function() return obj:method() end)` instead.
 
 ## Files
 

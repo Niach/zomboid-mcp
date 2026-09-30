@@ -50,8 +50,10 @@ strings, numbers, booleans from a chunk; userdata comes back as `tostring`.
 1. **Is there a curated tool?** Use it: validated arguments, correct authority, events, late-join persistence. See the
    tool list (`status`, `players_list`, `player_info`, `world_query`, `wait_for`, `events_poll`, `api_search`,
    `lua_examples`, `teleport`, `give_item`, `spawn_item`, `spawn_vehicle`, `vehicle_fix`, `spawn_zombies`,
-   `kill_zombies_area`, `place_object`, `remove_object`, `build_structure`, `set_weather`, `set_time`, `texture_upload`,
-   `texture_pixel`, `model_upload`, `model_place`, `world_sprite`, `falling_items`, `overlay_draw`, `server_message`,
+   `kill_zombies_area`, `place_object`, `remove_object`, `build_structure`, `collision_place`, `collision_list`,
+   `collision_clear`, `set_weather`, `set_time`, `texture_upload`, `texture_pixel`, `model_upload`, `model_place`,
+   `model_remove` (`{pid}` from `model_place` / `visuals_list`: takes the carrier item, its blocker and the record away),
+   `world_sprite`, `falling_items`, `overlay_draw`, `server_message`,
    `capture_input`, `visuals_list`, `clear_visuals`, `entity3d_spawn`, `entity3d_move`, `entity3d_rotate`,
    `entity3d_remove`, `entity3d_list`, `server_console`, `script_install`, `script_list`, `script_remove`).
 2. **World state, zombies, items, vehicles, weather, time, XP, traits, server events?** `run_lua_server`. Helpers:

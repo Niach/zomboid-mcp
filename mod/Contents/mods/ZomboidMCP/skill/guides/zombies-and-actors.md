@@ -112,5 +112,20 @@ may move or despawn them when nobody is near, so scripts should re-spawn on dema
 ## Animals
 
 `IsoAnimal` (chickens, cows, sheep, deer...) share the character base: `getCell():getAnimals()` ○,
-`sq:getAnimals()`, spawn with `AnimalDefinitions` + `IsoAnimal.new(...)` ○ (`lua_examples "IsoAnimal.new"`), path with
-`pathToLocation`. They use their own skeleton (no zombie outfits or attachments).
+`sq:getAnimals()`, path with `pathToLocation`. They use their own skeleton (no zombie outfits or attachments).
+
+```lua
+-- server: a calm cow next to the player (verified 42.21); breeds: angus, simmental, holstein
+local p = ZMCP.player()
+local x, y, z = math.floor(p:getX()) + 3, math.floor(p:getY()), math.floor(p:getZ())
+local cow = addAnimal(getCell(), x, y, z, "cow", AnimalDefinitions.getDef("cow"):getBreedByName("angus"))
+cow:addToWorld()
+cow:setDebugStress(0)        -- a stressed animal runs away from everything
+return { id = cow:getID(), x = x, y = y }
+```
+
+Animals ignore the invisible `collision_place` blockers (`solidtrans` and `solid`, verified live: a paddock of them did
+not hold two cows), so there are **no fences for animals through `collision_place`**. Livestock in B42 is held by real
+fence tiles: the vanilla tall fences (`fencing_01_8` / `_9` north, `_10` / `_11` west, `WallN` / `WallW` +
+`TallHoppable`) placed with `build_structure` are the tiles to try (unverified live; low `fencing_01_1..6` are
+hoppable and animals `canClimbFences`). Until that is verified, use animals as set dressing that may wander off.

@@ -436,6 +436,32 @@ rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end
 check(lua("return COUNTER") == 2, "bridge reload re-ran the persistent server script")
 tool("script_remove", {"name": "counter"})
 check(len(tool("script_list")["server"]) == 0, "server script removed")
+# ZOM-16: the tools and tick hooks a script registers are unregistered by script_remove (install, call, remove)
+r = tool("script_install", {"name": "demo_tool", "code": """
+ZMCP.tool("demo_hello", "says hi", function(a) return { hi = a.who or "world" } end)
+ZMCP.tool("ping", "overridden ping", function() return { pong = "script" } end)
+DEMO_TICKS = 0
+ZMCP.tickHooks.demo_tool = function(t) DEMO_TICKS = DEMO_TICKS + 1 end
+return "demo installed"
+"""})
+check(sorted(r["tools"].values()) == ["demo_hello", "ping"] and list(r["hooks"].values()) == ["demo_tool"], "script_install reports the tools and hooks the script registered (%s)" % dict(r))
+check(tool("demo_hello", {"who": "sim"})["hi"] == "sim" and any(t["name"] == "demo_hello" for t in tool("tools_list").values()), "the script's tool works and is listed")
+check(tool("ping")["pong"] == "script", "the script overrode the core ping tool")
+rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end return f end")(src, "=Bridge.lua")()
+check(lua("return ZMCP.scriptTools.demo_tool ~= nil and ZMCP.scriptTools.demo_tool.tools.demo_hello == true and ZMCP.scriptTools.demo_tool.hooks.demo_tool == true"), "the replay on a bridge reload re-records the script's tools and hooks")
+lua("SIM.tick(2)")
+check(lua("return DEMO_TICKS") >= 1, "the script's tick hook runs")
+r = tool("script_remove", {"name": "demo_tool"})
+check(sorted(r["tools"].values()) == ["demo_hello", "ping"] and list(r["hooks"].values()) == ["demo_tool"], "script_remove reports what it unregistered (%s)" % dict(r))
+check(not any(t["name"] == "demo_hello" for t in tool("tools_list").values()) and lua("return ZMCP.tools.demo_hello == nil"), "tools_list no longer lists the script's tool")
+check(tool("ping")["pong"] is True and lua("return ZMCP.tickHooks.demo_tool == nil and ZMCP.scriptTools.demo_tool == nil"), "the core ping tool is back and the tick hook is gone")
+try:
+    tool("script_install", {"name": "broken_tool", "code": 'ZMCP.tool("half_done", "x", function() end)\nerror("boom after registering")'})
+    check(False, "a failing script is reported")
+except Exception as ex:
+    check("boom" in str(ex) and len(tool("script_list")["server"]) == 0, "a failing script is reported and not recorded")
+check(lua("return ZMCP.tools.half_done ~= nil"), "what a failing chunk registered before its error stays (no record to clean it with)")
+lua("ZMCP.tools.half_done = nil")
 try:
     tool("script_install", {"name": "x", "code": "return 1", "side": "nowhere"})
     check(False, "unknown side rejected")

@@ -6,7 +6,7 @@ bridge reload and server start (side `server`) or on every client now and whenev
 
 | side | stored as | runs | removed by |
 |---|---|---|---|
-| `server` (default) | `zmcp_script_<name>.lua.txt` in the Lua dir + ModData | now, on every bridge load, on server start (before players join) | `script_remove`; handlers stay until your `stop()` or a restart |
+| `server` (default) | `zmcp_script_<name>.lua.txt` in the Lua dir + ModData | now, on every bridge load, on server start (before players join) | `script_remove`: the tools (`ZMCP.tool`) and tick hooks (`ZMCP.tickHooks.<name>`) the script registered are unregistered at once (a core tool it overrode comes back); `Events` handlers and globals stay until your `stop()` or a restart |
 | `client` | `zmcp_cscript_<name>.lua.txt` on the server, pushed as chunks | now on every connected client, and on each `hello` (join, reconnect) | `script_remove`: clients drop every `ZMCPClient.on` hook registered under the script name |
 
 Sources above 32 kB are moved to a file by the MCP automatically. Read an installed source back with
@@ -47,6 +47,8 @@ return "greeter installed"
 ```
 
 Stop it before `script_remove {name = "greeter"}`: `run_lua_server` with `if Greeter then Greeter.stop() end`.
+`script_remove` itself only knows what the chunk registered through `ZMCP.tool` and `ZMCP.tickHooks` (it returns
+those as `{tools, hooks}`); `Events` handlers are yours to remove, which is what `stop()` is for.
 
 ## Periodic work: tick hooks
 
@@ -74,7 +76,9 @@ seconds at normal speed). On the dedicated server `OnPlayerUpdate` and `OnZombie
 ## Registering a new MCP tool from a script
 
 `ZMCP.tool(name, description, fn)` registers a game tool; the MCP exposes it as a passthrough tool with a free-form
-`args` object on its next `tools/list`. Return a plain table.
+`args` object on its next `tools/list`. Return a plain table. Registered from a `script_install` chunk, the tool is
+attributed to that script (`script_install` returns it under `tools`) and `script_remove` unregisters it; registered
+from a plain `run_lua_server` call it stays until the next bridge reload or `ZMCP.tools.<name> = nil`.
 
 ```lua
 -- server: a tool that counts zombies around a player
