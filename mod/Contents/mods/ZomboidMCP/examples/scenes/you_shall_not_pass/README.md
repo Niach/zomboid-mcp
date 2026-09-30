@@ -1,7 +1,7 @@
 # You shall not pass (the endgame showcase)
 
 An original fan-made recreation of the bridge scene, built with nothing but the Zomboid MCP: a permanent lava cavern
-with a narrow stone bridge one floor up, the grey wizard standing guard, the fire demon waiting in the deep, and a
+with a narrow stone bridge one floor up, the grey wizard standing guard, the fire demon waiting in the lava below, and a
 cutscene that plays whenever a player steps onto the bridge. Everything in this folder is generated (`make_art.py`),
 no film or game assets. It runs as one persistent scene (`scene.lua`, the scene SDK in `docs/SCENES.md`) plus eight
 runtime 3D models.
@@ -33,7 +33,14 @@ runtime 3D models.
   brings the hall's own margin back from the snapshot). `state.arena_radius` / `state.arena_floor` record it: a
   restart does nothing, a re-run with a bigger radius clears only the new ring, another `arena_floor` re-lays it.
 - **The figures**: `ysnp_wizard` and `ysnp_demon` are moving 3D entities (`entity3d_*`), so they can rise, fly and
-  fall smoothly; they are re-spawned on every start and re-sent to every joining client by the mod.
+  fall smoothly; they are re-spawned on every start and re-sent to every joining client by the mod. Both are real
+  low-poly 3D meshes (wizard 2.17 tiles tall, about 1.2 players; demon 4.57 tall with a 6.4-tile wingspan). The
+  demon stands on the lava two tiles south of the far end (the 3D layer has no depth against the world, so it is
+  kept on the camera side of the piers); the wizard is turned 30 degrees east of `face`, the demon 30 degrees west,
+  so they half-face each other.
+- **New art for a running hall**: `model_upload` the changed ids again (same names: a new generation), then
+  re-spawn the figures (`entity3d_spawn` with the ids and positions from `entity3d_list`, or restart the scene:
+  a built hall only re-creates lights and figures).
 
 ## Running it
 
@@ -60,7 +67,7 @@ runtime 3D models.
 | `z` | 0 | ground level of the hall |
 | `length` | 14 | bridge length in tiles (6 and up); the hall is `length + 6` by 9 tiles |
 | `cooldown` | 180 | seconds between two cutscenes |
-| `face` | 45 | rotation of the flat models towards the camera, degrees |
+| `face` | 45 | camera-facing rotation of the figures, degrees (wizard `face + 30`, demon `face - 30`) |
 | `rails` | true | invisible rails along the deck (`false` leaves the edges open) |
 | `level` | 1 | 1: bridge one floor up with stairs; 0: flat fallback (deck on the ground, chasm blocked) |
 | `clear_margin` | 6 | vegetation-free ring around the hall (trees would overhang it) |

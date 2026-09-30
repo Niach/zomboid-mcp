@@ -194,6 +194,20 @@ stored ModData + files, replays a hello and asserts the same models / placements
   hello order (models before placements and entities) and the client-side re-apply after `modelResult`.
 - **Moving entities** are pure client state driven by the `e3d` stream: nothing to save on clients; the server
   registry (`entities3d`) plus the hello resend (with `elapsed`) is the persistence.
+- **Replacing a model's mesh** (verified live 2026-09-30, YSNP wizard and demon): `model_upload` with the same id
+  bumps `gen`, streams new files (`media/zmcp_model_<id>_<gen>.x`) and registers a new ModelScript
+  `zmcp_<id>_<gen>` on every client; the old name stays registered, so running `entity3d_*` entities keep drawing
+  the old mesh until they are re-spawned (`entity3d_spawn` with the same id: the client sees the new model name and
+  re-creates the scene object). Placements (`model_place`) pick up the new name through `refreshPlacements`.
+  Big meshes go through the `*_base64_file` args (a file in the Lua dir; the MCP does this itself above its blob
+  threshold): a 238 KB `.x` = 317 K base64 chars, far below `V.MAX_B64` (1.2 M), streamed in 157 chunks within
+  about a second.
+- **Moving-entity scale and depth** (verified live 2026-09-30 at zoom 1, 4K): on the UI3DScene layer with
+  `MODEL_SCALE = 1` one model unit is one tile, so a 2.17-unit wizard reads as about 1.2 players, just under one
+  z level. The layer is drawn over the world with its own depth buffer only: a figure partly below the ground (a
+  negative `h`) is not hidden by the floor or the lava, it simply looks like it floats in front of whatever is
+  south of it; stand figures on the surface and keep them on the camera side (south / east) of tall world models.
+  `ry = 45` shows the model's +Z front to the camera, a larger `ry` turns the front towards +x (east).
 
 ## Placed objects and the chunk save (verified live 2026-09-30)
 - **A registered sprite without a name breaks the whole chunk save.** `IsoObject.save` looks the object's

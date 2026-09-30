@@ -5,7 +5,8 @@
 -- lights). A narrow stone bridge crosses it one level up: real floor tiles at z+1 on stone piers, reached by stairs
 -- at both ends, with invisible rails so nobody falls (args.rails = false leaves the edges open: a fall lands in the
 -- lava lake one level down, which is walkable, so nobody gets stuck). The grey wizard stands guard on the bridge;
--- the fire demon waits half sunk in the lava at the far end. Every world change is a saved, transmitted object
+-- the fire demon waits in the lava lake in front of the far end (both are real low-poly 3D models on the
+-- moving 3D layer, half turned towards each other). Every world change is a saved, transmitted object
 -- (floors, stairs, blockers, carrier items of the models); models, lights and the entities come back on every
 -- start and every join through the mod's persistence.
 --
@@ -18,8 +19,8 @@
 -- Signals: scene_signal {name = "ysnp", signal = "play"} runs the cutscene now; signal "teardown" removes
 -- everything and restores the area (the default is to keep it: scene_stop only stops the ambience).
 -- Args: x, y = the WEST end of the bridge deck (default: 10 tiles north of the first player), z = ground level (0),
---   length = bridge length in tiles (14), cooldown = seconds between cutscenes (180), face = rotation of the flat
---   models towards the camera in degrees (45), rails = invisible rails along the deck (true), level = 1 builds the
+--   length = bridge length in tiles (14), cooldown = seconds between cutscenes (180), face = the camera-facing rotation
+--   of the figures in degrees (45; the wizard turns 30 degrees east of it, the demon 30 west), rails = invisible rails along the deck (true), level = 1 builds the
 --   bridge one floor up with stairs (default); level = 0 is the flat fallback (deck on the ground, chasm blocked).
 --   clear_radius = the arena (0 = off): every non-floor object (trees, bushes, grass, boulders, fences, wrecks...) on
 --   every square within that many tiles of the hall centre at level z goes and one uniform floor (arena_floor, sand by
@@ -291,9 +292,15 @@ local function entity(id, model, x, y, ez, h, extra)
     for k, v in pairs(extra or {}) do a[k] = v end
     return tool("entity3d_spawn", a)
 end
-local DEMON_X = xe - 1.5
-local function demonIdle() entity("ysnp_demon", "ysnp_demon", DEMON_X, cy, z, -1.6) end
-local function wizard(raised) entity("ysnp_wizard", raised and "ysnp_wizard_up" or "ysnp_wizard", wizX + 0.5, cy, deckZ, 0) end
+-- The figures are real 3D meshes (make_art.py: front +Z, feet at 0; wizard 2.17 tiles tall = about 1.2 players,
+-- demon 4.57 tall with a 6.4 wingspan). The 3D layer draws on top of the world (no depth against the piers or the
+-- lava), so a figure half sunk in the lava just looks like it floats in front of the bridge: the demon stands ON the
+-- lava two tiles south of the bridge (the camera side, so drawing it over the piers is the right depth order).
+-- ry: face (45) looks at the camera, a larger ry turns the front east (+x), so the two half-turn towards each other.
+local DEMON_X, DEMON_Y, DEMON_H = xe - 1.5, cy + 2, 0
+local WIZ_RY, DEMON_RY = face + 30, face - 30
+local function demonIdle() entity("ysnp_demon", "ysnp_demon", DEMON_X, DEMON_Y, z, DEMON_H, { ry = DEMON_RY }) end
+local function wizard(raised) entity("ysnp_wizard", raised and "ysnp_wizard_up" or "ysnp_wizard", wizX + 0.5, cy, deckZ, 0, { ry = WIZ_RY }) end
 wizard(false)
 demonIdle()
 
@@ -332,8 +339,9 @@ local function cutscene(player)
     lightning(DEMON_X, cy, { strike = false })
     local deep = light(DEMON_X, cy, z, 1, 0.2, 0, 12)
     wait(1.5)
-    -- the demon rises out of the lava (its feet end up a little above the deck) and flies at the wizard
-    local hover = deckUp and 1.63 or 0.63
+    -- the demon rises out of the lava onto the bridge line (its feet end up a little above the deck, z in levels
+    -- with DEMON_H = 0) and flies at the wizard
+    local hover = (deckUp and 1.05 or 0.05) - DEMON_H / 2.45
     tool("entity3d_move", { id = "ysnp_demon", x = DEMON_X, y = cy, z = z + hover, duration = 5, ease = true })
     local burst = every(0.4, function()
         local ex = tool("entity3d_list")
