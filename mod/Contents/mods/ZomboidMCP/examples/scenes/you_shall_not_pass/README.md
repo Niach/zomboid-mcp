@@ -18,7 +18,7 @@ runtime 3D models.
   zombies and line of sight respect them), rock pillars (`ysnp_rock`, solid) outside the walls, five stalagmites, and
   twelve `ysnp_lava` slabs (flat 3×3-tile models) over the lava part with eight red lights.
 - **The bridge**: real floor tiles (`floors_exterior_tilesandstone_01_0`) one level up on ten stone piers
-  (`ysnp_pier`, 3 units tall = one floor), reached by north-facing stairs (`fixtures_stairs_01_8/9/10`) at both ends
+  (`ysnp_pier`, 3 units tall, uploaded at scale 0.55 = one floor), reached by north-facing stairs (`fixtures_stairs_01_8/9/10`) at both ends
   on the two landings, with invisible rails (`wall_n` / `wall_w` on the deck squares). `args.rails = false` leaves the
   edges open: falling lands you in the lava lake one floor down, which is walkable, so nobody gets stuck.
   `args.level = 0` is the flat fallback (deck on the ground, chasm squares `solidtrans`).
@@ -40,7 +40,13 @@ runtime 3D models.
   so they half-face each other.
 - **New art for a running hall**: `model_upload` the changed ids again (same names: a new generation), then
   re-spawn the figures (`entity3d_spawn` with the ids and positions from `entity3d_list`, or restart the scene:
-  a built hall only re-creates lights and figures).
+  a built hall only re-creates lights and figures). Placed models (piers, rocks, lava) keep the old generation's
+  name in their placement record and carrier: `model_remove {pid}` + `model_place` with the same pid, x, y, z, ox,
+  oy, oz, yrot and collide from `visuals_list` for each of them (a restart does not re-place a built hall).
+- **The deck disappears while you stand next to it on the ground**: the deck squares are player-built floors
+  outside a building (an "orphan structure" in 42.21), and the vanilla cutaway hides them while such a structure
+  would cover the player on screen (`IsoCell.occludedByOrphanStructureFlag`). Step away
+  from the bridge and it is back.
 
 ## Running it
 
@@ -51,6 +57,8 @@ runtime 3D models.
      model_upload {id: "ysnp_<id>", mesh_path: "<mod>/examples/scenes/you_shall_not_pass/art/ysnp_<id>.x",
                    png_path: "<mod>/examples/scenes/you_shall_not_pass/art/ysnp_<texture>.png", scale: 1}
    ```
+   except `ysnp_pier` and `ysnp_pier_broken`: `scale: 0.55` (a world item draws one z level as about 1.65 model
+   units, so the 3.0-unit piers need 0.55 for their tops to meet the deck; `scene.lua` `SCALE` logs a mismatch).
    Textures: pier and pier_broken use `ysnp_stone.png`, rock and stalagmite `ysnp_rock.png`, lava `ysnp_lava.png`,
    the demon `ysnp_demon.png`, the wizards `ysnp_wizard.png` / `ysnp_wizard_up.png`.
    `events_poll {kinds: ["client_model"]}` shows each client's registration.

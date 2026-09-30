@@ -8,7 +8,7 @@ pillar and a stalagmite for the cavern, a flat lava slab, and two low-poly 3D fi
 horns, fiery mane, jagged bat wings, a whip and a blade of fire) and the grey wizard (robe, beard, wide-brimmed
 pointed hat, staff with a crystal: held down, or raised overhead with both hands). Model space is Y-up with the
 origin at ground level (docs/ENGINE_NOTES.md, "Runtime 3D models"); 1 model unit = 1 tile on a world item
-(model_place) and on the entity layer (entity3d_*). The figures face +Z; the scene turns +Z towards the iso camera
+(model_place, though one z level up there is only about 1.65 units) and on the entity layer (entity3d_*). The figures face +Z; the scene turns +Z towards the iso camera
 with `ry` (default 45). Triangles wind counter-clockwise seen from outside (like the verified star).
 Needs Pillow (pip install pillow) for the textures; the meshes are plain text.
 """
@@ -215,8 +215,9 @@ def lava_texture(path, size=128):
 # ---------------------------------------------------------------- the bridge pier (slender octagonal stone column)
 # One pier stands on every tile under the deck (scene.lua: one per tile, carrier centred on the square), so it has to
 # be slim for the lava to show between the piers: an octagonal shaft 0.36 tiles across on a wider plinth, with a
-# flared capital 0.62 tiles across whose top (y = 3.0 = one floor) carries the deck. World items get a random turn
-# about the vertical axis, so the pier is 8-fold symmetric and never relies on its orientation.
+# flared capital 0.62 units across whose top (y = 3.0) carries the deck: uploaded at scale 0.55, since a world item
+# draws one floor as about 1.65 model units (measured live). World items get a random turn about the vertical axis,
+# so the pier is 8-fold symmetric and never relies on its orientation.
 # ysnp_stone.png (256x256): x 0..111 the intact stone wrapped once around the column (v = 0 at the top, y = 3.0;
 # v = 1 at the foot, y = 0; a faint lava glow near the foot), x 112..223 the same stone split by glowing cracks (the
 # broken pier), x 224..255 a strip of molten rock for the fresh break faces.

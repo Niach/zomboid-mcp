@@ -88,6 +88,14 @@ with an invisible blocker:
   when generating it, or lift with `oz` (`setOffset`): at scale 3, `oz` 0.45 still left the star about a fifth in the
   ground, so start around 0.6 and adjust live.
 - `scale` in the ModelScript multiplies the mesh units; the star mesh has radius 0.45, so scale 3 is about 1.35 tiles.
+- **Height: one z level is about 1.65 model units on a world item** (measured live 2026-09-30 against a floor one
+  level up: the YSNP piers, 3.0 units tall, reach the deck at `scale` 0.55; at scale 1 they stood almost two levels
+  high). Size anything that has to meet an upper floor with that, then check it from a spot where the upper floor
+  is not cut away (see the next point).
+- **Upper floors outside buildings vanish near the player.** A runtime floor at z >= 1 that is not part of a
+  building is an "orphan structure": while it would cover the player on screen, the vanilla cutaway hides such
+  squares above the player's level (`IsoCell.occludedByOrphanStructureFlag`, read with `getClassFieldVal`). Models underneath
+  then look like they carry nothing; judge the picture from a spot where the flag is false.
 - `worldItem:setOffset(x, y, z)` may exceed 0..1; `InventoryItem.setWorldX/Y/ZRotation` exist.
 
 ## Generating a `.x` mesh with Python (no Blender needed)

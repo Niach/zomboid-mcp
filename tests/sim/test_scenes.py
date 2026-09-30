@@ -492,8 +492,10 @@ r, err = try_tool("scene_start", {"name": "ysnp", "persistent": True, "code": ys
 advance(0.5)
 s = scene("ysnp")
 check(err is None and s["status"] == "error" and "not uploaded" in s["error"], "the scene refuses to start without its models (%s)" % (err or s["error"]))
+check("scale = 0.55" in s["error"], "the error names the pier's upload scale (%s)" % s["error"])
+YSNP_SCALE = {"ysnp_pier": 0.55, "ysnp_pier_broken": 0.55}   # scene.lua SCALE: 3.0-unit piers meet the deck one level up
 for mid in YSNP_MODELS:
-    tool("model_upload", {"id": mid, "mesh_base64": mesh_b64, "png_base64": png_b64, "scale": 1})
+    tool("model_upload", {"id": mid, "mesh_base64": mesh_b64, "png_base64": png_b64, "scale": YSNP_SCALE.get(mid, 1)})
 advance(1.0)
 X0, Y0 = PX + 4, PY - 8
 XE = X0 + 11
@@ -515,6 +517,7 @@ advance(2.0)
 s = scene("ysnp")
 check(s is not None and s["status"] == "running" and s["state"]["built"] is True, "the hall is built on the first run (%s)" % (s and s["lastLog"]))
 if not (s and s["state"]["built"] is True): print("SCENE LOGS:", logs("ysnp"))
+check(not any("is uploaded at scale" in l for l in logs("ysnp")), "every model is uploaded at the scale the hall is laid out for")
 pl = tool("visuals_list")["placements"]
 pids = sorted(p["pid"] for p in pl.values() if p["pid"].startswith("ysnp_"))
 n_piers, n_lava, n_rock, n_stal = (len([p for p in pids if p.startswith(k)]) for k in ("ysnp_pier_", "ysnp_lava_", "ysnp_rock_", "ysnp_stal_"))

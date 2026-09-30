@@ -202,6 +202,15 @@ stored ModData + files, replays a hello and asserts the same models / placements
   Big meshes go through the `*_base64_file` args (a file in the Lua dir; the MCP does this itself above its blob
   threshold): a 238 KB `.x` = 317 K base64 chars, far below `V.MAX_B64` (1.2 M), streamed in 157 chunks within
   about a second.
+- **World-item model height** (verified live 2026-09-30, YSNP piers): one z level (96 px at zoom 1) is about
+  **1.65 model units** on a `model_place` carrier; the 3.0-unit piers meet the z + 1 deck at `model_upload` scale
+  0.55 (at scale 1 they were almost two levels tall). A floor one level up is drawn over the z = 0 models under it.
+- **Runtime upper floors are "orphan structures"** (42.21 `FBORenderCutaways$OrphanStructures`): a square at
+  z >= 1 with a player-built floor or stairs and no building. While one would hide the player on screen,
+  `IsoCell.occludedByOrphanStructureFlag` is true and the renderer cuts such squares above the player's level
+  away: seen live, the YSNP deck vanished over the piers (its two end squares stayed) whenever the owner stood
+  next to the bridge on the ground, and came back when they walked off.
+  Read the flag with `getClassFieldVal(getCell(), field)` in `run_lua_client`; take pictures when it is false.
 - **Moving-entity scale and depth** (verified live 2026-09-30 at zoom 1, 4K): on the UI3DScene layer with
   `MODEL_SCALE = 1` one model unit is one tile, so a 2.17-unit wizard reads as about 1.2 players, just under one
   z level. The layer is drawn over the world with its own depth buffer only: a figure partly below the ground (a

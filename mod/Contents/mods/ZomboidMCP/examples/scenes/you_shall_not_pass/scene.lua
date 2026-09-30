@@ -41,6 +41,9 @@ local ARENA_FLOOR = cfg.arena_floor or "blends_natural_01_0"            -- brigh
 local ARENA_SLICE = 200                                                  -- squares per tick
 local STAIRS = { "fixtures_stairs_01_8", "fixtures_stairs_01_9", "fixtures_stairs_01_10" }   -- bottom, middle, top (up towards north)
 local MODELS = { "ysnp_pier", "ysnp_pier_broken", "ysnp_rock", "ysnp_stalagmite", "ysnp_lava", "ysnp_demon", "ysnp_wizard", "ysnp_wizard_up" }
+-- model_upload scale per model (default 1). A world item draws a model unit larger than the tile grid suggests: one z
+-- level is about 1.65 units (measured live 2026-09-30), so the 3.0-unit piers go up at 0.55 to carry the deck at z+1
+local SCALE = { ysnp_pier = 0.55, ysnp_pier_broken = 0.55 }
 
 waitUntil(function() return #players() > 0 end)
 local xs, y0, z = cfg.x, cfg.y, math.floor(tonumber(cfg.z) or 0)
@@ -61,7 +64,11 @@ state.steps = state.steps or {}
 -- the eight models must have been uploaded (model_upload keeps them for every restart and every join)
 for _, id in ipairs(MODELS) do
     if not ZMCP.visuals.store().models[id] then
-        error("model '" .. id .. "' is not uploaded: model_upload {id = '" .. id .. "', mesh_path = 'examples/scenes/you_shall_not_pass/art/" .. id .. ".x', png_path = ...} first (README.md)")
+        error("model '" .. id .. "' is not uploaded: model_upload {id = '" .. id .. "', mesh_path = 'examples/scenes/you_shall_not_pass/art/" .. id .. ".x', png_path = ..., scale = " .. (SCALE[id] or 1) .. "} first (README.md)")
+    end
+    local up = tonumber(ZMCP.visuals.store().models[id].scale) or 1
+    if math.abs(up - (SCALE[id] or 1)) > 0.001 then
+        log("model '" .. id .. "' is uploaded at scale " .. up .. ", the hall is laid out for " .. (SCALE[id] or 1) .. " (upload it again, README.md)")
     end
 end
 
