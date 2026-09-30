@@ -10,6 +10,12 @@ local wares = cfg.wares or "Base.Axe"
 local price = cfg.price
 if price == nil then price = "Base.Banana" end
 local radius = cfg.radius or 6
+-- what the merchant calls the items: the display name when the script manager knows the type, else the type
+local function itemName(t)
+    local ok, n = pcall(function() return getScriptManager():FindItem(t):getDisplayName() end)
+    return ok and n or t
+end
+local waresName, priceName = itemName(wares), price and itemName(price) or nil
 
 -- the spot: given, or next to the first player who is online (a persistent scene waits here after a restart)
 local x, y, z = cfg.x, cfg.y, cfg.z or 0
@@ -45,7 +51,7 @@ merchant:onNear(radius, function(player)
         merchant:say("Too far. Come closer next time.")
         return
     end
-    local offer = price and ("I have a " .. wares .. ". Yours for one " .. price .. ".") or ("Take this " .. wares .. ", friend.")
+    local offer = price and ("I have an " .. waresName .. ". Yours for one " .. priceName .. ".") or ("Take this " .. waresName .. ", friend.")
     local choice = ask(player, offer, { "Deal", "No thanks" }, 30)
     if choice == "Deal" then
         if takePayment(player) then
@@ -55,7 +61,7 @@ merchant:onNear(radius, function(player)
             sound("UIActivateButton", nil, nil, nil, player)
             log("trade", state.trades, "with", who)
         else
-            merchant:say("You do not even have a " .. price .. ". Come back when you do.")
+            merchant:say("You do not even have a " .. priceName .. ". Come back when you do.")
         end
     else
         merchant:say("Suit yourself.")

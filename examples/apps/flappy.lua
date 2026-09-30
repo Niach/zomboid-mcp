@@ -26,7 +26,7 @@ local function flap()
 end
 
 local function addPipe()
-    local top = 60 + math.random() * (GROUND - GAP - 120)
+    local top = 60 + ZombRandFloat(0, 1) * (GROUND - GAP - 120)
     pipes[#pipes + 1] = { x = W + PIPE_W, top = top, passed = false }
 end
 
