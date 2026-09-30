@@ -1,5 +1,7 @@
 # MCP tools
 
+Every tool the Zomboid MCP server exposes, with its arguments and where it runs, in the families below: scripting (run Lua on the server or clients, persistent scripts), discovery (status, players, world queries, the engine API index), players, world (items, vehicles, zombies, tiles, collision, weather and time), visuals pushed to clients (textures, 3D models, sprites, overlays), moving 3D entities, scenes and screen apps, and server admin. The table right below lists them all with one line each; the sections after it give the full description and argument table of each tool.
+
 Generated from `mod/Contents/mods/ZomboidMCP/mcp/zmcp_catalog.py` by `tools/gen_tools_md.py` (`make docs`); do not edit by hand. The catalogue is the schema every tool is validated against, and `tests/mcp/test_catalog.py` checks it against the Lua tools (`ZMCP.tool(...)` in `Api/*.lua` and `Bridge.lua`). Direction: **scripting-first** (top of `docs/PLAN.md`): `run_lua_server` / `run_lua_client` do everything, the curated tools below cover the common operations with validated arguments. The raw Lua behind each one is in `docs/recipes/`.
 
 Arguments marked * are required. `player` arguments accept the account name or the character name and may be omitted when exactly one player is online. Coordinates are world tiles (`x` east, `y` south, `z` floor). Tools that the MCP process answers itself are marked *local*; the others run in the game through the bridge (`docs/PROTOCOL.md`).

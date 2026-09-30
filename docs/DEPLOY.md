@@ -1,5 +1,11 @@
 # Deploying Zomboid MCP (ZOM-9)
 
+Releasing Zomboid MCP has four parts: upload the mod to its public Steam Workshop item with `tools/upload.sh`
+(SteamCMD, verified afterwards through the public API and an anonymous download), switch the dedicated server's
+mod lists to the Workshop item (a record of the one-time change on the Coolify service), install the MCP server and
+the "zomboid engine" skill on the machine that runs Claude Code (`mcp/install.sh`), and walk through the acceptance
+demos with the owner in the game. The last section lists what to note down afterwards.
+
 Everything here changes the live server or the Workshop item: do it with the owner in chat. Deployment specifics
 (ssh target, container, volume, SteamCMD paths, Steam user, Workshop id) live in `~/.config/zomboid-mcp/local.env`
 and never in the repo (see `docs/local.env.example`).
@@ -9,7 +15,7 @@ and never in the repo (see `docs/local.env.example`).
 ```sh
 make test                              # everything green
 tools/upload.sh --dry-run              # shows the generated VDF and the SteamCMD command
-tools/upload.sh "0.3.0: scripting-first bridge, client runtime, MCP server"
+tools/upload.sh "0.3.1: scenes (You shall not pass, haunted house, phone Flappy), docs"
 ```
 
 - `tools/upload.sh` renders `tools/workshop.vdf.template` (title "Zomboid MCP", **visibility 0 = public**,
