@@ -23,6 +23,7 @@ Reference client (stdlib Python, also used by the tests): `tools/zmcp_client.py`
 | `zmcp_events.log` | server | append-only event log, one JSON object per line: `{"t", "kind", "data"}` |
 | `zmcp_script_<name>.lua.txt` | server | persistent server scripts written by `script_install {name, code}` |
 | `zmcp_cscript_<name>.lua.txt`, `zmcp_tex_<id>.b64`, `zmcp_model_<id>.*.b64` | server | client scripts and base64 assets kept for late joiners (Api/Visuals.lua) |
+| `zmcp_scene_<name>.lua.txt`, `zmcp_snap_<scene>_<n>.json` | server | persistent scenes (`scene_start {persistent}`) and area snapshots (`snapshotArea`) of Api/Scenes.lua |
 | `zmcp_blob_<n>_<key>.txt` | MCP | a string argument above 32 kB, passed as `<key>_file` (see "Large arguments") |
 | `zmcp_src_*.lua`, `zmcp_boot.lua`, `zmcp_run.lua` | dev tools | scratch files used by `tools/pz load` / `tools/pz run` |
 
@@ -148,7 +149,7 @@ Status shows it: `paused=true`, `tps=0`.
 ## Events
 
 `zmcp_events.log` grows forever (the server cannot truncate it; the MCP may). Each line is
-`{"t": unixSeconds, "kind": "bridge_loaded" | "gap" | "script_install" | "script_remove" | "script_error" | "client_hello" | "client_exec_result" | "client_texture" | "client_model" | <tool name> | <script-defined>, "data": {...}}`.
+`{"t": unixSeconds, "kind": "bridge_loaded" | "gap" | "script_install" | "script_remove" | "script_error" | "client_hello" | "client_exec_result" | "client_texture" | "client_model" | "scenes_loaded" | "scene_start" | "scene_done" | "scene_stopped" | "scene_error" | "scene_choice" | "scene:<kind>" | "app_start" | "app_stop" | "app_result" | "app_score" | "app_message" | <tool name> | <script-defined>, "data": {...}}`.
 Read it with `tail -c +<offset>` and remember the offset.
 
 ## Core tools (registered by Bridge.lua)
@@ -263,6 +264,12 @@ Workshop mod runs the client.
 | `modelResult` | `{id, gen, name, ok, err?}` | after a `model` registration. Event `client_model`. |
 | `e3dResult` | `{id, ok, model, err?, tries?}` | after a 3D entity's scene object was created or failed (`createModel`). Event `client_entity3d`. |
 | `pong` | `{version, sprites, textures, models, execs, captured}` | answer to `ping` (`visuals_list` sends one). Event `client_pong`. |
+| `sceneChoice` | `{scene, id, choice}` | a dialog button was clicked (or a number key pressed); `choice` = the option text, `""` when closed. Resolves the scene's `ask()`. Event `scene_choice`. |
+| `sceneClick` | `{scene, id, x, y}` | a watched world sprite was clicked (`onClick`); runs the scene's handler as a task. |
+| `sceneKey` | `{scene, key}` | a watched key was pressed (`onKey`). |
+| `appScore` | `{name, score}` | `app.score(n)` from a screen app. Event `app_score`; also signal `app:<name>` to scenes listening for it. |
+| `appResult` | `{name, ok, err?, state}` | after `appStart` (`running`, or the compile/runtime error) and when an app stops (`stopped`). Event `app_result`. |
+| `appMsg` | `{name, data}` | `app.send(data)` (data is a string, tables JSON-encoded). Event `app_message`; signal `app:<name>`. |
 
 ## Server → client
 
@@ -289,6 +296,24 @@ Workshop mod runs the client.
 | `teleport` | `{x, y, z?}` | `player:teleportTo` (position is client-authoritative in MP). |
 | `clear` | `{what?, id?}` | `all` (sprites, overlays, falling items, notices, every script hook, capture off), `sprites`, `overlays`, `falling`, `notices`, `textures` (forget loaded textures; files stay), `models`, `hooks` (one name with `id`, or all). |
 | `ping` | `{}` | reply `pong`. |
+
+Scenes and apps (`Api/Scenes.lua` → `ClientScenes.lua` / `ClientApps.lua`; every scene command carries `scene` so `sceneClear` can undo one scene):
+
+| command | args | effect |
+|---|---|---|
+| `bubble` | `{scene, id, text, ttl?, sid?, zid?, x?, y?, z?}` | speech bubble above a world sprite (`sid`), a zombie found by online id (`zid`, follows it) or a position. In single player a `zid < 0` bubble is skipped (the puppet's own `Say` line shows). |
+| `bubbleRemove` | `{id}` | remove one bubble. |
+| `dialog` | `{scene, id, text, options = "a\|b\|c", ttl?}` | modal choice panel (buttons, number keys 1..n); the overlay captures the mouse while any dialog is open. Reply `sceneChoice`. |
+| `dialogClose` | `{id}` | close a dialog without an answer (timeout). |
+| `spriteAnim` | `{scene, id, frames = "tex1,tex2", fps}` | cycle the textures of world sprite `id` at `fps`; `frames = ""` stops. |
+| `spriteFade` | `{scene, id, to, dur}` | tween the sprite's opacity to `to` over `dur` seconds. |
+| `light` | `{scene, id, x, y, z, r, g, b, radius}` | `getCell():addLamppost(...)`: a light source (render state, never saved by the engine; re-sent on `hello` while the scene runs). |
+| `lightRemove` | `{id}` \| `{scene}` \| `{}` | remove one light, a scene's lights, or all. |
+| `sceneWatch` | `{scene, clicks? = "id,id", keys? = "57,28"}` | forward clicks on those world sprites (`sceneClick`) and those key presses (`sceneKey`) to the server. |
+| `sceneClear` | `{scene?}` | drop bubbles, dialogs, animations, fades and watchers of that scene (all without `scene`). Sent on every scene end. |
+| `sound` | `{name}` | `getSoundManager():playUISound(name)` (falls back to `PlaySound`). |
+| `appStart` | `{name, part, total, code, focus?}` | chunked screen-app source; when complete the chunk runs in its own environment (`setfenv`) and its `update/draw/onKey/onMouse/onExit` become hooks. `focus` captures input and blocks movement (`IsoPlayer:setBlockMovement`). Reply `appResult`. |
+| `appStop` | `{name?}` | stop one app (all without `name`): `onExit`, release capture/movement. Reply `appResult {state = "stopped"}`. |
 
 `heal`, `cure`, `teleport`, `halo`, `notify`, `chat` and `say` are meant for server scripts too:
 `ZMCP.toClients("heal", {}, ZMCP.player("niach"))`.

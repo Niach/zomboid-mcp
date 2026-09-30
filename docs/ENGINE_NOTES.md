@@ -155,3 +155,22 @@ below was run in the game yet unless marked):
 - A crashing render hook spams errors every frame and breaks the game, so always `pcall` hooks and remove them on error.
 - `getFileWriter` / `getFileOutput` create missing parent directories (`mkdirs`), so `media/zmcp_x.x` under the Lua dir works for model pushes (bytecode-verified 2026-09-30).
 - Client input events available to scripts: `OnKeyStartPressed` (down), `OnKeyPressed` (release), `OnKeyKeepPressed` (held), `OnMouseDown`, `OnMouseMove`, `OnMouseWheel`, `OnRightMouseDown/Up`; polling: `isKeyDown(int)`, `isMouseButtonDown(int)`, `getMouseX/Y()`.
+
+## Scenes and screen apps (ZOM-10): verified facts
+- **Kahlua base library** (bytecode strings of `se.krka.kahlua.stdlib.BaseLib`, 42.21): `setfenv`, `getfenv`, `pcall`, `select`,
+  `unpack`, `rawget/rawset/rawequal`, `getmetatable/setmetatable`, `tonumber/tostring/type`, `error`, `print`,
+  `collectgarbage`. `CoroutineLib` has only `create`, `resume`, `yield`, `status` (no `wrap`, no `running`). Sandboxing a
+  chunk therefore works with `setfenv(fn, env)` + `setmetatable(env, {__index = _G})` (Api/Scenes.lua, ClientApps.lua).
+- **Lamppost lights are not saved.** `IsoCell.lamppostPositions` is referenced only by the constructor, `addLamppost`,
+  `removeLamppost`, `getLightSourceAt`, `updateInternal` and `Dispose` (javap of `zombie.iso.IsoCell`); no save/load
+  path. `getCell():addLamppost(x, y, z, r, g, b, radius)` returns the `IsoLightSource`, `removeLamppost(light)` removes
+  it. Lights are render state, so they are created on the clients and re-created on every start (scene SDK `light()`).
+- `IsoPlayer:setBlockMovement(boolean)` exists (focused screen apps use it); the animal variant is what vanilla Lua calls.
+- Server-side events `OnPlayerDeath`, `OnCharacterDeath`, `OnZombieDead`, `OnZombieCreate` exist in `LuaEventManager`.
+- `IsoZombie`: `setUseless(boolean)` (vanilla tutorial puppets), `pathToLocation(int, int, int)`, `pathToLocationF`,
+  `pathToCharacter`, `faceLocationF(float, float)`, `setWalkType(String)`, `getOnlineID()`, `removeFromWorld()` +
+  `removeFromSquare()`. `Say` goes to `ProcessSay` (client rendering); whether the dedicated server transmits a zombie's
+  line is unverified, so scenes also send a client bubble that follows the zombie by online id.
+- Vanilla sound names (media/scripts): `Thunder`, `ZombieThumpGeneric`, `HouseAlarm`, `LightSwitch`, `WoodDoorOpen`,
+  `WoodDoorClose`, `ZombieSurprisedPlayer`, `UIActivateButton`, `UIActivateMainMenuItem`, `Helicopter`. Items:
+  `Base.Stone2` (a rock), `Base.Log`, `Base.Plank`, `Base.Nails`, `Base.Hammer`, `Base.FirstAidKit`, `Base.TinnedBeans`.

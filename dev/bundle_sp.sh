@@ -24,6 +24,8 @@ RES=~/Zomboid/Lua/zmcp_dev_result.txt
            "$LUA/client/ZomboidMCP/ClientOverlay.lua" \
            "$LUA/client/ZomboidMCP/ClientInput.lua" \
            "$LUA/client/ZomboidMCP/ClientModels.lua" \
+           "$LUA/client/ZomboidMCP/ClientScenes.lua" \
+           "$LUA/client/ZomboidMCP/ClientApps.lua" \
            "$LUA/client/ZomboidMCP/Client.lua"; do
     echo "do -- $(basename "$f")"
     grep -v '^require "ZomboidMCP/' "$f" | sed 's/^return .*$/-- (bundle: top-level return removed)/'
