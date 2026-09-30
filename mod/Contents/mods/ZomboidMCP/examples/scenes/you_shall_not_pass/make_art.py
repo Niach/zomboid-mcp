@@ -118,19 +118,69 @@ def noise_img(size, base, spread, blur=1.5, seed=1):
     return img.filter(ImageFilter.GaussianBlur(blur))
 
 
-def stone_texture(path, size=128):
-    img = noise_img(size, (118, 116, 112), 22, blur=1.2, seed=3)
+def stone_texture(path, size=256):
+    """The pier texture (layout: see make_pier): dark basalt blocks, one per octagon face and course, staggered,
+    with dark mortar; the foot glows faintly from the lava; a cracked copy and a molten strip for the broken pier."""
+    rnd = random.Random(3)
+    face_w, courses = 14, 12                                      # 8 faces x 14 px = 112 px around; 12 courses over 3 tiles
+    ch = size / courses
+    img = noise_img(size, (84, 80, 82), 16, blur=1.0, seed=3)
+    px = img.load()
+    for c in range(courses):                                      # per-block tint so the courses read
+        y0, y1 = int(c * ch), int((c + 1) * ch)
+        off = face_w // 2 if c % 2 else 0
+        for b in range(-1, 224 // face_w + 1):
+            x0 = b * face_w + off
+            k = rnd.randint(-14, 12)
+            for y in range(y0, y1):
+                for x in range(max(0, x0), min(224, x0 + face_w)):
+                    r, g, bl = px[x, y]
+                    px[x, y] = (max(0, min(255, r + k)), max(0, min(255, g + k)), max(0, min(255, bl + k)))
     d = ImageDraw.Draw(img)
-    rows, mortar = 4, (52, 48, 46)
-    h = size / rows
-    for r in range(rows):
-        y = int(r * h)
-        d.line([(0, y), (size, y)], fill=mortar, width=3)
-        offset = int(h * 0.8) if r % 2 else 0
-        for c in range(-1, 3):
-            x = int(c * h * 1.6 + offset)
-            d.line([(x, y), (x, int(y + h))], fill=mortar, width=3)
-    img = img.filter(ImageFilter.GaussianBlur(0.6))
+    mortar = (34, 30, 32)
+    for half in (0, 112):
+        for c in range(courses + 1):
+            y = int(c * ch)
+            d.line([(half, y), (half + 111, y)], fill=mortar, width=2)
+            if c < courses:
+                off = face_w // 2 if c % 2 else 0
+                for b in range(0, 112 // face_w + 1):
+                    x = half + (b * face_w + off) % 112
+                    d.line([(x, y), (x, int(y + ch))], fill=mortar, width=2)
+        d.line([(half, 0), (half, size)], fill=(58, 54, 56), width=1)
+    # the lava glow at the foot: warm light rising from below, strongest in the mortar
+    for y in range(int(size * 0.72), size):
+        t = max(0.0, (y - size * 0.72) / (size * 0.28)) ** 1.6
+        for x in range(224):
+            r, g, b = px[x, y]
+            dark = r < 50
+            k = t * (0.85 if dark else 0.45)
+            px[x, y] = (int(r + (235 - r) * k), int(g + (90 - g) * k * 0.9), int(b + (20 - b) * k * 0.6))
+    # the cracked copy: glowing fissures running down the shaft
+    cr = Image.new("L", (112, size), 0)
+    dc = ImageDraw.Draw(cr)
+    for i in range(6):
+        x, y = rnd.randint(4, 107), rnd.randint(int(size * 0.3), int(size * 0.66))
+        for _ in range(rnd.randint(6, 10)):
+            nx, ny = x + rnd.randint(-7, 7), y + rnd.randint(-18, 18)
+            dc.line([(x, y), (nx, ny)], fill=255, width=2)
+            x, y = max(0, min(111, nx)), max(0, min(size - 1, ny))
+    halo = cr.filter(ImageFilter.GaussianBlur(2.5))
+    for y in range(size):
+        for x in range(112):
+            h, c = halo.getpixel((x, y)) / 255.0, cr.getpixel((x, y)) / 255.0
+            r, g, b = px[112 + x, y]
+            r, g, b = r + (220 - r) * min(1, h * 1.6), g + (70 - g) * min(1, h * 1.6), b + (15 - b) * min(1, h * 1.6)
+            if c > 0.5:
+                r, g, b = 255, 200, 90
+            px[112 + x, y] = (int(r), int(g), int(b))
+    # the molten strip for the break faces
+    for y in range(size):
+        for x in range(224, size):
+            v = (math.sin(x * 0.7 + y * 0.13) + math.sin(y * 0.31) + rnd.uniform(-0.5, 0.5)) / 2.5
+            v = max(0.0, min(1.0, 0.5 + v * 0.5))
+            px[x, y] = (255, int(110 + 120 * v), int(20 + 80 * v * v))
+    img = img.filter(ImageFilter.GaussianBlur(0.5))
     img.save(path)
 
 
@@ -162,18 +212,104 @@ def lava_texture(path, size=128):
     img.filter(ImageFilter.GaussianBlur(1.0)).save(path)
 
 
-# ---------------------------------------------------------------- the pieces
+# ---------------------------------------------------------------- the bridge pier (slender octagonal stone column)
+# One pier stands on every tile under the deck (scene.lua: one per tile, carrier centred on the square), so it has to
+# be slim for the lava to show between the piers: an octagonal shaft 0.36 tiles across on a wider plinth, with a
+# flared capital 0.62 tiles across whose top (y = 3.0 = one floor) carries the deck. World items get a random turn
+# about the vertical axis, so the pier is 8-fold symmetric and never relies on its orientation.
+# ysnp_stone.png (256x256): x 0..111 the intact stone wrapped once around the column (v = 0 at the top, y = 3.0;
+# v = 1 at the foot, y = 0; a faint lava glow near the foot), x 112..223 the same stone split by glowing cracks (the
+# broken pier), x 224..255 a strip of molten rock for the fresh break faces.
+PIER_H, PIER_N = 3.0, 8
+PIER_U = {"stone": (0 / 256, 112 / 256), "cracked": (112 / 256, 224 / 256), "glow": (226 / 256, 254 / 256)}
+PIER_PROFILE = [(0.00, 0.33), (0.18, 0.33), (0.30, 0.25), (0.40, 0.20), (2.45, 0.18), (2.62, 0.21),
+                (2.78, 0.33), (3.00, 0.33)]                         # (y, octagon radius) from the foot up
+
+
+def _newell(pts):
+    n = [0.0, 0.0, 0.0]
+    for i, p in enumerate(pts):
+        q = pts[(i + 1) % len(pts)]
+        n[0] += (p[1] - q[1]) * (p[2] + q[2]); n[1] += (p[2] - q[2]) * (p[0] + q[0]); n[2] += (p[0] - q[0]) * (p[1] + q[1])
+    L = math.sqrt(sum(c * c for c in n)) or 1.0
+    return tuple(c / L for c in n)
+
+
+def _face(m, pts, uvs, inside):
+    """A flat polygon wound CCW seen from outside: flipped when its normal points towards `inside`."""
+    n = _newell(pts)
+    c = tuple(sum(p[k] for p in pts) / len(pts) for k in range(3))
+    if sum(n[k] * (c[k] - inside[k]) for k in range(3)) < 0:
+        pts, uvs, n = pts[::-1], uvs[::-1], tuple(-x for x in n)
+    m.poly(pts, n, uvs)
+
+
+def _oct(y, r, jag=None, n=PIER_N):
+    return [(r * math.cos(math.pi / n + 2 * math.pi * j / n), y + (jag[j] if jag else 0.0),
+             r * math.sin(math.pi / n + 2 * math.pi * j / n)) for j in range(n)]
+
+
+def _column(m, rings, region, xf=lambda p: p, glow_top=False, glow_bottom=False):
+    """Loft octagon rings (bottom to top) into flat-shaded faces; the side uvs wrap `region` once around and map the
+    height y to v = 1 - y / PIER_H; the end caps are stone, or molten rock when they are a fresh break."""
+    u0, u1 = PIER_U[region]
+    n = len(rings[0])
+    uv = lambda j, p: (u0 + (u1 - u0) * j / n, 1.0 - p[1] / PIER_H)
+    for a, b in zip(rings, rings[1:]):
+        axis = (0.0, (sum(p[1] for p in a) + sum(p[1] for p in b)) / (2 * n), 0.0)
+        for j in range(n):
+            k = (j + 1) % n
+            pts = [a[j], a[k], b[k], b[j]]
+            _face(m, [xf(p) for p in pts], [uv(j, a[j]), uv(j + 1, a[k]), uv(j + 1, b[k]), uv(j, b[j])], xf(axis))
+    for ring_, top, hot in ((rings[0], False, glow_bottom), (rings[-1], True, glow_top)):
+        c = (0.0, sum(p[1] for p in ring_) / n, 0.0)
+        inside = xf((0.0, c[1] + (-1.0 if top else 1.0), 0.0))
+        if hot:                                                     # a jagged break: a fan of molten triangles
+            g0, g1 = PIER_U["glow"]
+            for j in range(n):
+                k = (j + 1) % n
+                _face(m, [xf(c), xf(ring_[j]), xf(ring_[k])], [((g0 + g1) / 2, 0.5), (g0, 0.2 + 0.6 * j / n), (g1, 0.2 + 0.6 * k / n)], inside)
+        else:
+            s0, s1 = PIER_U["stone"]
+            _face(m, [xf(p) for p in ring_], [(s0 + (s1 - s0) * (0.5 + p[0]), 0.05 + 0.1 * (0.5 + p[2])) for p in ring_], inside)
+
+
+def _tilt(deg_z, deg_x, pivot, shift):
+    az, ax = math.radians(deg_z), math.radians(deg_x)
+    def xf(p):
+        x, y, z = p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]
+        x, y = x * math.cos(az) - y * math.sin(az), x * math.sin(az) + y * math.cos(az)
+        y, z = y * math.cos(ax) - z * math.sin(ax), y * math.sin(ax) + z * math.cos(ax)
+        return (x + pivot[0] + shift[0], y + pivot[1] + shift[1], z + pivot[2] + shift[2])
+    return xf
+
+
 def make_pier(out, broken=False):
     m = Mesh("YSNPPierBroken" if broken else "YSNPPier", "ysnp_stone.png")
+    prof = PIER_PROFILE
     if not broken:
-        box(m, -0.5, 0.0, -0.5, 0.5, 3.0, 0.5, tile=1.0)               # a full pier, floor level to the deck
+        _column(m, [_oct(y, r) for y, r in prof], "stone")
     else:
-        box(m, -0.5, 0.0, -0.5, 0.5, 1.3, 0.5, tile=1.0)               # the stump
-        box(m, -0.45, 1.3, -0.2, 0.15, 1.75, 0.35, tile=1.0)            # a broken block on top
-        box(m, 0.05, 1.3, -0.45, 0.5, 1.55, 0.05, tile=1.0)
+        rnd = random.Random(77)                                     # own generator: the global one feeds the rocks
+        cut_lo, cut_hi = 1.30, 1.62                                 # the break: stump top .. upper piece bottom
+        jag_lo = [rnd.uniform(-0.12, 0.14) for _ in range(PIER_N)]
+        jag_hi = [j + rnd.uniform(0.02, 0.08) for j in jag_lo]      # the upper piece's underside follows the break
+        shaft_r = lambda y: 0.20 + (0.18 - 0.20) * (y - 0.40) / (2.45 - 0.40)
+        lower = [(y, r) for y, r in prof if y < cut_lo] + [(cut_lo, shaft_r(cut_lo))]
+        upper = [(cut_hi, shaft_r(cut_hi))] + [(y, r) for y, r in prof if y > cut_hi]
+        rings_lo = [_oct(y, r) for y, r in lower[:-1]] + [_oct(cut_lo, lower[-1][1], jag_lo)]
+        rings_hi = [_oct(cut_hi, upper[0][1], jag_hi)] + [_oct(y, r) for y, r in upper[1:]]
+        _column(m, rings_lo, "cracked", glow_top=True)
+        # the upper half: knocked sideways and tilted about the top of the capital, hanging from the deck
+        _column(m, rings_hi, "cracked", xf=_tilt(9.0, -5.0, (0.0, PIER_H, 0.0), (0.05, -0.04, 0.03)), glow_bottom=True)
+        # two fallen chunks at the foot (small tilted octagonal blocks)
+        for (cx, cz, r, h, tz, tx) in ((0.30, 0.18, 0.09, 0.12, 25.0, 10.0), (-0.22, 0.30, 0.07, 0.10, -18.0, 30.0)):
+            xf = _tilt(tz, tx, (0.0, h / 2, 0.0), (cx, 0.0, cz))
+            _column(m, [_oct(0.0, r, n=5), _oct(h, r * 0.85, n=5)], "cracked", xf=xf, glow_top=True)
     return m.write(os.path.join(out, "ysnp_pier_broken.x" if broken else "ysnp_pier.x"))
 
 
+# ---------------------------------------------------------------- the pieces
 def make_rock(out):
     m = Mesh("YSNPRock", "ysnp_rock.png")
     outline = [(r * math.cos(a), r * math.sin(a)) for i in range(9)

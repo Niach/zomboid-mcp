@@ -16,6 +16,7 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIGURES = ("ysnp_wizard", "ysnp_wizard_up", "ysnp_demon")
+PIERS = ("ysnp_pier", "ysnp_pier_broken")
 TEXTURES = {"ysnp_pier": "ysnp_stone.png", "ysnp_pier_broken": "ysnp_stone.png", "ysnp_rock": "ysnp_rock.png",
             "ysnp_stalagmite": "ysnp_rock.png", "ysnp_lava": "ysnp_lava.png"}
 
@@ -147,7 +148,7 @@ def main():
         lo, hi = V.min(axis=0), V.max(axis=0)
         print("%-18s %5d verts %5d tris  %6.1f KB .x  bbox x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f  tex %dx%d" % (
             name, len(V), len(F), os.path.getsize(os.path.join(a.art, name + ".x")) / 1024, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], T.shape[1], T.shape[0]))
-        if name not in FIGURES:
+        if name not in FIGURES + PIERS:
             continue
         views = [render([(V, F, N, UV, T, yaw, (0, 0, 0))], size=(360, 460)) for yaw in (0, -40, 40, 180)]
         sheet = Image.new("RGB", (360 * 4, 460), (0, 0, 0))
@@ -164,6 +165,54 @@ def main():
         items = [(W[0], W[1], W[2], W[3], W[4], 0, (0, 0, 0)), (D[0], D[1], D[2], D[3], D[4], 0, tuple(e * 3.5 + np.array([0, 0.63 * 2.45, 0])))]
         render(items, size=(900, 600)).save(os.path.join(a.out, "scene.png"))
         print("  ->", os.path.join(a.out, "scene.png"))
+    if all(n in meshes for n in PIERS) and os.path.exists(os.path.join(a.art, "ysnp_lava.png")):
+        for spacing, fname in ((1, "bridge.png"), (2, "bridge_spacing2.png")):
+            bridge(a, meshes, spacing).save(os.path.join(a.out, fname))
+            print("  ->", os.path.join(a.out, fname))
+
+
+def slab(x0, x1, y0, y1, z0, z1, tile=1.0):
+    """A box as (V, F, N, UV) in the preview's arrays (outward normals; winding does not matter to the renderer)."""
+    V, F, N, UV = [], [], [], []
+    faces = [((0, 0, 1), [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)], (0, 1)),
+             ((0, 0, -1), [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)], (0, 1)),
+             ((1, 0, 0), [(x1, y0, z0), (x1, y0, z1), (x1, y1, z1), (x1, y1, z0)], (2, 1)),
+             ((-1, 0, 0), [(x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0)], (2, 1)),
+             ((0, 1, 0), [(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)], (0, 2)),
+             ((0, -1, 0), [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)], (0, 2))]
+    for n, pts, ax in faces:
+        b = len(V)
+        for p in pts:
+            V.append(p); N.append(n); UV.append((p[ax[0]] / tile, p[ax[1]] / tile))
+        F += [(b, b + 1, b + 2), (b, b + 2, b + 3)]
+    return np.array(V, float), np.array(F, int), np.array(N, float), np.array(UV, float)
+
+
+def bridge(a, meshes, spacing):
+    """Six piers along world +x, `spacing` tiles apart, each turned at random about the vertical (world items get a
+    random turn), a flat deck slab on top (y = 3, one floor) and the lava floor below, from the game's camera."""
+    import random
+    rnd = random.Random(5)
+    ex = np.array([math.cos(math.radians(45)), 0, math.sin(math.radians(45))])     # world +x in camera space
+    ey = np.array([-math.sin(math.radians(45)), 0, math.cos(math.radians(45))])    # world +y (south) in camera space
+    R = np.array([ex, [0, 1, 0], ey]).T                                            # world (x, up, y) -> camera space
+    n = 6
+    length = (n - 1) * spacing + 1
+    items = []
+    lava = np.asarray(Image.open(os.path.join(a.art, "ysnp_lava.png")).convert("RGB"), dtype=float)
+    deck = np.zeros((16, 16, 3)); deck[:] = (150, 140, 120); deck[::8, :] = (95, 88, 78); deck[:, ::8] = (95, 88, 78)
+    for V, F, N, UV, T in [(*slab(-2.5, length + 1.5, -0.02, 0.0, -2.5, 2.5, tile=3.0), lava)]:
+        items.append((V @ R.T, F, N @ R.T, UV, T, 0, (0, 0, 0)))
+    V, F, N, UV = slab(-0.5, length - 0.5, 3.0, 3.08, -0.5, 0.5)
+    items.append((V @ R.T, F, N @ R.T, UV, deck, 0, (0, 0, 0)))
+    P = meshes["ysnp_pier"]
+    for i in range(n):
+        yaw = rnd.uniform(0, 360)
+        off = ex * (i * spacing)
+        items.append((P[0], P[1], P[2], P[3], P[4], yaw, tuple(off)))
+    B = meshes["ysnp_pier_broken"]                                                  # plus one broken pier alongside, to scale
+    items.append((B[0], B[1], B[2], B[3], B[4], 30, tuple(ex * (length / 2) + ey * 2.2)))
+    return render(items, size=(1000, 700))
 
 
 if __name__ == "__main__":
