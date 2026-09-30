@@ -42,7 +42,7 @@ require "ZomboidMCP/ClientApps"
 
 ZMCPClient = ZMCPClient or {}
 local C = ZMCPClient
-C.version = "0.3.0"          -- keep equal to ZMCP.version in Bridge.lua
+C.version = "0.3.1"          -- keep equal to ZMCP.version in Bridge.lua
 C.MODULE = "zmcp"
 C.commands = C.commands or {}        -- command -> function(args)
 C.renderHooks = C.renderHooks or {}  -- name -> function(overlay)   (pushed code draws here)

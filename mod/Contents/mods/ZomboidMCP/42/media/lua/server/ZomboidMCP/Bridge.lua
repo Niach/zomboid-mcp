@@ -37,7 +37,7 @@ if not ZMCPJson then error("ZomboidMCP/Json.lua must be loaded before Bridge.lua
 ZMCP = ZMCP or {}
 local Z = ZMCP
 local J = ZMCPJson
-Z.version = "0.3.0"
+Z.version = "0.3.1"
 Z.tools = Z.tools or {}            -- name -> { fn = function(args) ... end, desc = "..." }
 Z.tickHooks = Z.tickHooks or {}    -- name -> function(t)
 Z.scriptSides = Z.scriptSides or {} -- side -> { install = fn(name, code), remove = fn(name), list = fn() }

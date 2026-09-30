@@ -42,7 +42,7 @@ from zmcp_game import (GameBridge, GameError, LocalTransport, SshTransport,  # n
                        default_lua_dir, log, poll_command, DEFAULT_POLL_FILE)
 from zmcp_index import ApiIndex, default_index_dir   # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 SERVER_NAME = "zomboid-mcp"
 
 # JSON-RPC error codes

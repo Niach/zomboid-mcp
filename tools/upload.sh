@@ -24,7 +24,7 @@ set -euo pipefail
 
 DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 CONTENT="$DIR/mod/Contents"
-PREVIEW="$CONTENT/mods/ZomboidMCP/poster.png"
+PREVIEW="$DIR/art/showcase/ysnp.jpg"   # the Workshop header image (the in-game mod list uses poster.png via mod.info)
 STEAMCMD=$(eval echo "$ZMCP_STEAMCMD")
 STEAMCMD_HOME=$(eval echo "$ZMCP_STEAMCMD_HOME")
 MODE=upload
@@ -76,6 +76,15 @@ VDF=$(mktemp --suffix=.vdf)
 trap 'rm -f "$VDF"' EXIT
 sed -e "s#@WORKSHOP_ID@#$ZMCP_WORKSHOP_ID#" -e "s#@CONTENT_FOLDER@#$CONTENT#" -e "s#@PREVIEW_FILE@#$PREVIEW#" \
     -e "s#@CHANGENOTE@#${NOTE//#/}#" "$DIR/tools/workshop.vdf.template" >"$VDF"
+# the description is the BBCode block of docs/WORKSHOP.md (a VDF string cannot hold straight double quotes)
+python3 - "$VDF" "$DIR/docs/WORKSHOP.md" <<'PY'
+import re, sys
+vdf, page = sys.argv[1], open(sys.argv[2]).read()
+desc = page.split("```\n")[1].strip().replace('"', "'")
+s = open(vdf).read()
+s = re.sub(r'("description"\s+)"[^"]*"', lambda m: m.group(1) + '"' + desc + '"', s)
+open(vdf, "w").write(s)
+PY
 echo "== VDF"; cat "$VDF"
 CMD=(env HOME="$STEAMCMD_HOME" "$STEAMCMD" +login "$ZMCP_STEAM_USER" +workshop_build_item "$VDF" +quit)
 echo "== command: ${CMD[*]}"
