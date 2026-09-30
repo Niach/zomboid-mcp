@@ -14,8 +14,9 @@ function isServer() return false end
 function getTimestampMs() return SIM.now * 1000 end
 function getMyDocumentFolder() return "/home/sim/Zomboid" end
 function getFileSeparator() return "/" end
-function ZombRand(a, b) if b then return math.floor(a + math.random() * (b - a)) end return math.floor(math.random() * a) end
-function ZombRandFloat(a, b) return a + math.random() * (b - a) end
+local rnd = math.random     -- captured: the test removes math.random afterwards, like the single-player state
+function ZombRand(a, b) if b then return math.floor(a + rnd() * (b - a)) end return math.floor(rnd() * a) end
+function ZombRandFloat(a, b) return a + rnd() * (b - a) end
 function instanceof(o, cls) return o and o.__class == cls end
 
 -- events
@@ -280,7 +281,11 @@ function ISUIElement:derive(name) local c = { Type = name }; c.__index = c; setm
 function ISUIElement:new(x, y, w, h) local o = setmetatable({ x = x, y = y, w = w, h = h, javaObject = { setConsumeMouseEvents = function(_, v) SIM.consume = v end } }, self); return o end
 function ISUIElement:initialise() end
 function ISUIElement:instantiate() if self.createChildren then self:createChildren() end end
-function ISUIElement:addToUIManager() SIM.uiAdded = (SIM.uiAdded or 0) + 1 end
+function ISUIElement:addToUIManager() SIM.uiAdded = (SIM.uiAdded or 0) + 1; SIM.uiList[self.javaObject] = true end
+function ISUIElement:removeFromUIManager() SIM.uiList[self.javaObject] = nil end
+function ISUIElement:isRemoved() return not SIM.uiList[self.javaObject] end
+SIM.uiList = SIM.uiList or {}
+UIManager = { getUI = function() return { contains = function(_, jo) return SIM.uiList[jo] == true end } end }
 function ISUIElement:backMost() end
 function ISUIElement:getWidth() return self.w end
 function ISUIElement:getHeight() return self.h end

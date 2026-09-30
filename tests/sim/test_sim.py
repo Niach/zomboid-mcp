@@ -34,7 +34,7 @@ def boot(files, before_bridge=None):
     rt = lua51.LuaRuntime(unpack_returned_tuples=True)
     rt.execute(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_prelude.lua")).read())
     # Kahlua does not have these: make sure the mod never relies on them
-    rt.execute("next = nil; io = nil; bit = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")
+    rt.execute("next = nil; io = nil; bit = nil; math.random = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")   # single player has no math.random either
     for f in files:
         if f.endswith("Bridge.lua") and before_bridge:
             before_bridge(rt)

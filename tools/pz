@@ -62,9 +62,10 @@ case "$1" in
   load)
     need_env
     # upload every server file as zmcp_src_<name>.lua plus a loader, then run the loader on the live server
+    # order matters: Common and TileSheets before the modules that build on them (the mod itself uses require)
     files=("$MOD/shared/ZomboidMCP/Json.lua" "$MOD/shared/ZomboidMCP/CollisionSprites.lua"
-           "$MOD/server/ZomboidMCP/Bridge.lua" "$MOD/server/ZomboidMCP/Api/Common.lua")
-    for f in "$MOD"/server/ZomboidMCP/Api/*.lua; do [ -f "$f" ] && [ "$(basename "$f")" != Common.lua ] && files+=("$f"); done
+           "$MOD/server/ZomboidMCP/Bridge.lua" "$MOD/server/ZomboidMCP/Api/Common.lua" "$MOD/server/ZomboidMCP/Api/TileSheets.lua")
+    for f in "$MOD"/server/ZomboidMCP/Api/*.lua; do case "$f" in */Common.lua|*/TileSheets.lua) ;; *) [ -f "$f" ] && files+=("$f") ;; esac; done
     names=()
     for f in "${files[@]}"; do
       n="zmcp_src_$(basename "$f")"; names+=("$n")
