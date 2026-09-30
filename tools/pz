@@ -97,13 +97,11 @@ return "loaded " .. table.concat(done, ", ")
 EOF
     } | $SSH $H "umask 022; cat > $L/zmcp_boot.lua.tmp && mv -f $L/zmcp_boot.lua.tmp $L/zmcp_boot.lua"
     echo "uploaded: ${names[*]} + zmcp_boot.lua"
-    if bridge_alive; then
-      echo "bridge alive: loading through run_file"
-      $CLIENT --timeout 20 call run_file '{"file":"zmcp_boot.lua"}'
-    else
-      echo "bridge not alive: reloadlua $POLL_FILE through the console"
-      PZ_CONSOLE_WAIT=4 console "reloadlua $POLL_FILE" | grep -E 'ZomboidMCP|reloadlua|rror' || true
-    fi
+    # the client polls a paused server through the console (ZMCP_POLL_CMD), so run_file works either way; a
+    # server whose bridge never answers (mod not loaded) needs the console: reloadlua $POLL_FILE, then retry
+    if bridge_alive; then echo "bridge alive: loading through run_file"; else echo "bridge paused/asleep: loading through run_file + console poll"; fi
+    $CLIENT --timeout "${PZ_TIMEOUT:-40}" call run_file '{"file":"zmcp_boot.lua"}' \
+      || { echo "run_file failed: is the ZomboidMCP mod loaded? try: pz console 'reloadlua $POLL_FILE'" >&2; exit 1; }
     ;;
   run) need_env; [ -f "$2" ] || { echo "usage: pz run file.lua" >&2; exit 2; }
     $SSH $H "umask 022; cat > $L/zmcp_run.lua.tmp && mv -f $L/zmcp_run.lua.tmp $L/zmcp_run.lua" < "$2" && $CLIENT --timeout "${PZ_TIMEOUT:-20}" call run_file '{"file":"zmcp_run.lua"}' ;;

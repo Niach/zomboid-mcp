@@ -246,6 +246,7 @@ function SIM.square(x, y, z)
     sq.getVehicleContainer = function() return nil end
     sq.transmitAddObjectToSquare = function(_, o) sq.objects[#sq.objects + 1] = o; sq.recalcs = sq.recalcs + 1 end
     sq.transmitRemoveItemFromSquare = function(_, o)
+        if o == sq.floor then sq.floor = nil end
         for i, x in ipairs(sq.objects) do if x == o then table.remove(sq.objects, i); sq.recalcs = sq.recalcs + 1; return 1 end end
         for i, x in ipairs(sq.worldObjects) do if x == o then table.remove(sq.worldObjects, i); return 1 end end
         return 0
@@ -253,6 +254,17 @@ function SIM.square(x, y, z)
     sq.RecalcAllWithNeighbours = function() sq.recalcs = sq.recalcs + 1 end
     sq.invalidateRenderChunkLevel = function(_, flags) sq.invalidated = sq.invalidated + 1; sq.lastDirty = flags end
     sq.AddWorldInventoryItem = function(_, itemType, ox, oy, oz) return SIM.addWorldItem(sq, itemType, ox, oy, oz) end
+    -- addFloor(sprite): the vanilla floor builder (ISWoodenFloor): replaces the floor object, returns it
+    sq.addFloor = function(_, spriteName)
+        local o = IsoObject.new(sq, spriteName)
+        o.transmitCompleteItemToClients = function() sq.floorTransmits = (sq.floorTransmits or 0) + 1 end
+        if sq.floor then for i, x in ipairs(sq.objects) do if x == sq.floor then table.remove(sq.objects, i); break end end end
+        table.insert(sq.objects, 1, o)
+        sq.floor = o
+        sq.recalcs = sq.recalcs + 1
+        return o
+    end
+    sq.getChunk = function() return { invalidateRenderChunkLevels = function() end } end
     sq.has = function(_, f) for _, o in ipairs(sq.objects) do if o.sprite.props:has(f) then return true end end return false end
     sq.isSolid = function() return sq:has(IsoFlagType.solid) end
     sq.isSolidTrans = function() return sq:has(IsoFlagType.solidtrans) end
@@ -263,8 +275,11 @@ function SIM.loadSquare(x, y, z) local sq = SIM.square(x, y, z); SIM.fire("LoadG
 function getCell()
     return { getGridSquare = function(_, x, y, z)
             if math.abs(x - SIM.player.x) > 50 or math.abs(y - SIM.player.y) > 50 then return nil end
+            if z and z > 0 and not SIM.squares[math.floor(x) .. "," .. math.floor(y) .. "," .. math.floor(z)] then return nil end   -- upper levels exist only once created
             return SIM.square(x, y, z)
         end,
+        -- createNewGridSquare(x, y, z, connect): what vanilla building does for upper-floor squares that do not exist yet
+        createNewGridSquare = function(_, x, y, z) SIM.created = (SIM.created or 0) + 1; return SIM.square(x, y, z) end,
         getZombieList = function() return jlist({}) end, getVehicles = function() return jlist({}) end }
 end
 function getGameTime() return { getTimeOfDay = function() return 12 end, getDay = function() return 1 end, getMonth = function() return 6 end, getYear = function() return 1993 end } end
