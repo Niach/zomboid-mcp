@@ -1,7 +1,7 @@
 -- Mock of the Project Zomboid Lua globals used by the mod, for offline tests under a standalone Lua 5.1
 -- (tests/sim/test_sim.py). Single-player semantics: isClient()/isServer() are false, ZMCP.toClients calls the
 -- client directly, sendClientCommand fires OnClientCommand on the same state.
-SIM = { fs = {}, out = {}, sent = {}, draws = {}, spawned = {}, now = 1000, moddata = {}, vanilla = {} }
+SIM = { fs = {}, out = {}, sent = {}, draws = {}, spawned = {}, now = 1000, moddata = {}, vanilla = {}, clientCmds = {} }
 
 function print(...)
     local t = {}
@@ -135,16 +135,136 @@ function sendServerCommand() error("sendServerCommand must not be called in sing
 function sendPlayerStatsChange() end
 BodyPartType = { ToString = function() return "Hand_L" end }
 CharacterStat = { PAIN = 1, PANIC = 2, STRESS = 3, FATIGUE = 4, ENDURANCE = 5, HUNGER = 6, THIRST = 7, FOOD_SICKNESS = 8 }
+-- world: persistent mock squares (tile objects + world items), sprites with property flags (IsoSpriteManager,
+-- IsoFlagType, IsoObject) the way Api/Objects.lua, Api/Collision.lua and the model placements use them.
+-- A square's has(flag) merges its objects' sprite flags like IsoGridSquare.RecalcProperties does.
+SIM.squares = {}
+SIM.itemSeq = 0
+local function jlist(t)
+    return { size = function() return #t end, get = function(_, i) return t[i + 1] end, items = t,
+        indexOf = function(_, v) for i, x in ipairs(t) do if x == v then return i - 1 end end return -1 end }
+end
+SIM.jlist = jlist
+IsoFlagType = setmetatable({}, { __index = function(t, k) local f = { name = k }; rawset(t, k, f); return f end })
+local function flagName(f) if type(f) == "table" then return f.name end return tostring(f) end
+local function newProps()
+    local p = { flags = {} }
+    function p:set(f, v) self.flags[flagName(f)] = v == nil and true or v end
+    function p:unset(f) self.flags[flagName(f)] = nil end
+    function p:has(f) return self.flags[flagName(f)] ~= nil end
+    function p:CreateKeySet() end
+    return p
+end
+local function newSprite(name, id)
+    local sp = { name = name, id = id or -1, props = newProps() }
+    sp.getName = function() return sp.name end
+    sp.getProperties = function() return sp.props end
+    return sp
+end
+SIM.sprites = { named = {}, ints = {} }
+IsoSpriteManager = { instance = {} }
+local ISM = IsoSpriteManager.instance
+-- getSprite(String) creates a blank sprite for unknown names (the engine does too); getSprite(int) does not
+function ISM:getSprite(key)
+    if type(key) == "number" then return SIM.sprites.ints[key] end
+    local sp = SIM.sprites.named[key]
+    if not sp then sp = newSprite(key, -1); SIM.sprites.named[key] = sp end
+    return sp
+end
+function ISM:AddSprite(name, id)
+    local sp = SIM.sprites.named[name]
+    if sp then return sp end
+    sp = newSprite(name, id)
+    SIM.sprites.named[name] = sp
+    if id then SIM.sprites.ints[id] = sp end
+    return sp
+end
+function ISM:getNamedMap() return { containsKey = function(_, k) return SIM.sprites.named[k] ~= nil end } end
+-- a couple of vanilla sprites the tests may place
+ISM:AddSprite("walls_exterior_wooden_01_2", 1048576 + 2):getProperties():set(IsoFlagType.WallN)
+ISM:AddSprite("walls_exterior_wooden_01_2"):getProperties():set(IsoFlagType.collideN)
+ISM:AddSprite("floors_exterior_natural_01_0", 1048576 + 100)
+IsoObject = { new = function(sq, spriteName, name)
+    local o = { __class = "IsoObject", sq = sq, spriteName = spriteName, name = name, modData = {} }
+    o.sprite = ISM:getSprite(spriteName)
+    o.getSprite = function() return o.sprite end
+    o.getSpriteName = function() return o.spriteName end
+    o.getName = function() return o.name end
+    o.getObjectName = function() return "IsoObject" end
+    o.getProperties = function() return o.sprite.props end
+    o.getModData = function() return o.modData end
+    o.getObjectIndex = function() for i, x in ipairs(sq.objects) do if x == o then return i - 1 end end return -1 end
+    o.getSquare = function() return sq end
+    return o
+end }
+-- an object loaded from a save: the engine resolves the sprite by its numeric id
+function SIM.loadObject(sq, spriteId, name)
+    local sp = ISM:getSprite(spriteId)
+    if not sp then return nil end
+    local o = IsoObject.new(sq, sp.name, name)
+    sq.objects[#sq.objects + 1] = o
+    return o
+end
+function SIM.addWorldItem(sq, itemType, ox, oy, oz, id)
+    SIM.itemSeq = SIM.itemSeq + 1
+    local rec = { item = itemType, x = sq.x, y = sq.y, z = sq.z, ox = ox, oy = oy, oz = oz, id = id or SIM.itemSeq, modData = {}, modelSets = 0, transmits = 0 }
+    SIM.spawned[#SIM.spawned + 1] = rec
+    local item = { rec = rec, __class = "InventoryItem" }
+    item.getID = function() return rec.id end
+    item.getFullType = function() return rec.item end
+    item.getType = function() return (rec.item:match("%.(.*)$") or rec.item) end
+    item.getName = function() return item.getType() end
+    item.getDisplayName = function() return item.getType() end
+    item.getWorldStaticModel = function() return rec.model end
+    item.setWorldStaticModel = function(_, n) rec.model = n; rec.modelSets = rec.modelSets + 1 end
+    item.setWorldYRotation = function(_, r) rec.yrot = r end
+    item.getWorldYRotation = function() return rec.yrot or 0 end
+    item.getModData = function() return rec.modData end
+    local wo = { __class = "IsoWorldInventoryObject", item = item, rec = rec }
+    wo.getItem = function() return item end
+    wo.getSquare = function() return sq end
+    wo.transmitCompleteItemToClients = function() rec.transmits = rec.transmits + 1 end
+    item.getWorldItem = function() return wo end
+    rec.wo = wo
+    sq.worldObjects[#sq.worldObjects + 1] = wo
+    return item
+end
+function SIM.square(x, y, z)
+    x, y, z = math.floor(x), math.floor(y), math.floor(z or 0)
+    local k = x .. "," .. y .. "," .. z
+    local sq = SIM.squares[k]
+    if sq then return sq end
+    sq = { x = x, y = y, z = z, objects = {}, worldObjects = {}, floor = nil, recalcs = 0, invalidated = 0 }
+    sq.getX = function() return sq.x end
+    sq.getY = function() return sq.y end
+    sq.getZ = function() return sq.z end
+    sq.getObjects = function() return jlist(sq.objects) end
+    sq.getWorldObjects = function() return jlist(sq.worldObjects) end
+    sq.getFloor = function() return sq.floor end
+    sq.getMovingObjects = function() return jlist({}) end
+    sq.getVehicleContainer = function() return nil end
+    sq.transmitAddObjectToSquare = function(_, o) sq.objects[#sq.objects + 1] = o; sq.recalcs = sq.recalcs + 1 end
+    sq.transmitRemoveItemFromSquare = function(_, o)
+        for i, x in ipairs(sq.objects) do if x == o then table.remove(sq.objects, i); sq.recalcs = sq.recalcs + 1; return 1 end end
+        for i, x in ipairs(sq.worldObjects) do if x == o then table.remove(sq.worldObjects, i); return 1 end end
+        return 0
+    end
+    sq.RecalcAllWithNeighbours = function() sq.recalcs = sq.recalcs + 1 end
+    sq.invalidateRenderChunkLevel = function(_, flags) sq.invalidated = sq.invalidated + 1; sq.lastDirty = flags end
+    sq.AddWorldInventoryItem = function(_, itemType, ox, oy, oz) return SIM.addWorldItem(sq, itemType, ox, oy, oz) end
+    sq.has = function(_, f) for _, o in ipairs(sq.objects) do if o.sprite.props:has(f) then return true end end return false end
+    sq.isSolid = function() return sq:has(IsoFlagType.solid) end
+    sq.isSolidTrans = function() return sq:has(IsoFlagType.solidtrans) end
+    SIM.squares[k] = sq
+    return sq
+end
+function SIM.loadSquare(x, y, z) local sq = SIM.square(x, y, z); SIM.fire("LoadGridsquare", sq); return sq end
 function getCell()
     return { getGridSquare = function(_, x, y, z)
-        if math.abs(x - SIM.player.x) > 50 or math.abs(y - SIM.player.y) > 50 then return nil end
-        return { AddWorldInventoryItem = function(_, item, ox, oy, oz)
-                local rec = { item = item, x = x, y = y, z = z, ox = ox, oy = oy }
-                SIM.spawned[#SIM.spawned + 1] = rec
-                return { setWorldStaticModel = function(_, n) rec.model = n end, setWorldYRotation = function(_, r) rec.yrot = r end }
-            end,
-            getMovingObjects = function() return { size = function() return 0 end } end }
-    end }
+            if math.abs(x - SIM.player.x) > 50 or math.abs(y - SIM.player.y) > 50 then return nil end
+            return SIM.square(x, y, z)
+        end,
+        getZombieList = function() return jlist({}) end, getVehicles = function() return jlist({}) end }
 end
 function getGameTime() return { getTimeOfDay = function() return 12 end, getDay = function() return 1 end, getMonth = function() return 6 end, getYear = function() return 1993 end } end
 function getCore() return { getZoom = function() return SIM.zoom or 1 end, getScreenWidth = function() return 1920 end, getScreenHeight = function() return 1080 end } end

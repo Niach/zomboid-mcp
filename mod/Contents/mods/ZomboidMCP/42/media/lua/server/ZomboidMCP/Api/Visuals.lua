@@ -2,18 +2,23 @@
 -- overlays to every player's client mod (client/ZomboidMCP/Client.lua) through sendServerCommand("zmcp", cmd, args).
 -- Protocol: docs/PROTOCOL.md part 2. Builds only on the public ZMCP API of Bridge.lua.
 --
--- Persistent state (small) lives in ModData "ZomboidMCP".visuals = { textures, models, sprites, cscripts } so
--- late joiners get everything again when their client says "hello". Texture/model data stays in files in the
--- Lua cache dir (zmcp_tex_<id>.b64, zmcp_model_<id>.*.b64), never in ModData or Lua memory (server heap), and
--- is streamed in chunks.
+-- Persistent state (small) lives in ModData "ZomboidMCP".visuals = { textures, models, sprites, cscripts,
+-- placements } (+ entities3d from Api/Models.lua) so late joiners get everything again when their client says
+-- "hello", in dependency order: textures, models, client scripts, sprites, model placements, moving entities.
+-- Texture/model data stays in files in the Lua cache dir (zmcp_tex_<id>.b64, zmcp_model_<id>.*.b64), never in
+-- ModData or Lua memory (server heap), and is streamed in chunks. ModData and the files survive a server restart,
+-- so the same stream reaches a fresh client after one (tests/sim/test_sim.py "restart").
 --
 -- Tools: run_lua_client, client_results, capture_input, texture_upload, texture_pixel, model_upload, model_place,
---        world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
+--        model_remove, world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
 --        plus the client side of script_install/list/remove (ZMCP.scriptSides.client).
 if isClient() then return end
 if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Visuals.lua") end
+if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
+if not (ZMCP and ZMCP.util and ZMCP.util.bool) then error("ZomboidMCP/Api/Common.lua must be loaded before Api/Visuals.lua") end
 
 local Z = ZMCP
+local U = Z.util
 local J = ZMCPJson
 Z.visuals = Z.visuals or {}
 local V = Z.visuals
@@ -43,6 +48,7 @@ local function store()
     if type(vis.sprites) ~= "table" then vis.sprites = {} end
     if type(vis.cscripts) ~= "table" then vis.cscripts = {} end
     if type(vis.models) ~= "table" then vis.models = {} end
+    if type(vis.placements) ~= "table" then vis.placements = {} end
     return vis
 end
 V.store = store
@@ -143,10 +149,20 @@ function V.sendScript(name, player)
     return V.enqueueChunked("exec", { id = "script:" .. name, module = name }, "code", src, player)
 end
 
--- everything a (late-joining) client needs, in dependency order
+-- a model placement (model_place) for the client: it re-applies the world model to the carrier item on that
+-- square when the model registers late and marks the chunk for a redraw (ClientModels.lua)
+function V.sendPlacement(pid, player)
+    local p = store().placements[pid]
+    if not p then return end
+    V.enqueue("place", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model, name = p.name, gen = p.gen, item = p.item,
+        itemId = p.itemId, ox = p.ox, oy = p.oy, oz = p.oz, yrot = p.yrot }, player)
+end
+
+-- everything a (late-joining) client needs, in dependency order: textures, models, scripts, sprites, placements
+-- (need their model), moving entities (Api/Models.lua, need their model)
 function V.sendAllTo(player)
     local s = store()
-    local n = { textures = 0, scripts = 0, sprites = 0 }
+    local n = { textures = 0, scripts = 0, sprites = 0, placements = 0, entities = 0 }
     for id in pairs(s.textures) do
         local ok, err = pcall(V.sendTexture, id, player)
         if ok then n.textures = n.textures + 1 else print("[ZomboidMCP] resend texture " .. id .. ": " .. tostring(err)) end
@@ -158,6 +174,12 @@ function V.sendAllTo(player)
     end
     for name in pairs(s.cscripts) do V.sendScript(name, player); n.scripts = n.scripts + 1 end
     for id in pairs(s.sprites) do V.sendSprite(id, player); n.sprites = n.sprites + 1 end
+    for pid in pairs(s.placements) do V.sendPlacement(pid, player); n.placements = n.placements + 1 end
+    local M = Z.models
+    if M and M.sendAllTo then
+        local ok, cnt = pcall(M.sendAllTo, player)
+        if ok then n.entities = cnt else print("[ZomboidMCP] entity3d resend failed: " .. tostring(cnt)) end
+    end
     return n
 end
 
@@ -223,6 +245,81 @@ V.onClientCommand = function(module, command, player, args)
     end
 end
 V.handlers.OnClientCommand = V.onClientCommand
+
+---------------------------------------------------------------- model placements: keep the world item's model
+-- InventoryItem.setWorldStaticModel stores the name in the item's ModData ("worldStaticModel"), which is saved
+-- with the world item and sent to clients with it. This is the safety net for the cases where it is not there
+-- any more (an older save, a client copy created before the name was set): whenever a square with a placement
+-- loads, the carrier item is looked up and the model re-applied (server: + resend to clients).
+V.pindex = nil                       -- "x,y,z" -> {pid, ...}, rebuilt lazily
+
+local function pkey(x, y, z) return math.floor(x) .. "," .. math.floor(y) .. "," .. math.floor(z) end
+
+function V.placementsAt(x, y, z)
+    if not V.pindex then
+        local idx = {}
+        for pid, p in pairs(store().placements) do
+            local k = pkey(p.x, p.y, p.z)
+            idx[k] = idx[k] or {}
+            idx[k][#idx[k] + 1] = pid
+        end
+        V.pindex = idx
+    end
+    return V.pindex[pkey(x, y, z)]
+end
+
+-- the carrier world item of a placement on a loaded square: the IsoWorldInventoryObject and its InventoryItem
+function V.findCarrier(sq, p)
+    local best, bestWo
+    local list = sq:getWorldObjects()
+    if not list then return nil end
+    for i = 0, list:size() - 1 do
+        local wo = list:get(i)
+        local item = wo and wo:getItem()
+        if item then
+            local id = pcall(function() return item:getID() end) and item:getID() or nil
+            if p.itemId and id == p.itemId then return wo, item end
+            local typ = (pcall(function() return item:getFullType() end) and item:getFullType()) or nil
+            if typ == p.item then
+                local model = (pcall(function() return item:getWorldStaticModel() end) and item:getWorldStaticModel()) or nil
+                if model == p.name then return wo, item end
+                if (model == nil or model == "") and not best then best, bestWo = item, wo end
+            end
+        end
+    end
+    return bestWo, best
+end
+
+-- re-apply one placement on its (loaded) square; returns "ok" | "restored" | "missing"
+function V.reapply(sq, pid, p)
+    local wo, item = V.findCarrier(sq, p)
+    if not item then
+        if not p.missing then p.missing = true; Z.event("model_place_missing", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model }) end
+        return "missing"
+    end
+    p.missing = nil
+    local current = pcall(function() return item:getWorldStaticModel() end) and item:getWorldStaticModel() or nil
+    if current == p.name then return "ok" end
+    item:setWorldStaticModel(p.name)
+    if p.yrot then pcall(function() item:setWorldYRotation(p.yrot) end) end
+    if isServer() then pcall(function() wo:transmitCompleteItemToClients() end) end
+    p.restored = (p.restored or 0) + 1
+    Z.event("model_place_restored", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model, was = current })
+    return "restored"
+end
+
+V.handlers.LoadGridsquare = function(sq)
+    local ok, err = pcall(function()
+        local pids = V.placementsAt(sq:getX(), sq:getY(), sq:getZ())
+        if not pids then return end
+        local s = store()
+        for _, pid in ipairs(pids) do
+            local p = s.placements[pid]
+            if p then V.reapply(sq, pid, p) end
+        end
+    end)
+    if not ok then print("[ZomboidMCP] placement reapply failed: " .. tostring(err)) end
+end
 for ev, fn in pairs(V.handlers) do if Events[ev] then Events[ev].Add(fn) end end
 
 ---------------------------------------------------------------- tick: queue + landings
@@ -341,21 +438,93 @@ Z.tool("model_upload", "Register a runtime 3D model on every client: args {id, m
     return { id = id, gen = gen, name = "zmcp_" .. id .. "_" .. gen, chunks = chunks }
 end)
 
-Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier world item on the square and sets its world model (server side; single player verified, MP sync of setWorldStaticModel unverified). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees)}. Remove it like any world item (world_query + run_lua_server).", function(a)
+-- collide = true | "solid" | "solidtrans" | "wall_n" | "wall_w" | "wall_nw" | false
+local function collideKind(v)
+    if v == nil or v == false or v == 0 or v == "" or v == "false" or v == "0" then return nil end
+    if v == true or v == 1 or v == "true" or v == "1" then return "solid" end
+    return string.lower(tostring(v))
+end
+
+Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier world item on the square and sets its world model (server side, saved with the world item, re-applied on every square load and re-sent to late joiners). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees), collide? (true = an invisible solid blocker on the square, or a collision_place kind), pid? (placement id)}. Returns {pid, placed, ...}; model_remove {pid} takes it away again.", function(a)
     local id = checkId(a.id, "id")
-    local m = store().models[id]
+    local s = store()
+    local m = s.models[id]
     if not m then error("unknown model: " .. id .. " (model_upload first)") end
     local x, y = tonumber(a.x), tonumber(a.y)
     if not x or not y then error("args.x and args.y required") end
-    local sq = Z.square(x, y, num(a.z, 0))
+    local z = math.floor(num(a.z, 0))
+    local collide = collideKind(a.collide)
+    if collide and not (Z.collision and Z.collision.placeOne) then error("collision tools not loaded (Api/Collision.lua)") end
+    if collide then Z.collision.checkKind(collide) end
+    local sq = Z.square(x, y, z)
     local carrier = tostring(a.item or "Base.TirePiece")
-    local item = sq:AddWorldInventoryItem(carrier, num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0))
+    local ox, oy, oz = num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0)
+    local item = sq:AddWorldInventoryItem(carrier, ox, oy, oz)
     if not item then error("AddWorldInventoryItem returned nil") end
     local name = "zmcp_" .. id .. "_" .. m.gen
     item:setWorldStaticModel(name)
-    if a.yrot then pcall(function() item:setWorldYRotation(tonumber(a.yrot)) end) end
-    Z.event("model_place", { id = id, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)) })
-    return { placed = name, x = math.floor(x), y = math.floor(y), z = math.floor(num(a.z, 0)), item = carrier }
+    local yrot = tonumber(a.yrot)
+    if yrot then pcall(function() item:setWorldYRotation(yrot) end) end
+    -- MP: AddWorldInventoryItem already sent the carrier to the clients, before the model name went into its
+    -- ModData; resend the whole object so their copy carries it too (no-op in single player)
+    if isServer() then pcall(function() local wo = item:getWorldItem(); if wo then wo:transmitCompleteItemToClients() end end) end
+    local pid = a.pid and checkId(tostring(a.pid), "pid") or nextId("p")
+    local rec = { x = math.floor(x), y = math.floor(y), z = z, model = id, name = name, gen = m.gen, item = carrier,
+        itemId = (pcall(function() return item:getID() end) and item:getID()) or nil,
+        ox = ox, oy = oy, oz = oz, yrot = yrot, placed = Z.now() }
+    if collide then
+        local ok, err = pcall(Z.collision.placeOne, rec.x, rec.y, rec.z, collide, "model:" .. pid)
+        if ok then rec.collide = collide else rec.collideError = tostring(err) end
+    end
+    s.placements[pid] = rec
+    V.pindex = nil
+    V.sendPlacement(pid)
+    Z.event("model_place", { pid = pid, id = id, x = rec.x, y = rec.y, z = rec.z, collide = rec.collide })
+    return { pid = pid, placed = name, x = rec.x, y = rec.y, z = rec.z, item = carrier, itemId = rec.itemId,
+        collide = rec.collide, collideError = rec.collideError }
+end)
+
+-- remove the carrier world item of one placement (loaded squares only); returns true when an item went
+local function removeCarrier(p)
+    local sq = getCell():getGridSquare(p.x, p.y, p.z)
+    if not sq then return nil end
+    local wo = V.findCarrier(sq, p)
+    if not wo then return false end
+    sq:transmitRemoveItemFromSquare(wo)
+    return true
+end
+
+Z.tool("model_remove", "Remove a placed static model (model_place): the carrier world item, its collision blocker (if collide was set) and the placement record, on every client too. args: {pid} or {all = true}. Squares that are not loaded keep their world item until the next visit; the record is dropped anyway (unloaded is reported).", function(a)
+    local s = store()
+    local targets = {}
+    if U.bool(a, "all", false) then
+        for pid in pairs(s.placements) do targets[#targets + 1] = pid end
+    else
+        local pid = a.pid and checkId(tostring(a.pid), "pid") or error("args.pid or all = true required")
+        if not s.placements[pid] then error("unknown placement: " .. pid .. " (see visuals_list)") end
+        targets[1] = pid
+    end
+    table.sort(targets)
+    local res = { removed = 0, unloaded = 0, missing = 0, blockers = 0, pids = arr(targets) }
+    for _, pid in ipairs(targets) do
+        local p = s.placements[pid]
+        local ok, went = pcall(removeCarrier, p)
+        if not ok then error("remove " .. pid .. ": " .. tostring(went)) end
+        if went == nil then res.unloaded = res.unloaded + 1 elseif went then res.removed = res.removed + 1 else res.missing = res.missing + 1 end
+        if p.collide and Z.collision then
+            local sq = getCell():getGridSquare(p.x, p.y, p.z)
+            if sq then
+                local ok2, n = pcall(Z.collision.removeOn, sq, p.collide)
+                if ok2 then res.blockers = res.blockers + n end
+            end
+        end
+        s.placements[pid] = nil
+        V.enqueue("placeRemove", { pid = pid })
+    end
+    V.pindex = nil
+    if U.bool(a, "all", false) then V.enqueue("placeRemove", {}) end
+    Z.event("model_remove", { pids = arr(targets), removed = res.removed, unloaded = res.unloaded })
+    return res
 end)
 
 ---------------------------------------------------------------- tools: world sprites
@@ -479,9 +648,15 @@ Z.tool("clear_visuals", "Remove client visuals everywhere (or args.player): args
     return { cleared = what, id = id }
 end)
 
-Z.tool("visuals_list", "Everything the visual subsystem knows: textures [{id, gen, chars|pixel}], models [{id, name, gen, scale}], sprites [{id, tex, x, y, z, ...}], client scripts [{name, file}], clients {user = {version, textures, models}}, queue length and pending item landings.", function()
+Z.tool("visuals_list", "Everything the visual subsystem knows: textures [{id, gen, chars|pixel}], models [{id, name, gen, scale}], placements [{pid, model, name, x, y, z, item, itemId, collide, missing, restored}] (model_place), sprites [{id, tex, x, y, z, ...}], client scripts [{name, file}], clients {user = {version, textures, models}}, queue length and pending item landings.", function()
     local s = store()
-    local textures, models, sprites = {}, {}, {}
+    local textures, models, sprites, placements = {}, {}, {}, {}
+    for pid, p in pairs(s.placements) do
+        placements[#placements + 1] = { pid = pid, model = p.model, name = p.name, gen = p.gen, x = p.x, y = p.y, z = p.z, item = p.item,
+            itemId = p.itemId, ox = p.ox, oy = p.oy, oz = p.oz, yrot = p.yrot, collide = p.collide, collideError = p.collideError,
+            missing = p.missing, restored = p.restored, placed = p.placed }
+    end
+    table.sort(placements, function(x, y) return x.pid < y.pid end)
     for id, t in pairs(s.textures) do
         textures[#textures + 1] = { id = id, gen = t.gen, chars = t.chars, pixel = t.pixel ~= nil, uploaded = t.uploaded }
     end
@@ -493,8 +668,8 @@ Z.tool("visuals_list", "Everything the visual subsystem knows: textures [{id, ge
     table.sort(models, function(x, y) return x.id < y.id end)
     table.sort(sprites, function(x, y) return x.id < y.id end)
     V.enqueue("ping", {})
-    return { textures = arr(textures), models = arr(models), sprites = arr(sprites), scripts = Z.scriptSides.client.list(),
-        clients = V.clients, queue = #V.queue, pendingSpawns = #V.pendingSpawns }
+    return { textures = arr(textures), models = arr(models), placements = arr(placements), sprites = arr(sprites),
+        scripts = Z.scriptSides.client.list(), clients = V.clients, queue = #V.queue, pendingSpawns = #V.pendingSpawns }
 end)
 
 Z.event("visuals_loaded", { version = V.version })

@@ -10,8 +10,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 LUA = os.path.join(ROOT, "mod/Contents/mods/ZomboidMCP/42/media/lua")
 FILES = [
     "shared/ZomboidMCP/Json.lua",
+    "shared/ZomboidMCP/CollisionSprites.lua",
     "server/ZomboidMCP/Bridge.lua",
     "server/ZomboidMCP/Api/Common.lua",
+    "server/ZomboidMCP/Api/TileSheets.lua",
+    "server/ZomboidMCP/Api/Objects.lua",
+    "server/ZomboidMCP/Api/World.lua",
+    "server/ZomboidMCP/Api/Collision.lua",
     "server/ZomboidMCP/Api/Models.lua",
     "server/ZomboidMCP/Api/Visuals.lua",
     "client/ZomboidMCP/ClientBase64.lua",
@@ -24,15 +29,24 @@ FILES = [
     "client/ZomboidMCP/Client.lua",
 ]
 
-rt = lua51.LuaRuntime(unpack_returned_tuples=True)
+def boot(files, before_bridge=None):
+    """A fresh Lua state with the mocked engine and the mod loaded (single-player semantics)."""
+    rt = lua51.LuaRuntime(unpack_returned_tuples=True)
+    rt.execute(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_prelude.lua")).read())
+    # Kahlua does not have these: make sure the mod never relies on them
+    rt.execute("next = nil; io = nil; bit = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")
+    for f in files:
+        if f.endswith("Bridge.lua") and before_bridge:
+            before_bridge(rt)
+        src = open(os.path.join(LUA, f)).read()
+        fn = rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end return f end")(src, "=" + f)
+        fn()
+    # record every command that reaches the client (single player: ZMCP.toClients calls ZMCPClient.onCommand)
+    rt.execute("local orig = ZMCPClient.onCommand; ZMCPClient.onCommand = function(c, a) SIM.clientCmds[#SIM.clientCmds + 1] = { cmd = c, args = a }; return orig(c, a) end")
+    return rt
+
+rt = boot(FILES)
 g = rt.globals()
-rt.execute(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_prelude.lua")).read())
-# Kahlua does not have these: make sure the mod never relies on them
-rt.execute("next = nil; io = nil; bit = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")
-for f in FILES:
-    src = open(os.path.join(LUA, f)).read()
-    fn = rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end return f end")(src, "=" + f)
-    fn()
 
 snail = open(os.path.join(ROOT, "art/snail.png"), "rb").read()
 g.SIM.fs["zmcp_tex_snail.b64"] = base64.b64encode(snail).decode()
@@ -204,8 +218,67 @@ check(lua("return ZMCPClient.models.name('star') == 'zmcp_star_1' and ZMCPClient
 check(lua("return SIM.models.zmcp_star_1 ~= nil and SIM.models.zmcp_star_1.module.name == 'Base' and SIM.models.zmcp_star_1.def:find('scale = 3') ~= nil"), "registration used the Base module and the scale")
 check(events("client_model")[-1]["data"]["ok"] is True, "client reported modelResult ok")
 r = tool("model_place", {"id": "star", "x": 6080, "y": 5385, "yrot": 45})
-check(r["placed"] == "zmcp_star_1" and g.SIM.spawned[len(g.SIM.spawned)]["model"] == "zmcp_star_1", "model_place spawned a carrier item with the world model")
-check(len(tool("visuals_list")["models"]) == 1, "model listed")
+star_rec = g.SIM.spawned[len(g.SIM.spawned)]
+check(r["placed"] == "zmcp_star_1" and star_rec["model"] == "zmcp_star_1" and star_rec["yrot"] == 45, "model_place spawned a carrier item with the world model")
+pid1 = r["pid"]
+check(pid1.startswith("p") and r["itemId"] == star_rec["id"] and r["collide"] is None, "model_place records the placement (pid, carrier item id)")
+vl = tool("visuals_list")
+check(len(vl["models"]) == 1, "model listed")
+check(len(vl["placements"]) == 1 and vl["placements"][1]["pid"] == pid1 and vl["placements"][1]["name"] == "zmcp_star_1"
+      and vl["placements"][1]["x"] == 6080 and vl["placements"][1]["item"] == "Base.TirePiece", "placement listed by visuals_list")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements['%s'] ~= nil and ZMCPClient.models.placements['%s'].name == 'zmcp_star_1'" % (pid1, pid1)), "client received the placement")
+sq = lua("return SIM.square(6080, 5385, 0)")
+check(sq["invalidated"] >= 1 and sq["lastDirty"] == 16, "client asked the chunk for a redraw (DIRTY_ITEM_MODIFY) after applying the placement")
+# the carrier lost its model (older save / client copy made before the name was set): square load re-applies it
+star_rec["model"] = None
+lua("SIM.loadSquare(6080, 5385, 0)")
+check(star_rec["model"] == "zmcp_star_1", "LoadGridsquare re-applied the world model to the carrier item")
+check(len(events("model_place_restored")) >= 1 and tool("visuals_list")["placements"][1]["restored"] >= 1, "restore counted in the registry and logged as an event")
+# a model placement with collision: the blocker sits on the same square
+r = tool("model_place", {"id": "star", "x": 6081, "y": 5385, "collide": True, "pid": "gate"})
+check(r["pid"] == "gate" and r["collide"] == "solid", "model_place {collide = true} placed a solid blocker")
+sq = lua("return SIM.square(6081, 5385, 0)")
+check(sq["isSolid"](sq) is True and len(sq["objects"]) == 1 and sq["objects"][1]["name"] == "ZMCP_collision", "the square is solid: an IsoObject named ZMCP_collision with the solid sprite")
+r = tool("model_remove", {"pid": "gate"})
+check(r["removed"] == 1 and r["blockers"] == 1 and len(sq["objects"]) == 0 and len(sq["worldObjects"]) == 0, "model_remove took the carrier item and its blocker away")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements.gate == nil and ZMCPClient.models.placements['%s'] ~= nil" % pid1), "client forgot the removed placement only")
+
+# --- collision blockers: invisible objects with the vanilla flags, registered sprites with fixed ids
+cs = lua("return ZMCPCollision")
+check(cs["registered"]["solid"] == 2097676288 and cs["registered"]["wall_nw"] == 2097676292, "collision sprites registered with fixed ids (tileset 8000 range)")
+sp = lua("return IsoSpriteManager.instance:getSprite('zmcp_collision_wall_n')")
+check(sp["id"] == 2097676290 and lua("local p = IsoSpriteManager.instance:getSprite('zmcp_collision_wall_n'):getProperties(); return p:has(IsoFlagType.invisible) and p:has(IsoFlagType.WallN) and p:has(IsoFlagType.collideN) and p:has(IsoFlagType.cutN) and not p:has(IsoFlagType.solid)"), "wall_n sprite: invisible + WallN + collideN + cutN")
+r = tool("collision_place", {"x": 6070, "y": 5390, "w": 3, "h": 2, "kind": "solidtrans", "name": "rail"})
+check(r["placed"] == 6 and r["existing"] == 0 and r["unloaded"] == 0 and r["sprite"] == "zmcp_collision_solidtrans", f"collision_place filled a 3x2 rectangle ({r['placed']})")
+sq = lua("return SIM.square(6072, 5391, 0)")
+check(sq["isSolidTrans"](sq) is True and sq["isSolid"](sq) is False and sq["recalcs"] >= 1, "square became solidtrans (collide matrix recalculated on add)")
+r = tool("collision_place", {"x": 6070, "y": 5390, "w": 3, "h": 2, "kind": "solidtrans"})
+check(r["placed"] == 0 and r["existing"] == 6, "placing again is a no-op (one blocker per kind per square)")
+r = tool("collision_place", {"x": 6070, "y": 5390, "kind": "wall_n"})
+check(r["placed"] == 1 and len(lua("return SIM.square(6070, 5390, 0)")["objects"]) == 2, "a second kind stacks on the same square")
+wq = tool("world_query", {"x": 6071, "y": 5390, "radius": 2, "what": "objects"})
+names = sorted(set(o["sprite"] for o in wq["objects"].values()))
+check(wq["objectCount"] == 7 and names == ["zmcp_collision_solidtrans", "zmcp_collision_wall_n"] and all(o["name"] == "ZMCP_collision" for o in wq["objects"].values()), "world_query lists the blockers by sprite and name")
+cl = tool("collision_list", {"x": 6071, "y": 5390, "radius": 3})
+check(cl["count"] == 7 and cl["stale"] == 0 and all(b["present"] and b["loaded"] for b in cl["blockers"].values()) and cl["blockers"][1]["name"] in ("rail", None), "collision_list shows them present")
+r = tool("remove_object", {"x": 6070, "y": 5390, "sprite": "zmcp_collision_wall_n"})
+check(len(r["removed"]) == 1, "remove_object removes a blocker by sprite name")
+cl = tool("collision_list", {"x": 6071, "y": 5390, "radius": 3})
+check(cl["count"] == 6 and cl["stale"] == 1, "collision_list drops the stale entry")
+r = tool("collision_place", {"x": 6070, "y": 5390, "w": 1, "h": 2, "kind": "remove"})
+check(r["removed"] == 2 and tool("collision_list")["count"] == 4, "kind = remove clears a rectangle")
+r = tool("collision_place", {"x": 6200, "y": 5390, "kind": "solid"})
+check(r["unloaded"] == 1 and r["placed"] == 0, "unloaded squares are skipped and reported")
+try:
+    tool("collision_place", {"x": 6070, "y": 5390, "kind": "fence"})
+    check(False, "unknown kind rejected")
+except Exception as ex:
+    check("kind must be" in str(ex), "unknown kind rejected")
+r = tool("collision_clear", {"all": True})
+check(r["removed"] == 4 and r["remaining"] == 0 and len(lua("return SIM.square(6072, 5391, 0)")["objects"]) == 0, "collision_clear removes everything")
+tool("collision_place", {"x": 6075, "y": 5395, "w": 2, "kind": "wall_w", "name": "keep"})
 
 # --- moving 3D entities: UI3DScene layer synced to the iso camera
 def scene_obj(eid):
@@ -303,6 +376,9 @@ check(lua("return ZMCPClient.tex.loaded.snail ~= nil and ZMCPClient.tex.loaded.s
 check(lua("return ZMCPClient.sprites.list.s1 ~= nil"), "late joiner received the persistent sprite")
 check(lua("return ZMCPClient.modules.hud ~= nil"), "late joiner received the client module")
 check(lua("return ZMCPClient.models.name('star') == 'zmcp_star_1'"), "late joiner registered the model")
+check(lua("return ZMCPClient.models.placements['%s'] ~= nil" % pid1), "late joiner received the placement")
+hello = events("client_hello")[-1]["data"]["sent"]
+check(hello["models"] == 2 and hello["placements"] == 1 and hello["entities"] == 2 and hello["textures"] == 1, f"hello resend counts models/placements/entities ({hello})")
 frame()
 check(lua("return ZMCPClient.e3d.list.star ~= nil and ZMCPClient.e3d.list.late ~= nil") and scene_obj("star")["model"] == "zmcp_star_1", "late joiner received the 3D entities and re-created the scene objects")
 check(lua("return ZMCPClient.e3d.list.star.motion == nil and math.abs(ZMCPClient.e3d.list.star.x - 100) < 0.001"), "late joiner got the settled position of the finished tween")
@@ -371,9 +447,69 @@ enc = lua("return ZMCPClient.b64.encode('hello, zomboid!')")
 check(enc == base64.b64encode(b"hello, zomboid!").decode(), "b64 encode")
 check(lua("return ZMCPClient.b64.decode('aGVsbG8sIHpvbWJvaWQh')") == "hello, zomboid!", "b64 decode")
 
+# --- server restart: a fresh Lua state (models, entities, placements, blockers come back from ModData + files),
+# a fresh client says hello and gets the same picture; a saved blocker resolves through its numeric sprite id
+lua("SIM.player.x, SIM.player.y, SIM.player.z = 6078, 5382, 0")     # the teleport test moved the player away
+tool("entity3d_spawn", {"id": "keeper", "model": "star", "x": 6079, "y": 5383, "spin": "0,45,0"})
+r = tool("model_place", {"id": "later", "x": 6082, "y": 5386, "collide": "solidtrans", "pid": "perm"})
+lua("SIM.tick(2)")
+before = {
+    "models": sorted(m["name"] for m in tool("visuals_list")["models"].values()),
+    "placements": sorted((p["pid"], p["name"], p["x"], p["y"], p["z"], p["item"], p["itemId"], p["collide"]) for p in tool("visuals_list")["placements"].values()),
+    "entities": sorted((e["id"], e["model"], round(e["x"], 2), round(e["y"], 2)) for e in tool("entity3d_list").values()),
+    "blockers": sorted((b["x"], b["y"], b["z"], b["kind"]) for b in tool("collision_list")["blockers"].values()),
+    "textures": sorted((t["id"], t["gen"]) for t in tool("visuals_list")["textures"].values()),
+}
+moddata_json = lua("return ZMCPJson.encode(SIM.moddata)")
+# the text files the server keeps in the Lua dir (base64 assets, scripts); PNGs the client wrote are binary and stay out
+saved_fs_json = lua("local t = {} for k, v in pairs(SIM.fs) do if k:match('%.b64$') or k:match('%.lua%.txt$') then t[k] = v end end return ZMCPJson.encode(t)")
+placed_ids = {p[6] for p in before["placements"]}
+saved_spawned = [{k: rec[k] for k in ("x", "y", "z", "item", "ox", "oy", "oz", "id")} for rec in g.SIM.spawned.values() if rec["id"] in placed_ids]
+saved_blockers = list(before["blockers"])
+
+def restore(rt2):
+    """what the engine brings back on its own: the ModData store, the files in the Lua dir, the saved world"""
+    rt2.globals().SIM.now = g.SIM.now + 100
+    rt2.execute("SIM.moddata = ZMCPJson.decode(%s)" % json.dumps(moddata_json))
+    rt2.execute("for k, v in pairs(ZMCPJson.decode(%s)) do SIM.fs[k] = v end" % json.dumps(saved_fs_json))
+    for rec in saved_spawned:      # world items come back from the chunk save, here WITHOUT the model name (worst case)
+        rt2.execute("SIM.addWorldItem(SIM.square(%d, %d, %d), %s, %f, %f, %f, %d)" % (rec["x"], rec["y"], rec["z"], json.dumps(rec["item"]), rec["ox"], rec["oy"], rec["oz"], rec["id"]))
+    for (x, y, z, kind) in saved_blockers:      # tile objects come back by numeric sprite id
+        rt2.execute("assert(SIM.loadObject(SIM.square(%d, %d, %d), ZMCPCollision.spriteId(%s), 'ZMCP_collision'), 'sprite id not registered before the chunk loaded')" % (x, y, z, json.dumps(kind)))
+
+rt2 = boot(FILES, before_bridge=restore)
+g2 = rt2.globals()
+tool2 = lambda name, args=None: rt2.eval("function(name, args) return ZMCP.tools[name].fn(args) end")(name, rt2.table_from(args or {}, recursive=True))
+lua2 = lambda code: rt2.execute(code)
+check(lua2("return ZMCP.nextReq") == g.ZMCP.nextReq and lua2("return ZMCPClient.models.list.star == nil"), "fresh state: bridge counter restored, no client models yet")
+after = {
+    "models": sorted(m["name"] for m in tool2("visuals_list")["models"].values()),
+    "placements": sorted((p["pid"], p["name"], p["x"], p["y"], p["z"], p["item"], p["itemId"], p["collide"]) for p in tool2("visuals_list")["placements"].values()),
+    "entities": sorted((e["id"], e["model"], round(e["x"], 2), round(e["y"], 2)) for e in tool2("entity3d_list").values()),
+    "blockers": sorted((b["x"], b["y"], b["z"], b["kind"]) for b in tool2("collision_list")["blockers"].values()),
+    "textures": sorted((t["id"], t["gen"]) for t in tool2("visuals_list")["textures"].values()),
+}
+check(after == before, "registries identical after the restart (models, placements, entities, blockers, textures): %s" % ("" if after == before else str((before, after))))
+check(len(after["blockers"]) == 3 and all(b["present"] for b in tool2("collision_list")["blockers"].values()), "saved blockers resolved through their sprite ids and are present")
+# the world items lost their model name in this worst-case save: the square load puts it back before any client
+lua2("for _, rec in ipairs(SIM.spawned) do SIM.loadSquare(rec.x, rec.y, rec.z) end")
+check(all(rec["model"] is not None for rec in g2.SIM.spawned.values()) and len([e for e in [json.loads(l) for l in g2.SIM.fs["zmcp_events.log"].splitlines()] if e["kind"] == "model_place_restored"]) == 2, "placements re-applied their models on square load after the restart")
+# a fresh client joins
+lua2("SIM.fire('OnGameStart')")
+lua2("SIM.tick(6)")
+lua2("ZMCPClient.e3d.layer:prerender()")
+check(sorted(m["name"] for m in lua2("return ZMCPClient.models.list").values()) == before["models"], "fresh client registered the same models")
+check(sorted(lua2("return ZMCPClient.models.placements").keys()) == sorted(p[0] for p in before["placements"]), "fresh client received the same placements")
+e3d = lua2("return ZMCPClient.e3d.list")
+check(sorted(e3d.keys()) == sorted(e[0] for e in before["entities"]) and all(e["created"] for e in e3d.values()), "fresh client shows the same 3D entities, all created")
+cmds = [m["cmd"] for m in g2.SIM.clientCmds.values()]
+first = {c: cmds.index(c) for c in ("tex", "model", "place", "e3d") if c in cmds}
+check(first.get("tex", 0) < first.get("model", 1) < first.get("place", 2) < first.get("e3d", 3), f"hello stream order: textures, models, placements, entities ({first})")
+
 errs = [l for l in g.SIM.out.values() if ("error" in l.lower() or "failed" in l.lower() or "removed" in l.lower()) and "bridge_loaded" not in l]
 expected = ("exec e2 error", "exec e3 compile", "script hud removed", "hook 'bad' (render) removed", "render hook 'bad' removed",
-            "e3d late: createModel(later) failed", "client_entity3d {\"err\"")
+            "e3d late: createModel(later) failed", "client_entity3d {\"err\"", 'model_remove {"', 'collision_place {"',
+            'remove_object {"', 'collision_clear {"')
 unexpected = [l for l in errs if not any(x in l for x in expected)]
 check(not unexpected, "no unexpected errors in the log: " + "; ".join(unexpected[:5]))
 
