@@ -6,7 +6,7 @@ it arrives, drift a sprite across the map, ask a player a question and react to 
 tracked and removed by `scene_stop`. A **screen app** is a Lua chunk that runs on a player's client (`app_start`),
 draws on the overlay and reads keys and mouse: a flappy bird, a HUD mini-game, a menu.
 
-Examples: `examples/scenes/*.lua` and `examples/apps/flappy.lua`, served by `scene_template {name}`. Tools:
+Examples: `examples/scenes/*.lua` and `examples/apps/flappy.lua` (shipped inside the mod at `mod/Contents/mods/ZomboidMCP/examples/`, the repo root `examples/` is a symlink to it), served by `scene_template {name}`. Tools:
 `scene_start`, `scene_stop`, `scene_list`, `scene_logs`, `scene_signal`, `scene_template`, `app_start`, `app_stop`,
 `app_list` (docs/TOOLS.md). Client commands: docs/PROTOCOL.md part 2, "Scenes and apps".
 
