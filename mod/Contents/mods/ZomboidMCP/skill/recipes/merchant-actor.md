@@ -3,7 +3,7 @@
 A passive zombie in a Trader outfit who stands at a spot, faces players who come close, greets them, and trades: give
 it a "banana" (drop one on its square) and it hands you a can of beans. Server-side script; nothing to install on
 clients. The scene SDK issue turns this into a scene with `spawnActor`, `actor:say`, `onPlayerNear` and choice
-dialogs ([guides/scenes-and-apps.md](../guides/scenes-and-apps.md), [examples/scenes](../../../../../../examples/scenes) in the repo); this version uses the raw engine.
+dialogs ([guides/scenes-and-apps.md](../guides/scenes-and-apps.md), `examples/scenes/` in the repository github.com/Niach/zomboid-mcp); this version uses the raw engine.
 
 ## Calls
 

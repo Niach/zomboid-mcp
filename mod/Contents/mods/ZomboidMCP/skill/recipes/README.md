@@ -17,5 +17,5 @@ argument names), the raw Lua behind them, how to verify, and how to clean up. Re
 | [custom-hud](custom-hud.md) | a persistent HUD with health, position, nearby zombies | `script_install side=client` |
 
 The raw-Lua equivalents of every curated tool, and scripting-only operations (traits, skills, appearance, searches,
-lightning, sound), are in the repo under `docs/recipes/` ([index](../../../../../../docs/recipes/README.md)): the
+lightning, sound), are in the repo under `docs/recipes/` (`docs/recipes/README.md` in the repository github.com/Niach/zomboid-mcp): the
 guides in `../guides/` carry the same snippets with context.

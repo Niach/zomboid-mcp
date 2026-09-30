@@ -3,7 +3,7 @@
 A complete game drawn on the overlay for one player or everyone: Space or click flaps, Escape quits, Space restarts.
 Client script, persistent while installed (late joiners get it too). The full source is the tested block in
 `guides/2d-overlays-and-apps.md` ("Flappy Bird, complete"); the scene SDK issue ships the same as
-[examples/apps/flappy.lua](../../../../../../examples/apps/flappy.lua) with its `app_start` wrapper (in progress).
+`examples/apps/flappy.lua` (repository github.com/Niach/zomboid-mcp) with its `app_start` wrapper (in progress).
 
 ## Calls
 

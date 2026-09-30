@@ -9,7 +9,7 @@ You drive a live Project Zomboid 42.21 game through the `zomboid` MCP. It is **s
 `run_lua_client` run Lua you write inside the game, `script_install` keeps it, and the curated tools cover the common
 operations with validated arguments (`texture_upload`, `world_sprite`, `falling_items`, `model_upload` + `model_place` / `entity3d_spawn`,
 `spawn_item`, `give_item`, `spawn_zombies`, `spawn_vehicle`, `set_weather`, `set_time`, `teleport`, `build_structure`...).
-Rules and limits in one page: [CONSTRAINTS](../../../../../docs/CONSTRAINTS.md) (repo) or the summary below.
+Rules and limits in one page: [CONSTRAINTS](CONSTRAINTS.md), summarized below.
 
 ## Mental model
 
