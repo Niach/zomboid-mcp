@@ -254,6 +254,58 @@ check(r["removed"] == 1 and r["blockers"] == 1 and len(sq["objects"]) == 0 and l
 lua("SIM.tick(1)")
 check(lua("return ZMCPClient.models.placements.gate == nil and ZMCPClient.models.placements['%s'] ~= nil" % pid1), "client forgot the removed placement only")
 
+# --- world-anchored figures: model_place with a yaw, model_move (client tween of the carrier), model_swap
+spawned_before = len(g.SIM.spawned)
+r = tool("model_place", {"id": "star", "x": 6090, "y": 5385, "z": 0, "yaw": 75, "pid": "fig"})
+fig = g.SIM.spawned[len(g.SIM.spawned)]
+check(r["yaw"] == 75 and fig["yaw"] == 75 and fig["sentYaw"] == 75 and fig["transmits"] == 0, "model_place {yaw}: worldZRotation set before the one send (the constructor keeps a yaw >= 0)")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements.fig.yaw") == 75, "the client's placement record carries the yaw")
+r = tool("model_move", {"pid": "fig", "x": 6091.5, "y": 5386.5, "z": 1.05, "yaw": 15, "duration": 2, "ease": True})
+check(abs(r["ox"] - 1.5) < 1e-6 and abs(r["oy"] - 1.5) < 1e-6 and abs(r["oz"] - 1.05) < 1e-6 and r["yaw"] == 15 and r["loaded"] is True and r["warning"] is None,
+      "model_move converts world coordinates to offsets from the home square (%s)" % dict(r))
+check(abs(fig["ox"] - 1.5) < 1e-6 and abs(fig["oz"] - 1.05) < 1e-6 and fig["yaw"] == 15 and (fig["offsetSyncs"] or 0) == 0,
+      "the server's carrier takes the final pose at once (setOffX/Y/Z, no SyncIsoObject)")
+pl = [p for p in tool("visuals_list")["placements"].values() if p["pid"] == "fig"][0]
+check(pl["ox"] == 1.5 and pl["yaw"] == 15 and pl["moving"] is True and abs(pl["wx"] - 6090.5) < 0.05, "the record holds the final pose; visuals_list follows the tween (wx %.2f)" % pl["wx"])
+# the client's copy is the same object in single player: put it back to the start pose to watch the client tween
+fig["ox"], fig["oy"], fig["oz"], fig["yaw"] = 0.5, 0.5, 0, 75
+lua("ZMCPClient.models.tweens = {}")
+t0 = g.SIM.now
+lua("SIM.tick(1, 0.0)")         # the queued placeMove reaches the client
+check(lua("return ZMCPClient.models.tweens.fig ~= nil"), "the client started a tween of the carrier")
+g.SIM.now = t0 + 1.0
+lua("ZMCPClient.models.stepTweens(SIM.now)")
+check(abs(fig["ox"] - 1.0) < 0.01 and abs(fig["oz"] - 0.525) < 0.01 and abs(fig["yaw"] - 45) < 0.5 and fig["redraws"] >= 1 and fig["lastDirty"] == 272,
+      "half way (eased): offsets, height and yaw interpolated, the chunk level redrawn (ox %.2f oz %.2f yaw %.1f)" % (fig["ox"], fig["oz"], fig["yaw"]))
+g.SIM.now = t0 + 2.5
+lua("ZMCPClient.models.stepTweens(SIM.now)")
+check(abs(fig["ox"] - 1.5) < 1e-6 and abs(fig["oy"] - 1.5) < 1e-6 and abs(fig["oz"] - 1.05) < 1e-6 and fig["yaw"] == 15 and lua("return ZMCPClient.models.tweens.fig == nil"),
+      "tween finished at the final pose")
+check(fig["transmits"] == 0 and len(g.SIM.spawned) == spawned_before + 1 and len(lua("return SIM.square(6090, 5385, 0).worldObjects")) == 1,
+      "no carrier was re-sent or added: still one world item on the home square")
+r = tool("model_move", {"pid": "fig", "x": 6101.5, "y": 5385.5})
+check(r["warning"] is not None and "chunk" in r["warning"], "model_move warns when the target leaves the home chunk")
+tool("model_move", {"pid": "fig", "x": 6090.5, "y": 5385.5, "z": 0, "duration": 0})
+lua("SIM.tick(1)")
+check(abs(fig["ox"] - 0.5) < 1e-6 and abs(fig["oz"]) < 1e-6 and lua("return ZMCPClient.models.tweens.fig == nil"), "duration 0 jumps")
+# model_swap: the same carrier shows another model
+tool("model_upload", {"id": "star2", "mesh_base64_file": "zmcp_model_star.x.b64.txt", "png_base64": g.SIM.fs["zmcp_model_star.png.b64.txt"]})
+lua("SIM.tick(3)")
+sets = fig["modelSets"]
+r = tool("model_swap", {"pid": "fig", "id": "star2"})
+check(r["name"] == "zmcp_star2_1" and fig["model"] == "zmcp_star2_1" and r["loaded"] is True, "model_swap sets the new world model on the server's carrier")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements.fig.name") == "zmcp_star2_1" and fig["transmits"] == 0 and len(lua("return SIM.square(6090, 5385, 0).worldObjects")) == 1
+      and tool("visuals_list")["placements"] and [p for p in tool("visuals_list")["placements"].values() if p["pid"] == "fig"][0]["model"] == "star2",
+      "the client got the new name for the same carrier (by item id); no re-send, still one world item")
+# a late joiner / square reload gets the pose from the record
+fig["ox"], fig["oz"], fig["yaw"] = 0.9, 0.3, 200
+lua("SIM.loadSquare(6090, 5385, 0)")
+check(abs(fig["ox"] - 0.5) < 1e-6 and abs(fig["oz"]) < 1e-6 and fig["yaw"] == 15, "a square load re-applies the recorded offsets and yaw")
+tool("model_remove", {"pid": "fig"})
+lua("ZMCP.visuals.store().models.star2 = nil; ZMCPClient.models.clear('star2'); SIM.tick(1)")   # keep the later late-join counts
+
 # --- collision blockers: invisible objects with the vanilla flags, registered sprites with fixed ids
 cs = lua("return ZMCPCollision")
 check(cs["registered"]["solid"] == 2097676288 and cs["registered"]["wall_nw"] == 2097676292, "collision sprites registered with fixed ids (tileset 8000 range)")
@@ -314,7 +366,7 @@ check(g.SIM.scene is not None and g.SIM.scene.view == "UserDefined" and list(g.S
 check(g.SIM.scene.grid is False and g.SIM.scene.gizmo == "none", "grid and gizmo off (no debug text)")
 o = scene_obj("star")
 check(o["model"] == "zmcp_star_1", "scene object created from the registered runtime model")
-check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].z - 100) < 1e-3, f"placed at world 100,100 -> scene X=Z=100 (k=1 at zoom 1) ({o['t'].x:.2f},{o['t'].z:.2f})")
+check(abs(o["t"].x - 100) < 0.01 and abs(o["t"].z - 100) < 0.01, f"placed at world 100,100 -> scene X=Z=100 (k=1 at zoom 1) ({o['t'].x:.2f},{o['t'].z:.2f})")
 check(abs(o["t"].y - 1.35) < 1e-3, "lifted by h = roll radius")
 check(abs(o["s"].x - 3) < 1e-3 and abs(o["s"].y - 3) < 1e-3, "scale 3 applied")
 ux, uy = lua("return SIM.scene:sceneToUIX(%f, %f, %f), SIM.scene:sceneToUIY(%f, %f, %f)" % (o["t"].x, 0, o["t"].z, o["t"].x, 0, o["t"].z))
@@ -345,6 +397,20 @@ frame()
 o = scene_obj("star")
 check(abs(o["t"].x - 55) < 0.2 and abs(o["s"].x - 1.5) < 1e-3, "zoom 2 halves scene units and the object scale")
 g.SIM.zoom = 1
+# the drift fix: a 2x-texture client (Core.tileScale 2: 64 px per tile at zoom 1). The layer measures pixels per tile
+# with isoToScreenX/Y, so the entity's ground point still lands on its world position and the model doubles in size
+# with the world; the constant 32 px/tile of the first version put it at half the distance from the screen centre
+# (it slid along with the camera)
+g.SIM.tileScale = 2
+frame()
+o = scene_obj("star")
+ex, ey = lua("local x, y = ZMCPClient.e3d.positionAt(ZMCPClient.e3d.list.star, ZMCPClient.now()); return x, y")
+ux, uy = lua("return SIM.scene:sceneToUIX(%f, 0, %f), SIM.scene:sceneToUIY(%f, 0, %f)" % (o["t"].x, o["t"].z, o["t"].x, o["t"].z))
+check(abs(ux - lua("return isoToScreenX(0, %f, %f, 0)" % (ex, ey))) < 0.5 and abs(uy - lua("return isoToScreenY(0, %f, %f, 0)" % (ex, ey))) < 0.5,
+      "tileScale 2: the entity's ground point projects onto isoToScreenX/Y of its world position (no drift with the camera)")
+check(abs(o["s"].x - 6) < 0.01, "tileScale 2: scale follows the world (2 scene units per model unit at scale 3 -> 6) (%.2f)" % o["s"].x)
+lua("SIM.camX = 0")
+g.SIM.tileScale = 1
 # tween + rotate + spin
 r = tool("entity3d_move", {"id": "star", "x": 100, "y": 100, "duration": 4, "ease": True})
 check(r["motion"] == "to" and r["duration"] == 4, "entity3d_move: tween")
@@ -359,7 +425,7 @@ lua("SIM.tick(1)")
 g.SIM.now = t1 + 6
 frame()
 o = scene_obj("star")
-check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].y - 2) < 1e-3 and abs(o["r"].x - 10) < 1e-6, "tween finished, h and rx applied")
+check(abs(o["t"].x - 100) < 0.01 and abs(o["t"].y - 2) < 1e-3 and abs(o["r"].x - 10) < 1e-6, "tween finished, h and rx applied")
 ry1 = o["r"].y
 g.SIM.now = t1 + 7
 frame()

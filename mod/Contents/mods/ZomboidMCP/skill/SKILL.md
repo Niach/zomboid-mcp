@@ -53,6 +53,8 @@ strings, numbers, booleans from a chunk; userdata comes back as `tostring`.
    `kill_zombies_area`, `place_object`, `remove_object`, `build_structure`, `collision_place`, `collision_list`,
    `collision_clear`, `set_weather`, `set_time`, `texture_upload`, `texture_pixel`, `model_upload`, `model_place`,
    `model_remove` (`{pid}` from `model_place` / `visuals_list`: takes the carrier item, its blocker and the record away),
+   `model_move` (glides a placed model to another pose; it stays a world object) and `model_swap` (another model on the
+   same carrier: figures that must stand IN the world are placements, not `entity3d_*`),
    `world_sprite`, `falling_items`, `overlay_draw`, `server_message`,
    `capture_input`, `visuals_list`, `clear_visuals`, `entity3d_spawn`, `entity3d_move`, `entity3d_rotate`,
    `entity3d_remove`, `entity3d_list`, `server_console`, `script_install`, `script_list`, `script_remove`).

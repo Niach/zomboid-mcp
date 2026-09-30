@@ -24,7 +24,7 @@ GROUPS = [
     ("World", ["spawn_item", "spawn_vehicle", "vehicle_fix", "spawn_zombies", "kill_zombies_area", "place_object",
                "remove_object", "build_structure", "collision_place", "collision_list", "collision_clear",
                "set_weather", "set_time"]),
-    ("Visuals (client push)", ["texture_upload", "texture_pixel", "model_upload", "model_place", "model_remove", "world_sprite",
+    ("Visuals (client push)", ["texture_upload", "texture_pixel", "model_upload", "model_place", "model_remove", "model_move", "model_swap", "world_sprite",
                                "falling_items", "overlay_draw", "server_message", "capture_input", "visuals_list",
                                "clear_visuals"]),
     ("Moving 3D entities (client push)", ["entity3d_spawn", "entity3d_move", "entity3d_rotate", "entity3d_remove",

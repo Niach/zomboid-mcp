@@ -245,24 +245,40 @@ function SIM.newItem(itemType, id)
     item.setWorldStaticModel = function(_, n) rec.model = n; rec.modelSets = rec.modelSets + 1 end
     item.setWorldYRotation = function(_, r) rec.yrot = r end
     item.getWorldYRotation = function() return rec.yrot or 0 end
+    item.setWorldZRotation = function(_, r) rec.yaw = r; rec.yawSets = (rec.yawSets or 0) + 1 end
+    item.getWorldZRotation = function() return rec.yaw or -1 end
     item.getModData = function() return rec.modData end
     return item
 end
 -- AddWorldInventoryItem(type or item, ox, oy, oz): the engine sends the new world item to the clients once
 -- (IsoWorldInventoryObject.transmitCompleteItemToClients = an AddItemToMap packet); rec.sentModel is the model name
 -- that send carried. A second transmitCompleteItemToClients adds ANOTHER copy on every client (rec.transmits counts
--- those duplicates, verified live 2026-09-30). The IsoWorldInventoryObject constructor zeroes X/Y rotation.
+-- those duplicates, verified live 2026-09-30). The IsoWorldInventoryObject constructor zeroes X/Y rotation and
+-- randomizes a negative Z rotation (the yaw); rec.sentYaw is the yaw that send carried.
+-- Offsets: setOffX/Y/Z only set the field (rec.ox/oy/oz); setOffset(x, y, z) would also sync (rec.offsetSyncs);
+-- invalidateRenderChunkLevel on the world object counts redraw requests (rec.redraws).
 function SIM.addWorldItem(sq, itemOrType, ox, oy, oz, id)
     local item = type(itemOrType) == "table" and itemOrType or SIM.newItem(itemOrType, id)
     local rec = item.rec
     rec.x, rec.y, rec.z, rec.ox, rec.oy, rec.oz = sq.x, sq.y, sq.z, ox, oy, oz
     rec.yrot = nil
+    if rec.yaw == nil or rec.yaw < 0 then rec.yaw = 123 end
     rec.sentModel = rec.model
+    rec.sentYaw = rec.yaw
+    rec.redraws = 0
     SIM.spawned[#SIM.spawned + 1] = rec
     local wo = { __class = "IsoWorldInventoryObject", item = item, rec = rec }
     wo.getItem = function() return item end
     wo.getSquare = function() return sq end
     wo.transmitCompleteItemToClients = function() rec.transmits = rec.transmits + 1 end
+    wo.getOffX = function() return rec.ox end
+    wo.getOffY = function() return rec.oy end
+    wo.getOffZ = function() return rec.oz end
+    wo.setOffX = function(_, v) rec.ox = v end
+    wo.setOffY = function(_, v) rec.oy = v end
+    wo.setOffZ = function(_, v) rec.oz = v end
+    wo.setOffset = function(_, x, y, z) rec.ox, rec.oy, rec.oz = x, y, z; rec.offsetSyncs = (rec.offsetSyncs or 0) + 1 end
+    wo.invalidateRenderChunkLevel = function(_, flags) rec.redraws = rec.redraws + 1; rec.lastDirty = flags end
     item.getWorldItem = function() return wo end
     rec.wo = wo
     sq.worldObjects[#sq.worldObjects + 1] = wo
@@ -329,8 +345,9 @@ function getCell()
 end
 function getGameTime() return { getTimeOfDay = function() return 12 end, getDay = function() return 1 end, getMonth = function() return 6 end, getYear = function() return 1993 end } end
 function getCore() return { getZoom = function() return SIM.zoom or 1 end, getScreenWidth = function() return 1920 end, getScreenHeight = function() return 1080 end } end
-function isoToScreenX(pn, x, y, z) return (x - y) * 32 / (SIM.zoom or 1) + 960 end
-function isoToScreenY(pn, x, y, z) return ((x + y) * 16 - z * 96) / (SIM.zoom or 1) + 540 end
+-- IsoUtils.XToScreen is (x - y) * 32 * Core.tileScale (2 with the 2x textures of a 4K client), YToScreen likewise
+function isoToScreenX(pn, x, y, z) return (x - y) * 32 * (SIM.tileScale or 1) / (SIM.zoom or 1) + 960 end
+function isoToScreenY(pn, x, y, z) return ((x + y) * 16 - z * 96) * (SIM.tileScale or 1) / (SIM.zoom or 1) + 540 end
 UIFont = { Small = "Small", Medium = "Medium", Large = "Large", Title = "Title" }
 function getTextManager() return { MeasureStringX = function(_, f, s) return #s * 7 end, getFontHeight = function() return 16 end } end
 
@@ -446,12 +463,12 @@ end }
 SIM.vanillaModels = { RadioBlue_Ground = true }
 -- inverse of the isoToScreen mocks above (camera centred on world 0,0 at screen 960,540)
 function screenToIsoX(pn, u, v, z)
-    local zoom = SIM.zoom or 1
+    local zoom = (SIM.zoom or 1) / (SIM.tileScale or 1)
     local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
     return (A + B) / 2
 end
 function screenToIsoY(pn, u, v, z)
-    local zoom = SIM.zoom or 1
+    local zoom = (SIM.zoom or 1) / (SIM.tileScale or 1)
     local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
     return (B - A) / 2
 end

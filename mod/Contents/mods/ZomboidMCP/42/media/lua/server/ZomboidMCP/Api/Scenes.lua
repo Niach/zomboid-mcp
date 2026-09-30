@@ -188,7 +188,7 @@ end
 -- the tools that change the world through engine calls with Lua events (the visual tools only enqueue client
 -- messages and run directly, so sprite motion and overlays keep their timing)
 local WORLD_TOOLS = { place_object = true, remove_object = true, build_structure = true, spawn_item = true, give_item = true,
-    spawn_zombies = true, kill_zombies_area = true, set_weather = true, set_time = true, model_place = true, model_remove = true,
+    spawn_zombies = true, kill_zombies_area = true, set_weather = true, set_time = true, model_place = true, model_remove = true, model_move = true, model_swap = true,
     collision_place = true, collision_clear = true, spawn_vehicle = true, vehicle_fix = true, falling_items = true }
 S.WORLD_TOOLS = WORLD_TOOLS
 

@@ -11,7 +11,14 @@
 --       carrier world item gets the model re-applied if it lost it and the chunk is marked for a redraw.
 --       Until the ModelScript is registered the engine draws the carrier item's flat sprite instead
 --       (ItemModelRenderer: NoModel, re-evaluated every frame, nothing is cached).
+--       ox, oy, oz are the carrier's offsets inside its home square (oz in z levels, any value: a model can hover
+--       or stand a few tiles away from the square it lives on), yaw its worldZRotation (the turn about the
+--       vertical axis). Re-applied on every square load and every "place" (model_swap re-sends the record with
+--       the new name: the carrier keeps its item id, only its world model changes).
 --   "placeRemove" {pid?}   forget one placement or all.
+--   "placeMove" {pid, ox, oy, oz, yaw?, dur, ease, elapsed?}   model_move: the carrier world item glides to the new
+--       offsets / yaw over dur seconds (client side, every tick: setOffX/Y/Z + setWorldZRotation, no network sync;
+--       the server has already set the final pose on its own copy, which is what the chunk save and late joiners get).
 --   "e3d" {id, model, x, y, z, h, scale, rx, ry, rz, spin, roll, face, path, speed, loop, tox, toy, toz, dur,
 --          ease, elapsed}      create/replace a moving 3D entity (ZMCPClient.e3d, below)
 --   "e3dMove" {id, ...motion}, "e3dRotate" {id, rx, ry, rz, spin, roll, face}, "e3dRemove" {id?}
@@ -29,7 +36,11 @@ M.waiting = M.waiting or {}     -- id -> model args waiting for files
 M.placements = M.placements or {}   -- pid -> place args (model_place registry as streamed by the server)
 M.handlers = M.handlers or {}
 M.stats = M.stats or { reapplied = 0, redraws = 0 }
+M.stats.moves = M.stats.moves or 0
+M.stats.moveFrames = M.stats.moveFrames or 0
+M.tweens = M.tweens or {}       -- pid -> running carrier tween (model_move)
 M.DIRTY_ITEM_MODIFY = 16        -- FBORenderChunk.DIRTY_ITEM_MODIFY: redraw the cached chunk level (world items live in it)
+M.DIRTY_MOVE = 16 + 256         -- + DIRTY_OBJECT_MODIFY, what IsoWorldInventoryObject.setOffset asks for
 for ev, fn in pairs(M.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
 M.handlers = {}
 
@@ -145,6 +156,27 @@ function M.findCarrier(sq, p)
     return bestWo, best
 end
 
+local function near(a, b) return a ~= nil and b ~= nil and math.abs(a - b) < 1e-4 end
+
+-- the carrier's pose (offsets inside the home square, yaw) as the record says; false when nothing changed
+local function applyPose(wo, item, p)
+    local changed = false
+    local ox, oy, oz = tonumber(p.ox), tonumber(p.oy), tonumber(p.oz)
+    if ox and oy and oz then
+        local cx, cy, cz = try(function() return wo:getOffX() end), try(function() return wo:getOffY() end), try(function() return wo:getOffZ() end)
+        if not (near(cx, ox) and near(cy, oy) and near(cz, oz)) then
+            pcall(function() wo:setOffX(ox); wo:setOffY(oy); wo:setOffZ(oz) end)
+            changed = true
+        end
+    end
+    local yaw = tonumber(p.yaw)
+    if yaw and not near(try(function() return item:getWorldZRotation() end), yaw) then
+        pcall(function() item:setWorldZRotation(yaw) end)
+        changed = true
+    end
+    return changed
+end
+
 -- re-apply one placement if its square is loaded: "ok" | "restored" | "missing" | nil (square not loaded)
 function M.applyPlacement(p)
     if not getCell then return nil end
@@ -162,6 +194,8 @@ function M.applyPlacement(p)
     -- client copy may lack it
     local yrot = tonumber(p.yrot)
     if yrot and try(function() return item:getWorldYRotation() end) ~= yrot then pcall(function() item:setWorldYRotation(yrot) end) end
+    -- offsets and yaw (model_move); a running tween owns them until it ends
+    if not M.tweens[tostring(p.pid or "")] then applyPose(wo, item, p) end
     -- the chunk FBO may still hold the flat fallback sprite: ask for a redraw of that level
     if pcall(function() sq:invalidateRenderChunkLevel(M.DIRTY_ITEM_MODIFY) end) then M.stats.redraws = M.stats.redraws + 1 end
     return result
@@ -175,7 +209,73 @@ function M.onPlace(a)
 end
 
 function M.onPlaceRemove(a)
-    if a.pid then M.placements[tostring(a.pid)] = nil else M.placements = {} end
+    if a.pid then M.placements[tostring(a.pid)] = nil; M.tweens[tostring(a.pid)] = nil else M.placements = {}; M.tweens = {} end
+end
+
+---------------------------------------------------------------- carrier tweens (model_move)
+-- A world item's model is drawn at square + (xoff, yoff, zoff) with worldZRotation as its yaw (IsoWorldInventoryObject
+-- .render -> WorldItemModelDrawer.renderMain(item, sq, renderSq, x + xoff, y + yoff, z + zoff); ItemModelRenderer
+-- puts worldZRotation on the model's vertical axis). setOffX/Y/Z only set the field (setOffset would also send a
+-- SyncIsoObject packet from the client); the chunk level is asked for a redraw every step because world items are
+-- drawn into the cached chunk texture.
+local function smooth(f) return f * f * (3 - 2 * f) end
+local function lerpAngle(a, b, f)
+    local d = ((b - a + 540) % 360) - 180
+    return (a + d * f) % 360
+end
+
+function M.onMove(a)
+    local pid = tostring(a.pid or "")
+    local p = M.placements[pid]
+    if not p then return end
+    local to = { ox = tonumber(a.ox) or tonumber(p.ox) or 0.5, oy = tonumber(a.oy) or tonumber(p.oy) or 0.5,
+        oz = tonumber(a.oz) or tonumber(p.oz) or 0, yaw = tonumber(a.yaw) }
+    p.ox, p.oy, p.oz = to.ox, to.oy, to.oz
+    if to.yaw then p.yaw = to.yaw end
+    M.stats.moves = M.stats.moves + 1
+    local sq = getCell and getCell():getGridSquare(math.floor(tonumber(p.x) or 0), math.floor(tonumber(p.y) or 0), math.floor(tonumber(p.z) or 0))
+    local wo, item
+    if sq then wo, item = M.findCarrier(sq, p) end
+    if not item then M.tweens[pid] = nil; return end        -- not loaded here: the chunk comes with the server's final pose
+    local dur = tonumber(a.dur) or 0
+    local elapsed = tonumber(a.elapsed) or 0
+    if dur <= elapsed then
+        M.tweens[pid] = nil
+        applyPose(wo, item, p)
+        pcall(function() wo:invalidateRenderChunkLevel(M.DIRTY_MOVE) end)
+        return
+    end
+    local from = { ox = try(function() return wo:getOffX() end) or to.ox, oy = try(function() return wo:getOffY() end) or to.oy,
+        oz = try(function() return wo:getOffZ() end) or to.oz, yaw = try(function() return item:getWorldZRotation() end) or 0 }
+    M.tweens[pid] = { pid = pid, wo = wo, item = item, from = from, to = to, t0 = C.now() - elapsed, dur = dur,
+        ease = a.ease == true or a.ease == "true" or a.ease == 1 }
+end
+
+-- one step of every running tween (OnTick: the game loop runs once per rendered frame)
+function M.stepTweens(t)
+    for pid, tw in pairs(M.tweens) do
+        local f = tw.dur > 0 and math.min(1, math.max(0, (t - tw.t0) / tw.dur)) or 1
+        local e = tw.ease and smooth(f) or f
+        local ok = pcall(function()
+            tw.wo:setOffX(tw.from.ox + (tw.to.ox - tw.from.ox) * e)
+            tw.wo:setOffY(tw.from.oy + (tw.to.oy - tw.from.oy) * e)
+            tw.wo:setOffZ(tw.from.oz + (tw.to.oz - tw.from.oz) * e)
+            if tw.to.yaw then tw.item:setWorldZRotation(lerpAngle(tw.from.yaw, tw.to.yaw, e)) end
+            tw.wo:invalidateRenderChunkLevel(M.DIRTY_MOVE)
+        end)
+        M.stats.moveFrames = M.stats.moveFrames + 1
+        if f >= 1 or not ok then M.tweens[pid] = nil end
+    end
+end
+
+-- where a placement's model is right now on this client: world x, y, z (levels, fractional), moving
+function M.poseOf(pid)
+    local p = M.placements[tostring(pid)]
+    if not p then return nil end
+    local tw = M.tweens[tostring(pid)]
+    local ox, oy, oz = tonumber(p.ox) or 0.5, tonumber(p.oy) or 0.5, tonumber(p.oz) or 0
+    if tw then ox, oy, oz = tw.wo:getOffX(), tw.wo:getOffY(), tw.wo:getOffZ() end
+    return (tonumber(p.x) or 0) + ox, (tonumber(p.y) or 0) + oy, (tonumber(p.z) or 0) + oz, tw ~= nil
 end
 
 -- after a model registered: every placement using it on a loaded square gets a redraw / re-apply
@@ -200,6 +300,10 @@ M.handlers.LoadGridsquare = function(sq)
         for _, p in ipairs(M.placementsAt(sq:getX(), sq:getY(), sq:getZ())) do M.applyPlacement(p) end
     end)
     if not ok then log("placement reapply failed: " .. tostring(err)) end
+end
+M.handlers.OnTick = function()
+    if C.isEmpty and C.isEmpty(M.tweens) then return end
+    M.stepTweens(C.now())
 end
 for ev, fn in pairs(M.handlers) do if Events[ev] then Events[ev].Add(fn) end end
 
@@ -504,7 +608,21 @@ local function create(e, J, t)
     return false
 end
 
--- per frame: calibrate, then place every entity so it projects onto isoToScreenX/Y(world position)
+-- per frame: calibrate, then place every entity so it projects onto isoToScreenX/Y(world position).
+-- The world side of the calibration comes from isoToScreenX/Y themselves (what the world sprites use): pixels per
+-- tile and per z level are measured at the entity every frame, and the entity's ground point is solved from its
+-- own screen position through the scene's affine map. The first version used constants (32 px per tile / 96 px per
+-- level divided by the zoom) and screenToIsoX/Y for the world point under the scene origin; IsoUtils.XToScreen is
+-- (x - y) * 32 * Core.tileScale, so with tileScale 2 (the 2x textures a 4K client uses) the scene coordinates were
+-- half the world's: an entity n tiles from the screen centre was drawn n/2 tiles from it and slid along with the
+-- camera whenever the player moved (the live "they move while I move" report, 2026-09-30).
+local function solve2(ax, az, bx, bz, du, dv)
+    local det = ax * bz - az * bx
+    if math.abs(det) < 1e-9 then return nil end
+    return (du * bz - az * dv) / det, (ax * dv - du * bx) / det
+end
+E.solve2 = solve2
+
 function E.frame(layer)
     if isEmpty(E.list) then return end
     E.stats.frames = E.stats.frames + 1
@@ -513,36 +631,42 @@ function E.frame(layer)
     if layer:getWidth() ~= sw or layer:getHeight() ~= sh then layer:setWidth(sw); layer:setHeight(sh) end
     local c = E.calibrate(J)
     if not c then return end
-    local zoom = C.zoom()
-    local k = (E.TILE_PX / zoom) / math.abs(c.ax)             -- scene units per world tile
-    local ky = (E.LEVEL_PX / zoom) / math.abs(c.by)           -- scene units per z level
     local ox, oy = 0, 0
     pcall(function() ox = layer:getAbsoluteX(); oy = layer:getAbsoluteY() end)
-    local cx = screenToIsoX(0, c.u0 + ox, c.v0 + oy, 0)       -- world point under the scene origin
-    local cy = screenToIsoY(0, c.u0 + ox, c.v0 + oy, 0)
     local t = C.now()
     for _, e in pairs(E.list) do
         if not e.created then create(e, J, t) end
         if e.created then
             local wx, wy, wz, dx, dy, dist = E.positionAt(e, t)
-            local X = (wx - cx) * k * c.sx
-            local Z = (wy - cy) * k * c.sz
-            local Y = (wz * ky + e.h * k) * c.sy
-            local rx, ry, rz = e.rx, e.ry, e.rz
-            if e.spin then
-                local age = t - e.t0
-                rx, ry, rz = rx + e.spin[1] * age, ry + e.spin[2] * age, rz + e.spin[3] * age
+            -- screen pixels of the entity's ground point at level 0 and of one tile / one level around it
+            local u = isoToScreenX(0, wx, wy, 0) - ox
+            local v = isoToScreenY(0, wx, wy, 0) - oy
+            local pxTile = math.abs(isoToScreenX(0, wx + 1, wy, 0) - ox - u)
+            local pxLevel = math.abs(isoToScreenY(0, wx, wy, 1) - oy - v)
+            if pxTile < 1e-6 then pxTile = E.TILE_PX / C.zoom() end
+            if pxLevel < 1e-6 then pxLevel = E.LEVEL_PX / C.zoom() end
+            local k = pxTile / math.abs(c.ax)                     -- scene units per world tile
+            local ky = pxLevel / math.abs(c.by)                   -- scene units per z level
+            -- ground point: the scene X/Z (Y = 0) whose projection is (u, v)
+            local X, Z = solve2(c.ax, c.az, c.bx, c.bz, u - c.u0, v - c.v0)
+            if X then
+                local Y = (wz * ky + e.h * k) * c.sy
+                local rx, ry, rz = e.rx, e.ry, e.rz
+                if e.spin then
+                    local age = t - e.t0
+                    rx, ry, rz = rx + e.spin[1] * age, ry + e.spin[2] * age, rz + e.spin[3] * age
+                end
+                if (e.face or e.roll) and (dx ~= 0 or dy ~= 0) then
+                    -- model +X points along the travel direction (rotation about Y maps +X to (cos, 0, -sin))
+                    e.heading = math.deg(math.atan2(-(dy * c.sz), dx * c.sx))
+                end
+                if (e.face or e.roll) and e.heading then ry = ry + e.heading end
+                if e.roll then rz = rz - math.deg(dist / e.roll) end   -- wheel: top moves forward = negative about Z
+                local s = k * e.scale * E.MODEL_SCALE
+                J:fromLua1("getObjectTranslation", e.obj):set(X, Y, Z)
+                J:fromLua1("getObjectRotation", e.obj):set(rx, ry, rz)
+                J:fromLua1("getObjectScale", e.obj):set(s, s, s)
             end
-            if (e.face or e.roll) and (dx ~= 0 or dy ~= 0) then
-                -- model +X points along the travel direction (rotation about Y maps +X to (cos, 0, -sin))
-                e.heading = math.deg(math.atan2(-(dy * c.sz), dx * c.sx))
-            end
-            if (e.face or e.roll) and e.heading then ry = ry + e.heading end
-            if e.roll then rz = rz - math.deg(dist / e.roll) end   -- wheel: top moves forward = negative about Z
-            local s = k * e.scale * E.MODEL_SCALE
-            J:fromLua1("getObjectTranslation", e.obj):set(X, Y, Z)
-            J:fromLua1("getObjectRotation", e.obj):set(rx, ry, rz)
-            J:fromLua1("getObjectScale", e.obj):set(s, s, s)
         end
     end
 end
@@ -563,6 +687,7 @@ end
 C.commands = C.commands or {}
 C.commands.place = function(a) M.onPlace(a) end
 C.commands.placeRemove = function(a) M.onPlaceRemove(a) end
+C.commands.placeMove = function(a) M.onMove(a) end
 C.commands.e3d = function(a) E.set(a) end
 C.commands.e3dMove = function(a) E.move(a) end
 C.commands.e3dRotate = function(a) E.rotate(a) end

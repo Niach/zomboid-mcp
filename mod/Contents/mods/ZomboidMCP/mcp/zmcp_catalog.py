@@ -549,17 +549,20 @@ which is saved with the world and sent to clients with the item; the placement i
 item lost it. A client that has not registered the ModelScript yet (files still streaming after a join) shows the
 carrier item's flat sprite until the registration lands, then the 3D model. The model itself has NO collision:
 `collide` puts an invisible blocker on the same square in one call (true = solid; or a collision_place kind such
-as solidtrans). Offsets are fractions of the tile, oz lifts the model. Returns {pid, placed, x, y, z, item, itemId,
-collide}; model_remove {pid} takes it away. Moving 3D objects are entity3d_spawn / entity3d_move (a transparent
-3D layer, smooth but no occlusion).
+as solidtrans). Offsets are fractions of the tile, oz lifts the model (in z levels), yaw turns it about the
+vertical axis. Returns {pid, placed, x, y, z, item, itemId, yaw, collide}; model_remove {pid} takes it away,
+model_move {pid, ...} glides it to another pose (still a world object: depth-sorted, lit, saved) and model_swap
+{pid, id} shows another model on the same carrier. For figures that must stand IN the world use these; entity3d_*
+draws on a transparent layer over the world (smooth, fast, but never occluded by walls or other models).
 """, _obj({
     "id": _s("Model id from model_upload."),
     "x": X, "y": Y, "z": Z,
     "item": _s("Carrier world item type.", default="Base.TirePiece"),
     "ox": _n("Offset within the tile, x.", default=0.5, minimum=-5, maximum=5),
     "oy": _n("Offset within the tile, y.", default=0.5, minimum=-5, maximum=5),
-    "oz": _n("Height offset.", default=0, minimum=-5, maximum=10),
-    "yrot": _n("Rotation around the vertical axis in degrees.", minimum=-360, maximum=360),
+    "oz": _n("Height offset in z levels (1 = one floor up).", default=0, minimum=-5, maximum=10),
+    "yaw": _n("Turn about the vertical axis in degrees (the item's worldZRotation). Without it the engine picks a random yaw.", minimum=-360, maximum=360),
+    "yrot": _n("worldYRotation in degrees: this ROLLS a Y-up model (tips it over); upright props leave it out.", minimum=-360, maximum=360),
     "collide": _s("Collision under the model: 'true' / 'solid' (blocks walking, zombies and sight), 'solidtrans' "
                   "(blocks walking, see-through), 'wall_n' / 'wall_w' / 'wall_nw' (invisible wall on those edges), "
                   "'false' (default: none).", enum=["false", "true", "solid", "solidtrans", "wall_n", "wall_w", "wall_nw"],
@@ -577,6 +580,33 @@ Returns {removed, unloaded, missing, blockers, pids}.
     "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
     "all": _b("Remove every placement.", default=False),
 }), game="model_remove")
+
+tool("model_move", """
+Move or turn a placed model (model_place) smoothly while it stays a real world object (depth-sorted against walls
+and other models, lit, saved): every client glides the carrier world item to the new pose over `duration` seconds
+(offsets from its home square, set every frame on the client), the server sets the final pose on its own copy at
+once, so the chunk save and late joiners get it. Position in world tiles (x, y) and a fractional level (z, e.g. 1.05
+= hovering just above the first floor) plus an optional extra height h in model units; yaw turns it about the
+vertical axis. Keep the target inside the home square's 8x8 chunk (the carrier is drawn into that chunk's texture;
+the result carries a warning otherwise). Returns {pid, x, y, z, ox, oy, oz, yaw, duration, loaded, warning}.
+""", _obj({
+    "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
+    "x": _n("Target world x in tiles (fractions allowed)."), "y": _n("Target world y in tiles (fractions allowed)."),
+    "z": _n("Target level, fractions allowed (1.05 = just above the first floor).", minimum=-2, maximum=31),
+    "h": _n("Extra height in model units (1.65 per level).", minimum=-10, maximum=50),
+    "yaw": _n("Target turn about the vertical axis in degrees (shortest way).", minimum=-360, maximum=360),
+    "duration": _n("Seconds; 0 jumps.", default=0, minimum=0, maximum=600),
+    "ease": _b("Smooth start and stop (smoothstep).", default=False),
+}, ["pid"]), game="model_move")
+
+tool("model_swap", """
+Show another uploaded model on a placed model's carrier (model_place): the same world item (same item id, square
+and pose) gets the new world model on the server (saved in its ModData) and on every client, e.g. a figure
+raising its staff. Nothing is re-sent, so nothing is duplicated. Returns {pid, model, name, loaded}.
+""", _obj({
+    "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
+    "id": _s("Model id from model_upload."),
+}, ["pid", "id"]), game="model_swap")
 
 ENTITY_ID = _s("Entity id (letters, digits, _ . -).", pattern="^[A-Za-z0-9_.-]+$")
 WX = _n("World x in tiles (fractions allowed; east).")
