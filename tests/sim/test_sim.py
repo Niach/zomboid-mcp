@@ -34,7 +34,7 @@ def boot(files, before_bridge=None):
     rt = lua51.LuaRuntime(unpack_returned_tuples=True)
     rt.execute(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_prelude.lua")).read())
     # Kahlua does not have these: make sure the mod never relies on them
-    rt.execute("next = nil; io = nil; bit = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")
+    rt.execute("next = nil; io = nil; bit = nil; math.random = nil; string.dump = nil; load = nil; dofile = nil; loadfile = nil")   # single player has no math.random either
     for f in files:
         if f.endswith("Bridge.lua") and before_bridge:
             before_bridge(rt)
@@ -49,7 +49,7 @@ rt = boot(FILES)
 g = rt.globals()
 
 snail = open(os.path.join(ROOT, "art/snail.png"), "rb").read()
-g.SIM.fs["zmcp_tex_snail.b64"] = base64.b64encode(snail).decode()
+g.SIM.fs["zmcp_tex_snail.b64.txt"] = base64.b64encode(snail).decode()
 
 failures = []
 def check(cond, msg):
@@ -74,7 +74,7 @@ check(g.SIM.uiAdded == 1 and g.SIM.consume is False, "overlay created once, clic
 check(len(events("client_hello")) == 1, "hello reached the server")
 
 # --- texture upload: chunks -> file -> texture -> texResult
-r = tool("texture_upload", {"id": "snail", "png_base64_file": "zmcp_tex_snail.b64"})
+r = tool("texture_upload", {"id": "snail", "png_base64_file": "zmcp_tex_snail.b64.txt"})
 check(r["chunks"] == 8, f"snail base64 split into 8 chunks (got {r['chunks']})")
 def digest(data):
     h = 0
@@ -89,7 +89,7 @@ e = lua("return ZMCPClient.tex.loaded['snail']")
 check(e is not None and e["w"] == 160 and e["h"] == 128, "texture loaded 160x128")
 tr = events("client_texture")
 check(len(tr) == 1 and tr[0]["data"]["ok"] and tr[0]["data"]["w"] == 160, "client reported texResult ok")
-r2 = tool("texture_upload", {"id": "snail", "png_base64": g.SIM.fs["zmcp_tex_snail.b64"]})
+r2 = tool("texture_upload", {"id": "snail", "png_base64": g.SIM.fs["zmcp_tex_snail.b64.txt"]})
 lua("SIM.tick(2)")
 check(r2["gen"] == 2 and lua_digest("zmcp_tex_snail_2.png") == digest(snail), "re-upload uses a new generation/file name")
 
@@ -196,10 +196,10 @@ lua("SIM.tick(1); SIM.fire('OnKeyStartPressed', 1)")
 check(lua("return #APP.keys == 1 and ZMCPClient.renderHooks.app == nil"), "clear_visuals hooks removes every hook")
 
 # --- runtime 3D model: files under Lua/media + ModelScript registration + placement
-g.SIM.fs["zmcp_model_star.x.b64"] = base64.b64encode(b"xof 0303txt 0032\nMesh { 3; 0;0;0;, 1;0;0;, 0;1;0;; }").decode()
-g.SIM.fs["zmcp_model_star.png.b64"] = base64.b64encode(snail).decode()
+g.SIM.fs["zmcp_model_star.x.b64.txt"] = base64.b64encode(b"xof 0303txt 0032\nMesh { 3; 0;0;0;, 1;0;0;, 0;1;0;; }").decode()
+g.SIM.fs["zmcp_model_star.png.b64.txt"] = base64.b64encode(snail).decode()
 lua("ZMCP.visuals.PER_TICK = 4")
-r = tool("model_upload", {"id": "star", "scale": 3, "mesh_base64_file": "zmcp_model_star.x.b64", "png_base64": g.SIM.fs["zmcp_model_star.png.b64"]})
+r = tool("model_upload", {"id": "star", "scale": 3, "mesh_base64_file": "zmcp_model_star.x.b64.txt", "png_base64": g.SIM.fs["zmcp_model_star.png.b64.txt"]})
 check(r["name"] == "zmcp_star_1" and r["chunks"] == 9, f"model upload streams mesh + texture ({r['chunks']} chunks)")
 lua("SIM.tick(1)")
 check(lua("return ZMCPClient.models.list.star == nil"), "not registered while chunks are still in flight")
@@ -351,9 +351,9 @@ lua("SIM.tick(1)")
 frame()
 check("zmcp_e3d_radio" in g.SIM.scene.objects and scene_obj("radio")["model"] == "RadioBlue_Ground", "vanilla ModelScript name used verbatim")
 check("zmcp_e3d_late" not in g.SIM.scene.objects and lua("return ZMCPClient.e3d.list.late.created == false"), "unknown model: entity waits")
-g.SIM.fs["zmcp_model_later.x.b64"] = g.SIM.fs["zmcp_model_star.x.b64"]
-g.SIM.fs["zmcp_model_later.png.b64"] = g.SIM.fs["zmcp_model_star.png.b64"]
-tool("model_upload", {"id": "later", "scale": 2, "mesh_base64_file": "zmcp_model_later.x.b64", "png_base64_file": "zmcp_model_later.png.b64"})
+g.SIM.fs["zmcp_model_later.x.b64.txt"] = g.SIM.fs["zmcp_model_star.x.b64.txt"]
+g.SIM.fs["zmcp_model_later.png.b64.txt"] = g.SIM.fs["zmcp_model_star.png.b64.txt"]
+tool("model_upload", {"id": "later", "scale": 2, "mesh_base64_file": "zmcp_model_later.x.b64.txt", "png_base64_file": "zmcp_model_later.png.b64.txt"})
 lua("SIM.tick(3)")
 g.SIM.now += 3
 frame()
@@ -462,7 +462,7 @@ before = {
 }
 moddata_json = lua("return ZMCPJson.encode(SIM.moddata)")
 # the text files the server keeps in the Lua dir (base64 assets, scripts); PNGs the client wrote are binary and stay out
-saved_fs_json = lua("local t = {} for k, v in pairs(SIM.fs) do if k:match('%.b64$') or k:match('%.lua%.txt$') then t[k] = v end end return ZMCPJson.encode(t)")
+saved_fs_json = lua("local t = {} for k, v in pairs(SIM.fs) do if k:match('%.b64%.txt$') or k:match('%.lua%.txt$') then t[k] = v end end return ZMCPJson.encode(t)")
 placed_ids = {p[6] for p in before["placements"]}
 saved_spawned = [{k: rec[k] for k in ("x", "y", "z", "item", "ox", "oy", "oz", "id")} for rec in g.SIM.spawned.values() if rec["id"] in placed_ids]
 saved_blockers = list(before["blockers"])

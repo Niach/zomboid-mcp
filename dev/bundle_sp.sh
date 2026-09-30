@@ -18,8 +18,8 @@ seen=""
   for f in "$LUA/shared/ZomboidMCP/Json.lua" \
            "$LUA/shared/ZomboidMCP/CollisionSprites.lua" \
            "$LUA/server/ZomboidMCP/Bridge.lua" \
-           "$LUA/server/ZomboidMCP/Api/Common.lua" \
-           "$LUA/server/ZomboidMCP/Api/"*.lua \
+           "$LUA/server/ZomboidMCP/Api/Common.lua" "$LUA/server/ZomboidMCP/Api/TileSheets.lua" \
+           $(ls "$LUA/server/ZomboidMCP/Api/"*.lua | grep -v -e '/Common.lua$' -e '/TileSheets.lua$') \
            "$LUA/client/ZomboidMCP/ClientBase64.lua" \
            "$LUA/client/ZomboidMCP/ClientTextures.lua" \
            "$LUA/client/ZomboidMCP/ClientSprites.lua" \
@@ -29,9 +29,10 @@ seen=""
            "$LUA/client/ZomboidMCP/ClientModels.lua" \
            "$LUA/client/ZomboidMCP/Client.lua"; do
     case " $seen " in *" $f "*) continue ;; esac; seen="$seen $f"
-    echo "do -- $(basename "$f")"
+    # each file in its own function: Kahlua allows 200 locals per function, the whole mod has more
+    echo "(function() -- $(basename "$f")"
     grep -v '^require "ZomboidMCP/' "$f" | sed 's/^return .*$/-- (bundle: top-level return removed)/'
-    echo "end"
+    echo "end)();"
   done
   echo "ZMCPClient.hello()"
   if [ -n "$1" ]; then echo "do -- $1"; cat "$1"; echo "end"; fi

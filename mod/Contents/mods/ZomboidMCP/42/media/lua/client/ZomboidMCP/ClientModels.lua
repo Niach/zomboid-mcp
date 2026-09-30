@@ -276,7 +276,10 @@ function E.setupScene(J)
 end
 
 function E.ensureLayer()
-    if E.layer then return E.layer end
+    if E.layer then
+        if C.attach then C.attach(E.layer) end     -- re-add when the UI manager dropped it (see Client.lua)
+        return E.layer
+    end
     if not UI3DScene then error("UI3DScene is not available in this Lua state") end
     if C.ensureOverlay then C.ensureOverlay() end
     local o = Layer:new()

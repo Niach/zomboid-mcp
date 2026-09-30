@@ -94,8 +94,9 @@ The scene SDK issue adds an `app_start` / `app_stop` wrapper with movement block
 -- Flappy Bird as a client script: Space or click flaps, Escape quits, Space restarts after a crash.
 local NAME = "flappy"
 local KEY_SPACE, KEY_ESC = 57, 1
-local G = { gravity = 1400, flap = -420, speed = 220, gap = 170, pipeW = 70, pipeEvery = 1.6, bird = 14 }
 local W, H = ZMCPClient.screen()
+local k = H / 1080        -- pixel constants are tuned for 1080p; scale them to the player's screen
+local G = { gravity = 1400 * k, flap = -420 * k, speed = 220 * k, gap = 170 * k, pipeW = 70 * k, pipeEvery = 1.6, bird = 14 * k }
 local S
 local function reset()
     S = { y = H / 2, vy = 0, pipes = {}, t = 0, nextPipe = 1, score = 0, dead = false, last = ZMCPClient.now() }
@@ -118,7 +119,7 @@ ZMCPClient.on(NAME, "tick", function(now)
     S.y = S.y + S.vy * dt
     if S.t >= S.nextPipe then
         S.nextPipe = S.t + G.pipeEvery
-        S.pipes[#S.pipes + 1] = { x = W, gapY = 120 + math.random() * (H - 240), passed = false }
+        S.pipes[#S.pipes + 1] = { x = W, gapY = 120 * k + ZombRandFloat(0, 1) * (H - 240 * k), passed = false }
     end
     local bx, keep = W * 0.3, {}
     for _, p in ipairs(S.pipes) do

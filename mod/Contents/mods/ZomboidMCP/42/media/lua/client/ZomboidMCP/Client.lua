@@ -46,7 +46,8 @@ C.tickHooks = C.tickHooks or {}      -- name -> function(now)       (pushed code
 C.modules = C.modules or {}          -- persistent client scripts: name -> source
 C.pendingExec = C.pendingExec or {}  -- id -> { total, parts }
 C.handlers = C.handlers or {}
-C.stats = C.stats or { commands = 0, errors = 0, execs = 0 }
+C.stats = C.stats or {}
+for k, v in pairs({ commands = 0, errors = 0, execs = 0 }) do if C.stats[k] == nil then C.stats[k] = v end end   -- fields survive a reload of an older version
 
 for ev, fn in pairs(C.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
 C.handlers = {}
@@ -105,8 +106,22 @@ function C.render(ui)
     end
 end
 
+-- true when the element is in the UI manager's list; nil when that cannot be checked in this Lua state
+function C.inUI(el)
+    local ok, v = pcall(function() return UIManager.getUI():contains(el.javaObject) end)
+    if ok then return v == true end
+    return nil
+end
+
+-- (re)attach a full-screen element: elements can be dropped from the UI manager behind our back (verified
+-- 2026-09-30 after a hot reload in single player, isRemoved() stays true afterwards), so check the UI list itself
+function C.attach(el)
+    if C.inUI(el) == false then pcall(function() el:addToUIManager(); el:backMost() end) end
+    return el
+end
+
 function C.ensureOverlay()
-    if C.overlay then return C.overlay end
+    if C.overlay then return C.attach(C.overlay) end
     local o = Overlay:new()
     o:initialise()
     o:instantiate()

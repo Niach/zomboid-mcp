@@ -58,7 +58,9 @@ local PAUSED_POLL = 0.2          -- polling period while the game loop is paused
 ---------------------------------------------------------------- utilities
 function Z.now() return getTimestampMs() / 1000 end
 
-Z.bootId = Z.bootId or string.format("%d-%d", math.floor(Z.now()), math.floor(math.random() * 1000000))   -- changes only on restart
+-- math.random is nil in the single-player Lua state (verified 42.21); ZombRand exists everywhere
+local function randomInt(n) if ZombRand then return ZombRand(n) end return math.floor(getTimestampMs() % n) end
+Z.bootId = Z.bootId or string.format("%d-%d", math.floor(Z.now()), randomInt(1000000))   -- changes only on restart
 Z.bootAt = Z.bootAt or Z.now()
 
 local function store() return ModData.getOrCreate(MOD_DATA) end
