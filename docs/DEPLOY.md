@@ -23,11 +23,12 @@ tools/upload.sh "0.3.0: scripting-first bridge, client runtime, MCP server"
 ## 2. Server switch (Coolify service, one restart)
 
 The container (`danixu86/project-zomboid-dedicated-server`) reads its mod lists from the environment and writes
-`Server/*.ini`. Current state (2026-09-30): `WORKSHOP_IDS` and `MOD_IDS` without the mod, bind mount
-`/opt/zomboid-lua/vapps → /home/steam/pz-dedicated/media/lua/server/vapps` (the old prototype), `PauseEmpty=true`,
-`DoLuaChecksum=false`.
+`Server/*.ini`. **Done on 2026-09-30** (steps 1-7 below, kept as the record and for a redo): the compose now has the
+Workshop id, `\ZomboidMCP` in `MOD_IDS`, the ZomboidMCP bind mount, and the prototype files are gone.
+`PauseEmpty=true`, `DoLuaChecksum=false`.
 
-Changes in the Coolify compose (API token in `~/.config/coolify/config.json`, context "home"; save, then restart):
+Changes in the Coolify compose (API token in `~/.config/coolify/config.json`, context "home"; the API wants
+`docker_compose_raw` **base64-encoded** in the PATCH body; save, then `POST .../services/<uuid>/restart`):
 
 1. `WORKSHOP_IDS`: append `;3810456179`.
 2. `MOD_IDS`: append `;\ZomboidMCP` (**single backslash**; the image escapes it itself).
@@ -47,7 +48,7 @@ Changes in the Coolify compose (API token in `~/.config/coolify/config.json`, co
      `[ZomboidMCP]` and a `client_hello` event arrives (`tools/pz events`).
    - `ZMCP_POLL_FILE=ZomboidMCP/ZMCPPoll.lua` in `local.env` (the old `VappsGuardian.lua` bootstrap is gone), and
      `tools/pz status` answers while the server is paused.
-7. Remove the dev-only bootstrap tooling from the repo: `tools/dev_bootstrap.lua`, `pz bootstrap`, `pz legacy`.
+7. Remove the dev-only bootstrap tooling from the repo: `tools/dev_bootstrap.lua`, `pz bootstrap`, `pz legacy` (done).
 
 ## 3. Local install
 
