@@ -16,6 +16,7 @@ test-lua:
 
 test-sim:
 	$(PYTHON) tests/sim/test_sim.py
+	$(PYTHON) tests/sim/test_scenes.py
 
 test-mcp:
 	$(PYTHON) -m unittest discover -s tests/mcp -q

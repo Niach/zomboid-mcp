@@ -13,6 +13,8 @@ what the engine can do. A curated set of tools covers the common operations with
 - [docs/PROTOCOL.md](docs/PROTOCOL.md): how the MCP talks to the server (files in `Zomboid/Lua`) and how the server
   talks to the client mod (`sendServerCommand`).
 - [docs/ENGINE_NOTES.md](docs/ENGINE_NOTES.md): verified engine facts, authority rules and pitfalls for B42.
+- [docs/SCENES.md](docs/SCENES.md): the scene SDK (coroutine scenes, zombie puppets, sprite actors, triggers, persistence)
+  and screen apps; examples in [examples/](examples/) (`scene_template`).
 - [docs/recipes/](docs/recipes/README.md): the raw Lua behind each tool, and for things that are scripts only.
 - [docs/API_INDEX.md](docs/API_INDEX.md): the engine API index behind `api_search` / `lua_examples`.
 - [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md): the rules and limits in one page (authority, execution, Kahlua, files, sizes).

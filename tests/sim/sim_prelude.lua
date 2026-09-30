@@ -397,3 +397,124 @@ function screenToIsoY(pn, u, v, z)
 end
 function ISUIElement:getAbsoluteX() return self.x end
 function ISUIElement:getAbsoluteY() return self.y end
+-- ---------------------------------------------------------------- scenes (ZOM-10): puppets, tiles, lights, climate
+-- fake zombies from addZombiesInOutfit walk one tile per tick towards their path target
+SIM.zombies = {}
+SIM.zombieSpeed = 1
+SIM.tiles = {}        -- "x,y,z" -> list of tile objects
+SIM.lights = {}
+SIM.sounds = {}
+SIM.weather = {}
+local function javaList(t) return { size = function() return #t end, get = function(_, i) return t[i + 1] end } end
+SIM.javaList = javaList
+SIM.player.__class = "IsoPlayer"
+SIM.player.setBlockMovement = function(_, v) SIM.player.blocked = v end
+local oldNewPlayer = SIM.newPlayer
+SIM.newPlayer = function(...)
+    local p = oldNewPlayer(...)
+    p.__class = "IsoPlayer"
+    p.setBlockMovement = function(_, v) p.blocked = v end
+    return p
+end
+local zid = 0
+function addZombiesInOutfit(x, y, z, n, outfit, femaleChance)
+    local out = {}
+    for _ = 1, n do
+        zid = zid + 1
+        local zed = { __class = "IsoZombie", x = x + 0.5, y = y + 0.5, z = z, outfit = outfit, id = zid, useless = false, dead = false, removed = false, said = {}, paths = 0 }
+        zed.getX = function() return zed.x end
+        zed.getY = function() return zed.y end
+        zed.getZ = function() return zed.z end
+        zed.getID = function() return zed.id end
+        zed.getOnlineID = function() return -1 end
+        zed.isDead = function() return zed.dead end
+        zed.setUseless = function(_, v) zed.useless = v end
+        zed.isUseless = function() return zed.useless end
+        zed.setWalkType = function(_, w) zed.walk = w end
+        zed.getOutfitName = function() return zed.outfit end
+        zed.pathToLocation = function(_, tx, ty, tz) zed.target = { tx + 0.5, ty + 0.5 }; zed.paths = zed.paths + 1 end
+        zed.pathToLocationF = function(_, tx, ty, tz) zed.target = { tx, ty }; zed.paths = zed.paths + 1 end
+        zed.faceLocationF = function(_, fx, fy) zed.facing = { fx, fy }; return true end
+        zed.Say = function(_, text) zed.said[#zed.said + 1] = text end
+        zed.removeFromWorld = function() zed.removed = true end
+        zed.removeFromSquare = function() end
+        zed.setAttackedBy = function() end
+        zed.Kill = function() zed.dead = true end
+        SIM.zombies[#SIM.zombies + 1] = zed
+        out[#out + 1] = zed
+    end
+    return javaList(out)
+end
+function SIM.stepZombies()
+    for _, zed in ipairs(SIM.zombies) do
+        if zed.target and not zed.dead and not zed.removed then
+            local dx, dy = zed.target[1] - zed.x, zed.target[2] - zed.y
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d <= SIM.zombieSpeed then zed.x, zed.y = zed.target[1], zed.target[2]; zed.target = nil
+            else zed.x, zed.y = zed.x + dx / d * SIM.zombieSpeed, zed.y + dy / d * SIM.zombieSpeed end
+        end
+    end
+end
+local oldTick = SIM.tick
+function SIM.tick(n, dt)
+    for _ = 1, (n or 1) do oldTick(1, dt); SIM.stepZombies() end
+end
+
+-- tile objects on squares
+IsoObject = { new = function(sq, sprite, name)
+    local o = { __class = "IsoObject", sprite = sprite, name = name }
+    o.getSprite = function() return { getName = function() return o.sprite end } end
+    o.getSpriteName = function() return o.sprite end
+    o.getName = function() return o.name end
+    o.getObjectName = function() return "IsoObject" end
+    o.getObjectIndex = function() return 0 end
+    return o
+end }
+local oldGetCell = getCell
+function getCell()
+    local cell = oldGetCell()
+    local oldGS = cell.getGridSquare
+    cell.getGridSquare = function(_, x, y, z)
+        local sq = oldGS(_, x, y, z)
+        if not sq then return nil end
+        local key = x .. "," .. y .. "," .. z
+        SIM.tiles[key] = SIM.tiles[key] or {}
+        sq.getX = function() return x end
+        sq.getY = function() return y end
+        sq.getZ = function() return z end
+        sq.getObjects = function() return javaList(SIM.tiles[key]) end
+        sq.getFloor = function() for _, o in ipairs(SIM.tiles[key]) do if o.floor then return o end end return nil end
+        sq.transmitAddObjectToSquare = function(_, o) table.insert(SIM.tiles[key], o) end
+        sq.transmitRemoveItemFromSquare = function(_, o)
+            for i, v in ipairs(SIM.tiles[key]) do if v == o then table.remove(SIM.tiles[key], i); return end end
+        end
+        return sq
+    end
+    cell.addLamppost = function(_, x, y, z, r, g, b, rad)
+        local l = { x = x, y = y, z = z, r = r, g = g, b = b, radius = rad }
+        SIM.lights[#SIM.lights + 1] = l
+        return l
+    end
+    cell.removeLamppost = function(_, l, y, z)
+        for i, v in ipairs(SIM.lights) do
+            if v == l or (type(l) == "number" and v.x == l and v.y == y and v.z == z) then table.remove(SIM.lights, i); return end
+        end
+    end
+    cell.getZombieList = function() return javaList(SIM.zombies) end
+    return cell
+end
+function playServerSound(name, sq) SIM.sounds[#SIM.sounds + 1] = { name = name, x = sq and sq:getX(), server = true } end
+function getSoundManager()
+    return { playUISound = function(_, name) SIM.sounds[#SIM.sounds + 1] = { name = name, ui = true } end,
+        PlaySound = function(_, name) SIM.sounds[#SIM.sounds + 1] = { name = name } end }
+end
+function getClimateManager()
+    return {
+        transmitServerTriggerLightning = function(_, x, y, s, l, r) SIM.weather[#SIM.weather + 1] = { lightning = { x, y } } end,
+        transmitServerStartRain = function(_, f) SIM.weather[#SIM.weather + 1] = { rain = f } end,
+        transmitServerTriggerStorm = function(_, f) SIM.weather[#SIM.weather + 1] = { storm = f } end,
+        transmitServerStopWeather = function() SIM.weather[#SIM.weather + 1] = { clear = true } end,
+        transmitServerStopRain = function() end,
+        getRainIntensity = function() return 0 end,
+    }
+end

@@ -324,6 +324,44 @@ class ZomboidMCP(object):
         return self.bridge.call("model_upload", self._upload_args(
             args, [("mesh_base64", "mesh_path", "mesh"), ("png_base64", "png_path", "PNG")]))
 
+    # --- scene templates (examples/ shipped next to the mod or in the repo) ------------
+    TEMPLATES = {
+        "merchant": ("scenes", "A passive zombie merchant who greets players, walks up to them and trades an item."),
+        "supply_drop": ("scenes", "A parachute sprite drifts down and a real crate of items lands where it touches the ground."),
+        "meteor_shower": ("scenes", "Meteors streak across the sky, strike with lightning and leave hot rocks and loot."),
+        "haunted_house": ("scenes", "A persistent, trigger-driven haunted-house sequence with lights, sounds, puppets and a restorable area."),
+        "companion": ("scenes", "A companion who follows the nearest player and comments on what happens."),
+        "flappy": ("apps", "A complete flappy bird screen app drawn from shapes, score reported to the server."),
+    }
+
+    def _examples_dirs(self):
+        env = os.environ.get("ZMCP_EXAMPLES_DIR")
+        mod_root = os.path.dirname(HERE)                                   # .../mods/ZomboidMCP
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(mod_root))))   # mods/Contents/mod/<repo>
+        out = [d for d in (env, os.path.join(mod_root, "examples"), os.path.join(repo_root, "examples")) if d]
+        return [d for d in out if os.path.isdir(d)]
+
+    def tool_scene_template(self, args, t):
+        name = str(args.get("name") or "").strip()
+        dirs = self._examples_dirs()
+        if not name:
+            items = []
+            for n, (kind, summary) in self.TEMPLATES.items():
+                items.append({"name": n, "kind": "scene" if kind == "scenes" else "app", "summary": summary,
+                              "tool": "scene_start" if kind == "scenes" else "app_start"})
+            return {"templates": items, "docs": "docs/SCENES.md", "examples_dirs": dirs}
+        if name not in self.TEMPLATES:
+            raise GameError("unknown template '%s' (known: %s)" % (name, ", ".join(sorted(self.TEMPLATES))))
+        kind, summary = self.TEMPLATES[name]
+        for d in dirs:
+            path = os.path.join(d, kind, name + ".lua")
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    code = f.read()
+                return {"name": name, "kind": "scene" if kind == "scenes" else "app", "summary": summary, "code": code,
+                        "path": path, "tool": "scene_start" if kind == "scenes" else "app_start", "docs": "docs/SCENES.md"}
+        raise GameError("template '%s' not found: no examples/%s/%s.lua in %s (set ZMCP_EXAMPLES_DIR)" % (name, kind, name, dirs or ["<no examples dir>"]))
+
     def tool_server_console(self, args, t):
         c = self.console
         if not c.get("enabled"):

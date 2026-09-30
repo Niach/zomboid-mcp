@@ -22,6 +22,8 @@
 --   heal / cure / teleport {x, y, z}      client-authoritative body state / position
 --   clear       {what = all|sprites|overlays|falling|notices|textures|models|hooks, id?}
 --   ping        {}                        -> "pong" with the client version
+--   bubble/dialog/spriteAnim/spriteFade/light/sceneWatch/sceneClear/sound   scenes (ClientScenes.lua)
+--   appStart / appStop                    screen apps (ClientApps.lua)
 -- Replies: sendClientCommand(player, "zmcp", cmd, args): hello, execResult, texResult, fileResult, modelResult, pong.
 --
 -- Everything is re-runnable (the server can push this file again through exec): state lives in the
@@ -35,6 +37,8 @@ require "ZomboidMCP/ClientFalling"
 require "ZomboidMCP/ClientOverlay"
 require "ZomboidMCP/ClientInput"
 require "ZomboidMCP/ClientModels"
+require "ZomboidMCP/ClientScenes"
+require "ZomboidMCP/ClientApps"
 
 ZMCPClient = ZMCPClient or {}
 local C = ZMCPClient

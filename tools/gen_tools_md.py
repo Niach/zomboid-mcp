@@ -29,6 +29,8 @@ GROUPS = [
                                "clear_visuals"]),
     ("Moving 3D entities (client push)", ["entity3d_spawn", "entity3d_move", "entity3d_rotate", "entity3d_remove",
                                           "entity3d_list"]),
+    ("Scenes and screen apps", ["scene_start", "scene_stop", "scene_list", "scene_logs", "scene_signal", "scene_template",
+                                "app_start", "app_stop", "app_list"]),
     ("Server admin", ["server_console"]),
 ]
 

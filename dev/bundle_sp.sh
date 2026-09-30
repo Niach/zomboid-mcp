@@ -27,6 +27,8 @@ seen=""
            "$LUA/client/ZomboidMCP/ClientOverlay.lua" \
            "$LUA/client/ZomboidMCP/ClientInput.lua" \
            "$LUA/client/ZomboidMCP/ClientModels.lua" \
+           "$LUA/client/ZomboidMCP/ClientScenes.lua" \
+           "$LUA/client/ZomboidMCP/ClientApps.lua" \
            "$LUA/client/ZomboidMCP/Client.lua"; do
     case " $seen " in *" $f "*) continue ;; esac; seen="$seen $f"
     # each file in its own function: Kahlua allows 200 locals per function, the whole mod has more

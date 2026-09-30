@@ -104,6 +104,25 @@ late joiners do not get it either |
 | [`entity3d_list`](#entity3d_list) | The moving 3D entities the server knows, with their current position computed from the stored motion:
 [{id, model, x, y, z, h, scale, rotation [rx, ry, rz], spin, roll, face, motion (static|path|to), moving, loop,
 clients {user: {ok, model, err}}}] |
+| [`scene_start`](#scene_start) | Start a scripted scene: a Lua chunk that runs on the server as a coroutine with the scene SDK (docs/SCENES.md): wait(sec), waitUntil(fn, timeout), tick(), every(sec, fn, {near = {x, y, r}}), ambient(x, y, r, sec, fn), parallel(...), race(...), spawn(fn), trigger(label, condFn, fn, {cooldown, once}), onPlayerNear(x, y, r, fn, opts), onDeath(fn), onClick(spriteId, fn), onKey(key, fn), ask(player, text, options), onSignal / waitSignal, players(), nearestPlayer(x, y), playersNear(x, y, r), spawnItem, giveItem, dropItemsFromSky, placeTile, removeTile, build, weather, time, lightning, sound, message, say, zombies, killZombies, texture, sprite, draw, light(x, y, z, r, g, b, radius), snapshotArea / restoreArea, spawnActor{...} (zombie puppets: walkTo, say, face, follow, stop, remove, onNear), spriteActor{...} (moveTo, playAnim, fade, bubble, onClick), tween, ease, lerp, state (saved table), args, log, stop, onStop, plus the whole engine and ZMCP |
+| [`scene_stop`](#scene_stop) | Stop a scene and remove everything it created: zombie puppets, world sprites, lights, speech bubbles, dialogs, triggers,
+event handlers and client watchers |
+| [`scene_list`](#scene_list) | Every scene the server knows: running, done, stopped and errored ones plus persistent scenes that could not be loaded,
+with status, persistence, restored flag, live task labels, actor/sprite/light counts, saved state, step count and the last
+log line; plus scheduler stats (total ms spent, ticks, ticks that hit the budget) and the budget |
+| [`scene_logs`](#scene_logs) | The log of one scene: log(...) calls from the script, actor spawns, snapshots, task errors and the fatal error if it
+crashed |
+| [`scene_signal`](#scene_signal) | Send a signal with optional data into a running scene: every onSignal(signal, fn) handler runs fn(data) in its own task
+and a pending waitSignal(signal) returns the data |
+| [`scene_template`](#scene_template) | Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start:
+merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real
+crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area),
+companion (follows the player and comments), flappy (a complete flappy bird screen app) |
+| [`app_start`](#app_start) | Push a client screen app: a Lua chunk that runs on the player's client and draws on the overlay, e.g |
+| [`app_stop`](#app_stop) | Stop a screen app on every client or one player: its onExit runs, input capture and player movement are released, its
+hooks are gone |
+| [`app_list`](#app_list) | Screen apps started through app_start with their target (a player or all), focus flag, seconds since start, the
+per-client results (ok / error / running / stopped) and the last score each client reported |
 | [`server_console`](#server_console) | Send a raw command to the dedicated server's admin console (e.g |
 
 ## Scripting (primary)
@@ -664,6 +683,87 @@ No arguments.
 ### `entity3d_list`
 
 *game*. The moving 3D entities the server knows, with their current position computed from the stored motion: [{id, model, x, y, z, h, scale, rotation [rx, ry, rz], spin, roll, face, motion (static|path|to), moving, loop, clients {user: {ok, model, err}}}]. `clients` shows which player's client created the scene object (or the createModel error), so you can tell whether the entity is actually visible.
+
+No arguments.
+
+## Scenes and screen apps
+
+### `scene_start`
+
+*game*. Start a scripted scene: a Lua chunk that runs on the server as a coroutine with the scene SDK (docs/SCENES.md): wait(sec), waitUntil(fn, timeout), tick(), every(sec, fn, {near = {x, y, r}}), ambient(x, y, r, sec, fn), parallel(...), race(...), spawn(fn), trigger(label, condFn, fn, {cooldown, once}), onPlayerNear(x, y, r, fn, opts), onDeath(fn), onClick(spriteId, fn), onKey(key, fn), ask(player, text, options), onSignal / waitSignal, players(), nearestPlayer(x, y), playersNear(x, y, r), spawnItem, giveItem, dropItemsFromSky, placeTile, removeTile, build, weather, time, lightning, sound, message, say, zombies, killZombies, texture, sprite, draw, light(x, y, z, r, g, b, radius), snapshotArea / restoreArea, spawnActor{...} (zombie puppets: walkTo, say, face, follow, stop, remove, onNear), spriteActor{...} (moveTo, playAnim, fade, bubble, onClick), tween, ease, lerp, state (saved table), args, log, stop, onStop, plus the whole engine and ZMCP. Use it for cutscenes, NPC-like zombie puppets, animated sprites, timed world events and permanent installations. Where it runs: the server Lua state, ticked with a shared time budget (8 ms per tick for all scenes), so scripts wait()/waitUntil() instead of looping. Authority: world changes (items, tiles, zombies, weather, lights via the client mod) are server-authoritative and visible to everyone; sprites, bubbles, dialogs and lights are pushed to every client (and to late joiners while the scene runs). Lifecycle: the scene is "running" while any of its tasks is alive, "done" when they all return, "stopped" after scene_stop or stop(), "error" when the main task throws (a scene_error event carries the message; child tasks that throw are logged and only they die). Reusing a name replaces the running scene (its actors, sprites, lights, triggers and handlers are cleaned up first). persistent=true stores the code as a file and restarts the scene on every server start and bridge reload; `state` is a small saved table for flags and timestamps that survives restarts and re-starts. Returns {name, status, persistent, tasks, error?}: an immediate error (compile or first statement) comes back here; later errors appear in scene_logs {name} and events_poll (scene_error). Limits: keep textures/code out of `state`, keep the budget (no busy loops), clean up in onStop(fn). scene_template {name} returns ready-made examples to start from.
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | Scene name (letters, digits, _ and -). Reusing a name replaces that scene. |
+| `code` * | string | Lua source of the scene (large sources are passed to the game as a file automatically). |
+| `args` | object | Arguments exposed to the script as `args` (JSON object; saved with a persistent scene). |
+| `persistent` | boolean | Store the scene and restart it on every server start / bridge reload. (default `False`) |
+
+### `scene_stop`
+
+*game*. Stop a scene and remove everything it created: zombie puppets, world sprites, lights, speech bubbles, dialogs, triggers, event handlers and client watchers. Server-side; the removals reach every client. A persistent scene is forgotten (it will not restart); its saved `state` table is kept unless clear_state=true, so a replacement scene_start with the same name finds its flags again. Returns {name, status, was_running, persistent, state_cleared}; error when the name is unknown.
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | Scene name. |
+| `clear_state` | boolean | Also delete the scene's saved state table. (default `False`) |
+
+### `scene_list`
+
+*game*. Every scene the server knows: running, done, stopped and errored ones plus persistent scenes that could not be loaded, with status, persistence, restored flag, live task labels, actor/sprite/light counts, saved state, step count and the last log line; plus scheduler stats (total ms spent, ticks, ticks that hit the budget) and the budget. Read-only, server-side.
+
+No arguments.
+
+### `scene_logs`
+
+*game*. The log of one scene: log(...) calls from the script, actor spawns, snapshots, task errors and the fatal error if it crashed. Newest last, at most 200 lines kept per scene, `limit` most recent returned. Returns {name, status, error?, logs, total}; error when the scene is unknown. Use events_poll for the cross-scene stream (scene_start/stopped/done/error).
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | Scene name. |
+| `limit` | integer | How many of the newest lines to return. (default `50`, 1..200) |
+
+### `scene_signal`
+
+*game*. Send a signal with optional data into a running scene: every onSignal(signal, fn) handler runs fn(data) in its own task and a pending waitSignal(signal) returns the data. This is how you steer a live scene from outside (start the next act, change a parameter, hand over a player's answer). Server-side. Returns {name, signal, handlers}; error when the scene is not running.
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | Scene name. |
+| `signal` * | string | Signal name the script listens for. |
+| `data` | object | Payload handed to the handlers (any JSON object). |
+
+### `scene_template`
+
+*local*. Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start: merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area), companion (follows the player and comments), flappy (a complete flappy bird screen app). Without a name it lists the templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name, kind, code, path, summary} is documentation, nothing runs.
+
+| argument | type | description |
+|---|---|---|
+| `name` | string | Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy. Omit to list. |
+
+### `app_start`
+
+*game*. Push a client screen app: a Lua chunk that runs on the player's client and draws on the overlay, e.g. a flappy bird or a HUD mini-game (examples/apps/flappy.lua via scene_template). The chunk defines update(dt), draw(ui), onKey(key, down), onMouse(x, y, button, down), optional onExit() and focus = true; `app` gives app.score(n) (an app_score event on the server), app.exit(), app.send(data) (app_message events, optional shared state through a scene's onSignal("app:<name>")), app.sound(name), app.text / app.rect / app.border / app.line / app.texture drawing helpers, app.keys (LWJGL codes), app.keyDown(k), app.mouse(). With focus the overlay captures mouse and keys' game effects are limited (movement blocked); Esc always exits and releases. Runs for every connected client or one player; client-side only, nothing changes in the world. Each client answers with an app_result event (ok or the compile/runtime error); a callback that throws stops the app and reports it. Returns {name, to, chunks}. Reusing a name restarts the app; app_stop ends it.
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | App name (letters, digits, _ and -). Reusing a name restarts the app. |
+| `code` * | string | Lua source of the app (large sources are passed to the game as a file automatically). |
+| `player` | string | Only this player's client (account or character name); default: every connected client. |
+| `focus` | boolean | Capture mouse and keys and block player movement while the app runs (the chunk's own `focus` wins). (default `False`) |
+
+### `app_stop`
+
+*game*. Stop a screen app on every client or one player: its onExit runs, input capture and player movement are released, its hooks are gone. Returns {name, stopped, to}. Players can also stop a focused app themselves with Esc.
+
+| argument | type | description |
+|---|---|---|
+| `name` * | string | App name. |
+| `player` | string | Only this player's client (account or character name); default: every connected client. |
+
+### `app_list`
+
+*game*. Screen apps started through app_start with their target (a player or all), focus flag, seconds since start, the per-client results (ok / error / running / stopped) and the last score each client reported. Read-only, server-side.
 
 No arguments.
 
