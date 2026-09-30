@@ -103,6 +103,8 @@ These forward to the curated tools with validated arguments; errors carry the to
 | `texture(id)` / `texture(id, def)` | returns the id of an uploaded texture (`texture_upload`), erroring early when missing; with `def = {palette, rows}` registers pixel art (`texture_pixel`) so a scene can ship its own sprites without a PNG. `"item:Base.X"` and vanilla texture names pass through. |
 | `sprite(args)` / `draw(args)` / `clearDraw(id)` | raw `world_sprite` (owned by the scene) and `overlay_draw`. Prefer `spriteActor`. |
 | `tool(name, args)` | call any registered tool (also `entity3d_*` from ZOM-11 when present: check `ZMCP.tools.entity3d_spawn` first). |
+| `engine(fn, ...)` | run `fn` on the main coroutine and return its results: for world-changing engine calls a scene makes itself (`IsoObject.new` + `transmitAddObjectToSquare`, `sq:addFloor`, `createNewGridSquare`...). The SDK's own world helpers already do this. |
+| `try(fn, ...)` | `pcall` that is safe around world calls (`local ok, actor = try(spawnActor, {...})`); a plain `pcall` around them fails (see "Writing a scene", errors). |
 
 ### Actors: zombie puppets
 
@@ -162,8 +164,13 @@ or a function). `ease.linear|inQuad|outQuad|inOutQuad|inCubic|outCubic|inOutCubi
 4. **Budget.** Everything that repeats goes through `every`/`ambient`/`trigger` with sensible periods (0.5 s and up).
    Use `near`/`ambient` so idle installations cost nothing when nobody is there. `scene_list` shows `stats.ms` and
    `overBudget`.
-5. **Errors.** `pcall` engine calls you are not sure about (`local ok, r = pcall(spawnActor, {...})`), but never
-   `pcall` around `wait` (a yield inside `pcall` is not portable). Check `scene_logs` after starting.
+5. **Errors.** Use `try(fn, ...)` (`local ok, r = try(spawnActor, {...})`) for calls that may fail, never a plain
+   `pcall` around `wait` or around a world call: `placeTile`, `spawnActor`, `tool(...)`, `sound`, `lightning`,
+   `restoreArea`, `actor:remove` and every other SDK call that changes the world hands the work to the main
+   coroutine (it yields like `wait`, but costs no tick), because on the dedicated server the Lua events such calls
+   fire leave a scene coroutine in a state where the next `pcall` dies with "coroutine changed in pcall" (verified
+   live 2026-09-30). `engine(function() ... end)` runs a block of your own engine calls the same way, so a `pcall`
+   inside it is fine. Check `scene_logs` after starting.
 6. **Cleanup and etiquette on a live server.** Players see everything immediately. Announce with `message`, keep
    puppets passive, keep sounds sparse, remove what you add (`onStop`, `restoreArea`), and stop test scenes when
    done (`scene_stop`). Hordes, killing, teleporting, changing a character: only when asked. Test in single player

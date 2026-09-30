@@ -278,8 +278,8 @@ C.commands.cure = function()
     pcall(function() bd:setIsFakeInfected(false) end)
     pcall(function() bd:setInfectionTime(-1) end)
     pcall(function() bd:setInfectionMortalityDuration(-1) end)
-    pcall(function() bd:setInfectionLevel(0) end)
-    pcall(function() bd:setWetness(0) end)
+    -- (setInfectionLevel / setWetness do not exist in 42.21: a client running the Lua debugger with "Break On Error"
+    -- freezes on any error, even one a pcall catches, so only methods the API index lists are called here)
     C.log("cured")
 end
 

@@ -62,7 +62,7 @@ end)
 ---------------------------------------------------------------- building blocks (each idempotent, recorded in state.steps)
 local function step(key, fn)
     if state.steps[key] then return end
-    local ok, err = pcall(fn)
+    local ok, err = try(fn)                 -- try(): the step's world changes run on the main coroutine (docs/SCENES.md)
     if not ok then log("build step " .. key .. " failed: " .. tostring(err)); return end
     state.steps[key] = true
     log("built " .. key)
@@ -181,7 +181,7 @@ end
 light(wizX, y0, deckZ, 0.75, 0.85, 1, 4)     -- a cold light on the wizard
 
 local function entity(id, model, x, y, ez, h, extra)
-    pcall(tool, "entity3d_remove", { id = id })
+    try(tool, "entity3d_remove", { id = id })
     local a = { id = id, model = model, x = x, y = y, z = ez, h = h, ry = face }
     for k, v in pairs(extra or {}) do a[k] = v end
     return tool("entity3d_spawn", a)
@@ -255,8 +255,8 @@ local function cutscene(player)
     local cracked = {}
     for _, p in ipairs(piers) do
         if p.x >= wizX + 2 and p.x <= wizX + 4 then
-            pcall(tool, "model_remove", { pid = p.pid })
-            pcall(place, "ysnp_pier_broken", p.pid, p.x, p.y, z)
+            try(tool, "model_remove", { pid = p.pid })
+            try(place, "ysnp_pier_broken", p.pid, p.x, p.y, z)
             cracked[#cracked + 1] = p
         end
     end
@@ -269,7 +269,7 @@ local function cutscene(player)
     embers(10, wizX + 3.5, cy, z, 2)
     lightning(wizX + 3, cy, { strike = false, light = true })
     wait(1.0)
-    pcall(tool, "entity3d_remove", { id = "ysnp_demon" })
+    try(tool, "entity3d_remove", { id = "ysnp_demon" })
     local pit = light(wizX + 3, y0, z, 1, 0.1, 0, 14)
     sound("Thunder", wizX + 3, cy, z)
     wait(3)
@@ -278,8 +278,8 @@ local function cutscene(player)
     -- aftermath: the staff comes down, the piers are whole again, the demon waits in the deep once more
     wizard(false)
     for _, p in ipairs(cracked) do
-        pcall(tool, "model_remove", { pid = p.pid })
-        pcall(place, "ysnp_pier", p.pid, p.x, p.y, z)
+        try(tool, "model_remove", { pid = p.pid })
+        try(place, "ysnp_pier", p.pid, p.x, p.y, z)
     end
     draw{ kind = "text", anchor = "world", x = wizX + 0.5, y = cy, z = deckZ + 0.9, text = "Fly, you fools.", font = "large", r = 0.9, g = 0.95, b = 1, ttl = 4 }
     wait(12)
@@ -299,22 +299,22 @@ onSignal("play", function() cutscene(nil) end)
 ---------------------------------------------------------------- teardown (only on request; the installation is permanent)
 onSignal("teardown", function()
     log("teardown requested")
-    pcall(tool, "entity3d_remove", { id = "ysnp_demon" })
-    pcall(tool, "entity3d_remove", { id = "ysnp_wizard" })
+    try(tool, "entity3d_remove", { id = "ysnp_demon" })
+    try(tool, "entity3d_remove", { id = "ysnp_wizard" })
     for _, list in ipairs({ piers, slabs, rocks, stals }) do
-        for _, p in ipairs(list) do pcall(tool, "model_remove", { pid = p.pid }) end
+        for _, p in ipairs(list) do try(tool, "model_remove", { pid = p.pid }) end
     end
     local w, h = hall.x2 - hall.x1 + 2, hall.y2 - hall.y1 + 2
-    pcall(blockers, hall.x1, hall.y1, z, w, h, "remove", "walls")
-    pcall(blockers, xs, y0, deckZ, L + 2, 2, "remove", "rails")
+    try(blockers, hall.x1, hall.y1, z, w, h, "remove", "walls")
+    try(blockers, xs, y0, deckZ, L + 2, 2, "remove", "rails")
     for _, sx in ipairs({ xs, xe }) do
-        for _, sprite in ipairs(STAIRS) do pcall(removeTile, sprite, sx, y0 + 1, z, true); pcall(removeTile, sprite, sx, y0 + 2, z, true); pcall(removeTile, sprite, sx, y0 + 3, z, true) end
+        for _, sprite in ipairs(STAIRS) do try(removeTile, sprite, sx, y0 + 1, z, true); try(removeTile, sprite, sx, y0 + 2, z, true); try(removeTile, sprite, sx, y0 + 3, z, true) end
     end
     if deckUp then
-        for x = xs, xe do pcall(tool, "remove_object", { x = x, y = y0, z = deckZ, sprite = DECK_FLOOR, force = true, all = true }) end
+        for x = xs, xe do try(tool, "remove_object", { x = x, y = y0, z = deckZ, sprite = DECK_FLOOR, force = true, all = true }) end
     end
     if state.snapshot then
-        local ok, res = pcall(restoreArea, state.snapshot)
+        local ok, res = try(restoreArea, state.snapshot)
         log("restore: " .. (ok and (res.removed .. " removed, " .. res.added .. " added") or tostring(res)))
     end
     state.built, state.steps = false, {}

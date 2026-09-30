@@ -12,16 +12,17 @@ local PX, PY = math.floor((SW - PW) / 2), math.floor((SH - PH) / 2)
 local BEZEL, TOP = 12, 44                           -- side bezel and the top bar with the speaker slit
 local X0, Y0 = PX + BEZEL, PY + TOP                 -- top-left of the screen inside the phone
 local W, H = PW - 2 * BEZEL, PH - TOP - BEZEL
-local GROUND = H - 70
-local GRAVITY, FLAP, SPEED = 1200, -380, 190
-local GAP, PIPE_W, PIPE_EVERY = 150, 60, 1.7
+local S = H / 900                                   -- geometry scales with the phone (4K screens get a bigger bird)
+local GROUND = H - 70 * S
+local GRAVITY, FLAP, SPEED = 1200 * S, -380 * S, 190 * S
+local GAP, PIPE_W, PIPE_EVERY = 150 * S, 60 * S, 1.7
 local bird, pipes, clouds, score, best, alive, started, sinceLastPipe, reported
 local flapAnim = 0
 
 local function reset()
-    bird = { x = W * 0.3, y = H * 0.45, vy = 0, r = 14 }
+    bird = { x = W * 0.3, y = H * 0.45, vy = 0, r = 14 * S }
     pipes, clouds = {}, {}
-    for i = 1, 3 do clouds[i] = { x = W * i / 3, y = 40 + ZombRandFloat(0, 1) * (H * 0.4), w = 50 + ZombRandFloat(0, 1) * 40 } end
+    for i = 1, 3 do clouds[i] = { x = W * i / 3, y = 40 + ZombRandFloat(0, 1) * (H * 0.4), w = (50 + ZombRandFloat(0, 1) * 40) * S } end
     score, alive, started, sinceLastPipe, reported = 0, true, false, PIPE_EVERY, false
 end
 reset()
@@ -35,7 +36,7 @@ local function flap()
 end
 
 local function addPipe()
-    local top = 50 + ZombRandFloat(0, 1) * (GROUND - GAP - 100)
+    local top = 50 * S + ZombRandFloat(0, 1) * (GROUND - GAP - 100 * S)
     pipes[#pipes + 1] = { x = W + PIPE_W, top = top, passed = false }
 end
 
@@ -88,25 +89,25 @@ function draw(ui)
     -- sky, clouds, ground
     rect(ui, 0, 0, W, H, 0.35, 0.65, 0.95, 1)
     for _, c in ipairs(clouds) do
-        rect(ui, c.x, c.y, c.w, 18, 1, 1, 1, 1)
-        rect(ui, c.x + c.w * 0.25, c.y - 10, c.w * 0.5, 12, 1, 1, 1, 1)
+        rect(ui, c.x, c.y, c.w, 18 * S, 1, 1, 1, 1)
+        rect(ui, c.x + c.w * 0.25, c.y - 10 * S, c.w * 0.5, 12 * S, 1, 1, 1, 1)
     end
     rect(ui, 0, GROUND, W, H - GROUND, 0.75, 0.6, 0.3, 1)
     rect(ui, 0, GROUND, W, 6, 0.4, 0.75, 0.3, 1)
     -- pipes
     for _, p in ipairs(pipes) do
         rect(ui, p.x, 0, PIPE_W, p.top, 0.2, 0.7, 0.2, 1)
-        rect(ui, p.x - 4, p.top - 20, PIPE_W + 8, 20, 0.15, 0.6, 0.15, 1)
+        rect(ui, p.x - 4 * S, p.top - 20 * S, PIPE_W + 8 * S, 20 * S, 0.15, 0.6, 0.15, 1)
         rect(ui, p.x, p.top + GAP, PIPE_W, GROUND - p.top - GAP, 0.2, 0.7, 0.2, 1)
-        rect(ui, p.x - 4, p.top + GAP, PIPE_W + 8, 20, 0.15, 0.6, 0.15, 1)
+        rect(ui, p.x - 4 * S, p.top + GAP, PIPE_W + 8 * S, 20 * S, 0.15, 0.6, 0.15, 1)
     end
     -- bird: body, wing, eye, beak
     local r = bird.r
     rect(ui, bird.x - r, bird.y - r, 2 * r, 2 * r, 0.95, 0.55, 0.35, 1)
-    rect(ui, bird.x - r, bird.y + (flapAnim > 0 and -6 or 2), r, 7, 0.85, 0.4, 0.25, 1)
-    rect(ui, bird.x + 3, bird.y - 9, 7, 7, 1, 1, 1, 1)
-    rect(ui, bird.x + 6, bird.y - 7, 3, 3, 0, 0, 0, 1)
-    rect(ui, bird.x + r, bird.y - 2, 9, 5, 1, 0.8, 0.1, 1)
+    rect(ui, bird.x - r, bird.y + (flapAnim > 0 and -6 or 2) * S, r, 7 * S, 0.85, 0.4, 0.25, 1)
+    rect(ui, bird.x + 3 * S, bird.y - 9 * S, 7 * S, 7 * S, 1, 1, 1, 1)
+    rect(ui, bird.x + 6 * S, bird.y - 7 * S, 3 * S, 3 * S, 0, 0, 0, 1)
+    rect(ui, bird.x + r, bird.y - 2 * S, 9 * S, 5 * S, 1, 0.8, 0.1, 1)
     -- score and prompts
     text(ui, tostring(score), W / 2, 24, 1, 1, 1, 1, "title", true)
     text(ui, "best " .. best, W / 2, 62, 1, 1, 1, 0.9, "medium", true)

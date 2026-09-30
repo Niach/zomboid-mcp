@@ -75,13 +75,16 @@ onStop(function(reason) log("closing:", reason) end)
   `message(text, "notify"|"chat"|"halo")` for everyone.
 - **Steer live**: `onSignal("act2", function(data) ... end)` in the scene, `scene_signal {name, signal = "act2", data}`
   from you.
-- **Engine access**: everything not in the SDK is one `pcall` away: `pcall(function() actor.zombie:setNoTeeth(true) end)`.
+- **Engine access**: everything not in the SDK is one `try` away: `try(function() actor.zombie:setNoTeeth(true) end)`;
+  a block of your own world-changing engine calls goes through `engine(function() ... end)` (it runs on the main
+  coroutine; on the dedicated server the events those calls fire otherwise break the next `pcall` in the scene).
   `tool("entity3d_spawn", {...})` when ZOM-11's 3D entities are loaded (`ZMCP.tools.entity3d_spawn ~= nil`).
 
 ## Budget, safety, etiquette
 
 - 8 ms per tick for all scenes together. Never loop without `wait`; check `scene_list` `stats.overBudget`.
-- `pcall` engine calls you are unsure about, never `pcall` around `wait`.
+- `try(fn, ...)` for calls that may fail; never a plain `pcall` around `wait` or around SDK world calls
+  (`placeTile`, `spawnActor`, `tool(...)`, `sound`, ...): they yield to the main coroutine like `wait` does.
 - Players see everything at once. Puppets stay `passive`, sounds are sparse, world changes are announced and undone
   (`onStop`, `restoreArea`). Hordes / killing / teleporting / touching a character only when asked. Stop test scenes.
 - Single player first (`dev/bundle_sp.sh`, only with the owner's OK; `dev/ZMCPDev` is shared and a bad hook breaks
