@@ -27,6 +27,7 @@ local cooldown = tonumber(cfg.cooldown) or 180
 local face = tonumber(cfg.face) or 45
 local rails = cfg.rails ~= false and cfg.rails ~= "false"
 local deckUp = not (cfg.level == 0 or cfg.level == "0")
+local margin = math.max(1, math.floor(tonumber(cfg.clear_margin) or 6))   -- tree-free ring around the hall (trees overhang the hall otherwise)
 local DECK_FLOOR = cfg.deck_floor or "floors_exterior_tilesandstone_01_0"
 local HALL_FLOOR = cfg.hall_floor or "floors_burnt_01_0"
 local STAIRS = { "fixtures_stairs_01_8", "fixtures_stairs_01_9", "fixtures_stairs_01_10" }   -- bottom, middle, top (up towards north)
@@ -68,14 +69,18 @@ local function step(key, fn)
     log("built " .. key)
 end
 
--- a floor tile the vanilla way (IsoGridSquare:addFloor replaces the floor object; transmitted to clients)
+-- a floor tile, synced: the old floor object is removed and the new one added at index 0 with the transmit
+-- variants (server-side addFloor + transmitCompleteItemToClients left the clients with BOTH floors, verified live
+-- 2026-09-30: 180 extra floor objects on the client)
 local function floor(x, y, fz, sprite)
     local cell = getCell()
     local sq = cell:getGridSquare(x, y, fz)
     if not sq then sq = cell:createNewGridSquare(x, y, fz, true) end
     if not sq then error("no square at " .. x .. "," .. y .. "," .. fz) end
-    local obj = sq:addFloor(sprite)
-    if obj then pcall(function() obj:transmitCompleteItemToClients() end) end
+    local old = sq:getFloor()
+    if old then pcall(function() sq:transmitRemoveItemFromSquare(old) end) end
+    local obj = IsoObject.new(sq, sprite)
+    sq:transmitAddObjectToSquare(obj, 0)
     pcall(function() sq:RecalcAllWithNeighbours(true) end)
     return obj
 end
@@ -118,17 +123,20 @@ for i = 1, 5 do
 end
 
 if not state.built then
-    step("snapshot", function() state.snapshot = snapshotArea(hall.x1 - 1, hall.y1 - 1, hall.x2 + 1, hall.y2 + 1, z) end)
-    step("clear", function()          -- the hall takes over the area: trees, bushes, fences, walls, furniture go (the snapshot brings them back)
-        local removed = 0
-        for x = hall.x1 - 1, hall.x2 + 1 do
-            for y = hall.y1 - 1, hall.y2 + 1 do
+    step("snapshot", function() state.snapshot = snapshotArea(hall.x1 - margin, hall.y1 - margin, hall.x2 + margin, hall.y2 + margin, z) end)
+    step("clear", function()          -- the hall takes over the area: trees, bushes, fences, walls, furniture go (the snapshot brings them back);
+        local removed = 0             -- in the margin ring only vegetation goes (trees there would overhang the hall)
+        for x = hall.x1 - margin, hall.x2 + margin do
+            for y = hall.y1 - margin, hall.y2 + margin do
                 local sq = getCell():getGridSquare(x, y, z)
                 if sq then
+                    local inside = x >= hall.x1 - 1 and x <= hall.x2 + 1 and y >= hall.y1 - 1 and y <= hall.y2 + 1
                     local floorObj, objs, gone = sq:getFloor(), sq:getObjects(), {}
                     for i = 0, objs:size() - 1 do
                         local o = objs:get(i)
-                        if o ~= floorObj and not instanceof(o, "IsoWorldInventoryObject") then gone[#gone + 1] = o end
+                        local sp = ZMCP.util.spriteName(o) or ""
+                        local vegetation = sp:find("^e_") or sp:find("^f_") or sp:find("^d_") or sp:find("^boulders") or sp:find("^vegetation_")
+                        if o ~= floorObj and not instanceof(o, "IsoWorldInventoryObject") and (inside or vegetation) then gone[#gone + 1] = o end
                     end
                     for _, o in ipairs(gone) do
                         if pcall(function() sq:transmitRemoveItemFromSquare(o) end) then removed = removed + 1 end
@@ -188,6 +196,7 @@ if not state.built then
         for _, r in ipairs(rocks) do place("ysnp_rock", r.pid, r.x, r.y, z, { collide = "solid", yrot = 0 }) end
     end)
     state.built = true
+    redraw(hall.x1 - margin, hall.y1 - margin, hall.x2 + margin, hall.y2 + margin, z, deckZ)
     log("hall built: bridge " .. xs .. ".." .. xe .. " at y " .. y0 .. " level " .. deckZ)
 end
 

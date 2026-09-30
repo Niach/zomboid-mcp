@@ -265,7 +265,12 @@ function SIM.square(x, y, z)
     sq.getFloor = function() return sq.floor end
     sq.getMovingObjects = function() return jlist({}) end
     sq.getVehicleContainer = function() return nil end
-    sq.transmitAddObjectToSquare = function(_, o) sq.objects[#sq.objects + 1] = o; sq.recalcs = sq.recalcs + 1 end
+    -- transmitAddObjectToSquare(obj, index): -1 appends; 0 puts the object first (a floor sprite there becomes the floor)
+    sq.transmitAddObjectToSquare = function(_, o, index)
+        if index == 0 then table.insert(sq.objects, 1, o); if o.spriteName and o.spriteName:find("^floors_") then sq.floor = o end
+        else sq.objects[#sq.objects + 1] = o end
+        sq.recalcs = sq.recalcs + 1
+    end
     sq.transmitRemoveItemFromSquare = function(_, o)
         if o == sq.floor then sq.floor = nil end
         for i, x in ipairs(sq.objects) do if x == o then table.remove(sq.objects, i); sq.recalcs = sq.recalcs + 1; return 1 end end

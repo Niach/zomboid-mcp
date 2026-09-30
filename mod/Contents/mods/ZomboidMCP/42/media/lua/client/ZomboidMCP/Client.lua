@@ -283,6 +283,21 @@ C.commands.cure = function()
     C.log("cured")
 end
 
+-- redraw {x1, y1, x2, y2, z1?, z2?}: mark the cached render chunks of an area dirty (objects added/removed, trees,
+-- floors, items) after a big server-side change; the engine only redraws a chunk FBO when something marks it
+C.commands.redraw = function(a)
+    local cell = getCell()
+    local x1, y1, x2, y2 = math.floor(tonumber(a.x1) or 0), math.floor(tonumber(a.y1) or 0), math.floor(tonumber(a.x2) or 0), math.floor(tonumber(a.y2) or 0)
+    local z1, z2 = math.floor(tonumber(a.z1) or 0), math.floor(tonumber(a.z2) or tonumber(a.z1) or 0)
+    local flags = 64 + 128 + 1024 + 4096 + 16       -- FBORenderChunk DIRTY_OBJECT_ADD/REMOVE, REDRAW, TREES, ITEM_MODIFY
+    local n = 0
+    for x = x1, x2 do for y = y1, y2 do for z = z1, z2 do
+        local sq = cell:getGridSquare(x, y, z)
+        if sq then pcall(function() sq:invalidateRenderChunkLevel(flags) end); n = n + 1 end
+    end end end
+    C.log("redraw " .. n .. " squares")
+end
+
 C.commands.teleport = function(a)
     local p = C.player()
     if not p then return end

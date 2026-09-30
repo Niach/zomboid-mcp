@@ -468,8 +468,9 @@ Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier wo
     local yrot = tonumber(a.yrot)
     if yrot then pcall(function() item:setWorldYRotation(yrot) end) end
     -- MP: AddWorldInventoryItem already sent the carrier to the clients, before the model name went into its
-    -- ModData; resend the whole object so their copy carries it too (no-op in single player)
-    if isServer() then pcall(function() local wo = item:getWorldItem(); if wo then wo:transmitCompleteItemToClients() end end) end
+    -- ModData. Re-sending the whole object (transmitCompleteItemToClients) DUPLICATES the carrier on every client
+    -- (verified live 2026-09-30: 29 carriers on the server, 58 on the client, half of them flat tire sprites), so
+    -- the clients get the model name from the "place" record instead (ClientModels re-applies it by item id).
     local pid = a.pid and checkId(tostring(a.pid), "pid") or nextId("p")
     local rec = { x = math.floor(x), y = math.floor(y), z = z, model = id, name = name, gen = m.gen, item = carrier,
         itemId = (pcall(function() return item:getID() end) and item:getID()) or nil,

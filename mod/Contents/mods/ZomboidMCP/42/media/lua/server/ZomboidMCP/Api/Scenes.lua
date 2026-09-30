@@ -515,6 +515,12 @@ local function buildEnv(scene)
     end
     E.draw = function(args) args.id = args.id or nextId("scn_" .. name .. "_d"); return callTool("overlay_draw", args) end
     E.clearDraw = function(id) return callTool("clear_visuals", { what = "overlays", id = id }) end
+    -- redraw(x1, y1, x2, y2, z1?, z2?): every client marks the cached render chunks of the area dirty (after a big
+    -- batch of world changes the engine may keep drawing the old picture until something marks the chunk)
+    E.redraw = function(x1, y1, x2, y2, z1, z2)
+        V.enqueue("redraw", { x1 = math.floor(x1), y1 = math.floor(y1), x2 = math.floor(x2), y2 = math.floor(y2), z1 = math.floor(z1 or 0), z2 = math.floor(z2 or z1 or 0) })
+        return true
+    end
     -- light(x, y, z, r, g, b, radius): a light source on every client (IsoCell:addLamppost). Lights are render state
     -- and are NOT saved by the engine (IsoCell.lamppostPositions has no save/load path, verified in 42.21 bytecode),
     -- so the scene re-sends them to every client that joins while it runs; scene_stop removes them.

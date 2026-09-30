@@ -334,6 +334,7 @@ snap_file = lua("return ZMCP.scenes.list.snap.env.SNAP")
 check(snap_file.startswith("zmcp_snap_snap_") and g.SIM.fs[snap_file] is not None, "snapshot written to the Lua dir")
 snap = json.loads(g.SIM.fs[snap_file])
 check(len(snap["squares"]) == 4 and any(len(sq["o"]) == 2 for sq in snap["squares"]), "snapshot lists the objects per square")
+if not (len(snap["squares"]) == 4 and any(len(sq["o"]) == 2 for sq in snap["squares"])): print("DEBUG snapshot:", snap["squares"], lua("local t = {} for _, o in ipairs(SIM.square(%d, %d, 0).objects) do t[#t+1] = tostring(o.spriteName) end return table.concat(t, ',')" % (PX + 2, PY + 2)))
 lua("""
 local sq = getCell():getGridSquare(%d, %d, 0)
 sq:transmitAddObjectToSquare(IsoObject.new(sq, 'graffiti_01_3'))       -- added after the snapshot
@@ -511,7 +512,7 @@ check(all(p["collide"] == "solid" for p in pl.values() if p["pid"].startswith("y
 bl = [b for b in tool("collision_list")["blockers"].values() if str(b["name"] or "").startswith("ysnp:")]
 kinds = {b["kind"] for b in bl}
 check(len(bl) > 60 and kinds == {"wall_n", "wall_w"} and any(b["z"] == 1 for b in bl), "invisible cavern walls and deck rails placed (%d blockers, z levels %s)" % (len(bl), sorted({b["z"] for b in bl})))
-check(lua("return SIM.square(%d, %d, 1).floor ~= nil and SIM.square(%d, %d, 1).floor.spriteName == 'floors_exterior_tilesandstone_01_0' and (SIM.square(%d, %d, 1).floorTransmits or 0) >= 1" % (X0 + 5, Y0, X0 + 5, Y0, X0 + 5, Y0)), "the deck is a real floor one level up, transmitted")
+check(lua("return SIM.square(%d, %d, 1).floor ~= nil and SIM.square(%d, %d, 1).floor.spriteName == 'floors_exterior_tilesandstone_01_0' and SIM.square(%d, %d, 1).objects[1] == SIM.square(%d, %d, 1).floor" % ((X0 + 5, Y0) * 4)), "the deck is a real floor one level up (index 0, transmitted add)")
 check(lua("return SIM.square(%d, %d, 0).floor.spriteName == 'floors_burnt_01_0'" % (X0 - 2, Y0 + 3)), "the hall floor was replaced")
 stairs = [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (X0, Y0 + 3)).values()]
 check("fixtures_stairs_01_8" in stairs and "fixtures_stairs_01_10" in [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (XE, Y0 + 1)).values()], "stairs at both ends (bottom south, top next to the deck)")
