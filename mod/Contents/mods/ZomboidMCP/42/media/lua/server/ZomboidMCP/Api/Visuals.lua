@@ -215,6 +215,7 @@ V.onClientCommand = function(module, command, player, args)
     local user = userOf(player)
     if command == "hello" then
         V.clients[user] = { version = args.version, t = Z.now(), textures = {} }
+        V.enqueue("welcome", { version = Z.version }, player)     -- the ack the client waits for (it repeats hello until one arrives)
         local n = V.sendAllTo(player)
         Z.event("client_hello", { user = user, version = args.version, sent = n })
     elseif command == "execResult" then

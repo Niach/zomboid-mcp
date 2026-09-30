@@ -258,7 +258,7 @@ Workshop mod runs the client.
 
 | command | args | when |
 |---|---|---|
-| `hello` | `{version}` | `OnGameStart`. The server answers with every registered texture, model, client script, world sprite, model placement and moving 3D entity, in that order (late join / reconnect / after a server restart). Event `client_hello` (with the counts). |
+| `hello` | `{version}` | `OnGameStart`, then again every 5 s from `OnTick` until the server's `welcome` arrives (a reconnect's first hello reaches the server before the player object exists and is dropped, verified 2026-09-30). The server answers `welcome {version}` and then every registered texture, model, client script, world sprite, model placement and moving 3D entity, in that order (late join / reconnect / after a server restart). Event `client_hello` (with the counts). |
 | `execResult` | `{id, ok, res, ms, module?}` | after every `exec` chunk set ran (`res` = the return value, tables JSON-encoded, or the error; ≤ 4000 chars). Event `client_exec_result`; `client_results {id}` shows `{to, results, pending, done}` and the MCP's `run_lua_client` waits for it. |
 | `texResult` | `{id, gen, ok, w?, h?, bytes?, err?}` | after a texture was written and loaded (or failed). Event `client_texture`. |
 | `fileResult` | `{id, gen, path, ok, bytes?, err?}` | after a `file` push was written. Event `client_file`. |

@@ -308,19 +308,29 @@ function C.onCommand(command, args)
     end
 end
 
+-- hello: announce this client and ask for everything (textures, models, scripts, sprites, placements, entities,
+-- scene lights). OnGameStart fires it, but on a reconnect (and sometimes on the first join) that hello reaches the
+-- server before the player object exists and is dropped (verified 2026-09-30), so it is repeated every few seconds
+-- from OnTick until the server answers with any command ("welcome" is the reply to a hello).
+C.HELLO_RETRY = 5
+C.helloAcked = C.helloAcked or false
+C.lastHello = C.lastHello or 0
 function C.hello()
     C.ensureOverlay()
+    C.lastHello = C.now()
     C.send("hello", { version = C.version })
 end
+C.commands.welcome = function(a) C.helloAcked = true end
 
 C.handlers.OnServerCommand = function(module, command, args)
     if module ~= C.MODULE then return end
     C.onCommand(command, args)
 end
-C.handlers.OnGameStart = function() C.hello() end
+C.handlers.OnGameStart = function() C.helloAcked = false; C.hello() end
 C.handlers.OnTick = function()
-    if C.isEmpty(C.tickHooks) then return end
     local t = C.now()
+    if not C.helloAcked and t - C.lastHello >= C.HELLO_RETRY and C.player() then C.hello() end
+    if C.isEmpty(C.tickHooks) then return end
     for name, fn in pairs(C.tickHooks) do
         local ok, err = pcall(fn, t)
         if not ok then C.tickHooks[name] = nil; C.log("tick hook '" .. tostring(name) .. "' removed: " .. tostring(err)) end
