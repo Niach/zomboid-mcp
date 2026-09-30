@@ -6,6 +6,6 @@
 	"previewfile"    "@PREVIEW_FILE@"
 	"visibility"     "0"
 	"title"          "Zomboid MCP"
-	"description"    "Claude hacks the simulation: a live scripting bridge for Claude (or any MCP client) with runtime textures, world sprites, 3D models, falling items, overlays and screen apps pushed to every player. The MCP server ships inside the mod (mcp/zomboid_mcp.py, Python 3 stdlib) with the zomboid engine handbook skill. Source and docs: https://github.com/Niach/zomboid-mcp"
+	"description"    "Claude hacks the simulation: a live scripting bridge between a running game and Claude (or any MCP client). Scripted scenes with zombie puppets that talk and trade, custom 3D models with collision, runtime textures, falling items, overlays and screen apps pushed to every player, no restart needed. The MCP server ships inside the mod (mcp/zomboid_mcp.py, Python 3 stdlib) with the zomboid engine handbook skill. Captures, source and docs: https://github.com/Niach/zomboid-mcp"
 	"changenote"     "@CHANGENOTE@"
 }

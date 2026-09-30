@@ -20,6 +20,18 @@ what the engine can do. A curated set of tools covers the common operations with
 - [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md): the rules and limits in one page (authority, execution, Kahlua, files, sizes).
 - [docs/PLAN.md](docs/PLAN.md): direction, architecture and status.
 
+## Showcase
+
+Captured live in a single-player game, everything created through the MCP (no restart, no Workshop update):
+
+| Stone circle of custom 3D models with collision, cows and puppet villagers | Merchant puppet: greets, walks over, trades, walks back |
+|---|---|
+| ![stone circle](art/showcase/stone_circle.gif) | ![merchant](art/showcase/merchant.gif) |
+| Puppets wandering and talking around the obelisk | Flappy Bird inside a phone frame (screen app) |
+| ![villagers](art/showcase/stone_circle_actors.gif) | ![flappy](art/showcase/flappy_phone.gif) |
+
+The Workshop page text is in [docs/WORKSHOP.md](docs/WORKSHOP.md).
+
 ## Install
 
 1. Subscribe to the Workshop item and enable **Zomboid MCP** (server: add it to `WorkshopItems` / `Mods`). The MCP

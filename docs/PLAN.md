@@ -60,9 +60,11 @@ bind-mounted from `/opt/zomboid-lua/ZomboidMCP` for hot reload during developmen
 ## Status (2026-09-30)
 - Done and merged: ZOM-7 texture spike, ZOM-1 bridge, ZOM-2 MCP server, ZOM-3 API index, ZOM-4 game tools,
   ZOM-6 client runtime (textures, sprites, falling items, overlays, input hooks, static 3D models), ZOM-12
-  integration pass (one tool namespace, one protocol document, complete catalogue, paused-server poll, tests).
-- In progress: ZOM-11 moving 3D entities (dynamic carrier), ZOM-10 scene SDK + screen apps, ZOM-8 the handbook skill.
-- Last: ZOM-9 deploy (Workshop upload public, server switch to ZomboidMCP, local install, acceptance demos), then
+  integration pass (one tool namespace, one protocol document, complete catalogue, paused-server poll, tests),
+  ZOM-11 moving 3D entities, ZOM-8 the handbook skill + `mcp/install.sh`, ZOM-14 3D permanence + collision,
+  ZOM-10 scene SDK + screen apps, and the single-player showcase pass (PR #14: puppets walk and talk, sim suite
+  green; PR #15: Workshop page text, README showcase, poster and icon). Captures in `art/showcase/`.
+- Last: ZOM-9 deploy (Workshop upload public, server switch to ZomboidMCP, acceptance demos, `docs/DEPLOY.md`), then
   ZOM-13 the "You shall not pass" endgame scene built with nothing but the finished mod and skill.
 
 ## Verification (acceptance demos, done live with the owner)
