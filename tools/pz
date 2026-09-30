@@ -14,12 +14,8 @@
 #   pz push                      tools/deploy_server.sh: sync server Lua to the dev bind mount
 #   pz reload [file]             console `reloadlua <file>` (default Bridge.lua; needs the ZomboidMCP mount)
 #   pz poll                      make a paused server process pending requests once (console reloadlua)
-#   pz bootstrap [file]          append (or refresh) tools/dev_bootstrap.lua in a loaded server file of the dev
-#                                mount (default vapps/VappsGuardian.lua) so `pz load` / polling work before
-#                                the ZomboidMCP mount exists
-#   pz legacy cmd|events ...     old vapps Guardian command file (heal|cure|god ... while it still runs)
-# Env: ZMCP_POLL_FILE (default ZomboidMCP/ZMCPPoll.lua; VappsGuardian.lua until the mount exists) is the
-# loaded file whose `reloadlua` polls the bridge while the server is paused; PZ_TIMEOUT (s).
+# Env: ZMCP_POLL_FILE (default ZomboidMCP/ZMCPPoll.lua, loaded from the ZomboidMCP bind mount) is the loaded
+# file whose `reloadlua` polls the bridge while the server is paused; PZ_TIMEOUT (s).
 set -o pipefail
 [ -f ~/.config/zomboid-mcp/local.env ] && . ~/.config/zomboid-mcp/local.env
 H=$ZMCP_SSH
@@ -105,7 +101,7 @@ EOF
       echo "bridge alive: loading through run_file"
       $CLIENT --timeout 20 call run_file '{"file":"zmcp_boot.lua"}'
     else
-      echo "bridge not alive: reloadlua $POLL_FILE (dev bootstrap) through the console"
+      echo "bridge not alive: reloadlua $POLL_FILE through the console"
       PZ_CONSOLE_WAIT=4 console "reloadlua $POLL_FILE" | grep -E 'ZomboidMCP|reloadlua|rror' || true
     fi
     ;;
@@ -114,18 +110,5 @@ EOF
   push) shift; "$DIR/deploy_server.sh" "$@" ;;
   reload) need_env; console "reloadlua ${2:-ZomboidMCP/Bridge.lua}" ;;
   poll) need_env; PZ_CONSOLE_WAIT=1 console "reloadlua $POLL_FILE" | grep -E 'ZomboidMCP|reloadlua|rror' || true ;;
-  bootstrap)
-    need_env
-    target=$M/${2:-vapps/VappsGuardian.lua}
-    # keep a pristine copy, drop a previous bootstrap block, append the current one
-    $SSH $H "cp -n $target $target.orig 2>/dev/null; sed -i '/^-- >>> ZomboidMCP dev bootstrap/,/^-- <<< ZomboidMCP dev bootstrap/d' $target && cat >> $target" < "$DIR/dev_bootstrap.lua" \
-      && echo "dev bootstrap installed in $target (pristine copy: $target.orig). Next: pz load" ;;
-  legacy) need_env; shift
-    case "$1" in
-      cmd) shift; printf '%s\n' "$*" | $SSH $H "cat >> $L/vapps_cmd.txt"; sleep 3; $SSH $H "tail -3 $L/vapps_events.log" ;;
-      events) $SSH $H "tail -${2:-15} $L/vapps_events.log" ;;
-      status) $SSH $H "cat $L/vapps_status.json" ;;
-      *) echo "pz legacy cmd <guardian cmd> | events [n] | status" >&2; exit 2 ;;
-    esac ;;
   *) sed -n '5,20p' "$0" ;;
 esac

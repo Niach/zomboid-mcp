@@ -129,10 +129,7 @@ path:
   `echo 'reloadlua ZomboidMCP/ZMCPPoll.lua' | docker exec -i $ZMCP_CONTAINER sh -c 'cat > /tmp/pz-console'`
   (`ZMCP_POLL_CMD`, or built from `ZMCP_CONTAINER` and `ZMCP_POLL_FILE` in `tools/zmcp_client.py`). One poll
   answers everything pending. The bridge also runs a pass at the end of every (re)load, so `reloadlua` of
-  Bridge.lua itself, or the dev bootstrap, polls too.
-- Until the ZomboidMCP bind mount exists, `ZMCPPoll.lua` is not loaded on the server; the poll target is the
-  bootstrapped old Guardian file instead: `ZMCP_POLL_FILE=VappsGuardian.lua` (see "Dev workflow"). Its
-  bootstrap block calls `ZMCP.poll()` when the bridge is already loaded.
+  Bridge.lua itself polls too. `ZMCPPoll.lua` is loaded from the ZomboidMCP bind mount (deployed 2026-09-30).
 - Without a poll command (no docker/console access, e.g. a plain Workshop user) the MCP reports a clear
   error after the timeout: the server is paused because nobody is online, join the server or configure
   polling.
@@ -206,21 +203,17 @@ source it.
 
 - `tools/pz status | call <tool> [json] | eval "<lua>" | events [n] | bench` talk to the bridge through the
   file protocol; `pz poll` triggers one paused-server poll by hand, `pz console "<cmd>"` and `pz log` reach
-  the server console. `ZMCP_POLL_FILE=VappsGuardian.lua` is set in `local.env` until the mount exists.
+  the server console. `ZMCP_POLL_FILE=ZomboidMCP/ZMCPPoll.lua` in `local.env`.
 - `tools/pz load` uploads `Json.lua`, `Bridge.lua` and `Api/*.lua` as `zmcp_src_*.lua` plus a generated
   `zmcp_boot.lua` loader into the Lua dir and runs the loader on the live server: through the bridge's own
   `run_file` when the heartbeat is fresh, otherwise through the console (`reloadlua` of the poll file). No
-  restart, works while paused. Before the mount exists this relies on `tools/pz bootstrap`, which appends
-  `tools/dev_bootstrap.lua` to `/opt/zomboid-lua/vapps/VappsGuardian.lua` (pristine copy kept as
-  `VappsGuardian.lua.orig`): on every `reloadlua VappsGuardian.lua` that block runs a new `zmcp_boot.lua`
-  (stamped, so it loads only once per upload) or just polls the bridge. It also brings the bridge back
-  automatically after a server start. This is installed on the live server since 2026-09-29.
+  restart, works while paused. The normal dev path is `tools/pz push` + `tools/pz reload` (below).
 - `tools/pz run file.lua` executes a local Lua file once on the server (uploaded as `zmcp_run.lua`).
-- `tools/deploy_server.sh` syncs the server Lua to `/opt/zomboid-lua/ZomboidMCP` on the host. That directory
-  is meant to be bind-mounted read-only into the container at
-  `/home/steam/pz-dedicated/media/lua/server/ZomboidMCP` so the files load at startup and can be reloaded
-  with `reloadlua Bridge.lua`. **The mount does not exist yet**; it is a compose change for the owner
-  (ZOM deploy), like the old `vapps` mount. Until then `tools/pz load` is the way to get code into the server.
+- `tools/deploy_server.sh` (= `pz push`) syncs the server Lua to `/opt/zomboid-lua/ZomboidMCP` on the host,
+  which is bind-mounted read-only into the container at `/home/steam/pz-dedicated/media/lua/server/ZomboidMCP`
+  (since the ZOM-9 deploy): the files load at startup and `pz reload` (`reloadlua ZomboidMCP/Bridge.lua`)
+  re-runs them live. The Workshop copy of the mod loads too (mods load after the vanilla dirs), so after a
+  restart run `pz reload` when the mounted dev version must win.
 - Tests: `make test` runs everything offline (see README). `tests/run_lua_tests.py` runs `tests/json_test.lua` under a
   standalone Lua 5.1 (`lua5.1`/`luajit` on PATH, else the `lupa` wheel: `pip install lupa`).
   `tests/live/bridge_smoke.py` runs 16 checks against the live server through the file protocol: ping,

@@ -64,8 +64,10 @@ bind-mounted from `/opt/zomboid-lua/ZomboidMCP` for hot reload during developmen
   ZOM-11 moving 3D entities, ZOM-8 the handbook skill + `mcp/install.sh`, ZOM-14 3D permanence + collision,
   ZOM-10 scene SDK + screen apps, and the single-player showcase pass (PR #14: puppets walk and talk, sim suite
   green; PR #15: Workshop page text, README showcase, poster and icon). Captures in `art/showcase/`.
-- Last: ZOM-9 deploy (Workshop upload public, server switch to ZomboidMCP, acceptance demos, `docs/DEPLOY.md`), then
-  ZOM-13 the "You shall not pass" endgame scene built with nothing but the finished mod and skill.
+- ZOM-9 deployed 2026-09-30: Workshop item 3810456179 public (0.3.0, verified by anonymous download), the dedicated
+  server runs the mod plus the ZomboidMCP dev mount, prototype files removed, live smoke tests green
+  (`docs/DEPLOY.md`). Acceptance demos with the owner follow.
+- Last: ZOM-13 the "You shall not pass" endgame scene built with nothing but the finished mod and skill.
 
 ## Verification (acceptance demos, done live with the owner)
 - `status` and `players_list` return the owner.

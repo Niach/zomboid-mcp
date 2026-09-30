@@ -8,10 +8,10 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **Dedicated server:** hetzner-1, `$ZMCP_SSH`. It runs in Docker (Coolify service `$ZMCP_COOLIFY_SERVICE`, container `$ZMCP_CONTAINER`, image `danixu86/project-zomboid-dedicated-server`).
   - Data volume: `$ZMCP_VOLUME` (= `/home/steam/Zomboid` in the container).
   - Lua cache dir: `<volume>/Lua/`, the only place `getFileWriter`/`getFileReader`/`getFileOutput` can reach.
-  - Bind mount for hot-reloadable server Lua: host `/opt/zomboid-lua/vapps` → `/home/steam/pz-dedicated/media/lua/server/vapps` (read-only). It currently holds the old prototype Guardian/Push/Reborn files and will become `ZomboidMCP`.
+  - Bind mount for hot-reloadable server Lua: host `/opt/zomboid-lua/ZomboidMCP` → `/home/steam/pz-dedicated/media/lua/server/ZomboidMCP` (read-only, since the ZOM-9 deploy on 2026-09-30; `tools/pz push` syncs it, `pz reload` re-runs Bridge.lua). The Workshop item 3810456179 is enabled on the server as well.
   - `DoLuaChecksum=false` is set in `Server/zomboid.ini`, so the server may run Lua that clients don't have.
   - Server console: write lines to the FIFO `/tmp/pz-console` inside the container (`docker exec <c> sh -c 'echo CMD > /tmp/pz-console'`). The output goes to `<volume>/server-console.txt`, not to `docker logs`.
-  - `tools/pz` wraps all of this (`status`, `cmd`, `console`, `events`, `run`, `client`, `push`, `reload`).
+  - `tools/pz` wraps all of this (`status`, `call`, `eval`, `console`, `events`, `log`, `load`, `run`, `push`, `reload`, `poll`).
 - **Local client (Mint PC):** PZ at `~/.steam/steam/steamapps/common/ProjectZomboid/projectzomboid/`. Vanilla Lua is in `media/lua`, the Java is `projectzomboid.jar` (use `javap -cp projectzomboid.jar -public <class>` for signatures). The client log is `~/Zomboid/console.txt`.
 - **Game version:** 42.21.0. The server uses a 3 GB heap and a 5 GB container. It autosaves every minute.
 
