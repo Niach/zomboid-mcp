@@ -68,7 +68,7 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **Corpses and blood:** `IsoDeadBody` objects are in `sq:getStaticMovingObjects()` (`removeFromWorld` + `removeFromSquare`); floor blood goes with the vanilla `sq:removeBlood(false, false)` followed by `sq:getChunk():invalidateRenderChunkLevels(0)` so the chunk redraws.
 - **Chunk render cache:** after removing or changing world objects from Lua call `sq:getChunk():invalidateRenderChunkLevels(0)`, otherwise the old picture can stay in the cached chunk FBO.
 - **Single-player Lua state:** `math.random` is nil (use `ZombRand` / `ZombRandFloat`); the UI manager can drop a full-screen `ISUIElement` after a hot reload (`isRemoved()` stays true even after re-adding; check `UIManager.getUI():contains(el.javaObject)` and `addToUIManager()` again); the debug console hides with `UIManager.getDebugConsole():setVisible(false)`.
-- **Passive actors:** `addZombiesInOutfit(x, y, z, 1, outfit, 50)` then `z:setUseless(true)`; `pathToLocation(x, y, z)` and `Say(text)` work on a useless zombie (verified: Farmer, Chef, Doctor outfits wandering and talking), and `zombiesNear` tools can skip them via `isUseless()`.
+- **Passive actors:** `addZombiesInOutfit(x, y, z, 1, outfit, 50)` then `z:setUseless(true)`; `pathToLocation(x, y, z)` walks a useless zombie (verified: Farmer, Chef, Doctor outfits wandering), and `zombiesNear` tools can skip them via `isUseless()`. Three traps (verified in single player, `IsoGameCharacter.pathToAux` disassembled): when the straight line to the target is clear (`PolygonalMap2.lineClearCollide`) the engine sets `bMoving` without `bPathfind`, a "walk straight" mode that a useless zombie in `ZombieIdleState` never executes (`movex/movey` are zeroed), so it stays idle; call `pathToLocation(x, y, z)` and then `setVariable("bPathfind", true)` + `setMoving(false)` to force `PathFindState`, which walks the real path (scene `walkTo` / `follow` do). A path onto the tile a **player stands on** fails too, so aim at a neighbouring tile. And a zombie's `Say(text)` line is **not drawn** in single player (the player's is), so scenes draw their own bubble on the client. Kahlua: `tostring(z:pathToLocation(...))` fails with "Not enough arguments" because a void Java method returns no value.
 
 ## Live server rules for sessions
 - **Allowed:**
@@ -257,8 +257,8 @@ below was run in the game yet unless marked):
 - Server-side events `OnPlayerDeath`, `OnCharacterDeath`, `OnZombieDead`, `OnZombieCreate` exist in `LuaEventManager`.
 - `IsoZombie`: `setUseless(boolean)` (vanilla tutorial puppets), `pathToLocation(int, int, int)`, `pathToLocationF`,
   `pathToCharacter`, `faceLocationF(float, float)`, `setWalkType(String)`, `getOnlineID()`, `removeFromWorld()` +
-  `removeFromSquare()`. `Say` goes to `ProcessSay` (client rendering); whether the dedicated server transmits a zombie's
-  line is unverified, so scenes also send a client bubble that follows the zombie by online id.
+  `removeFromSquare()`. `Say` goes to `ProcessSay`, but a zombie's line is not drawn in single player and the dedicated
+  server may not transmit it, so scenes always send a client bubble that follows the zombie (online id on clients, `getID()` in single player).
 - Vanilla sound names (media/scripts): `Thunder`, `ZombieThumpGeneric`, `HouseAlarm`, `LightSwitch`, `WoodDoorOpen`,
   `WoodDoorClose`, `ZombieSurprisedPlayer`, `UIActivateButton`, `UIActivateMainMenuItem`, `Helicopter`. Items:
   `Base.Stone2` (a rock), `Base.Log`, `Base.Plank`, `Base.Nails`, `Base.Hammer`, `Base.FirstAidKit`, `Base.TinnedBeans`.

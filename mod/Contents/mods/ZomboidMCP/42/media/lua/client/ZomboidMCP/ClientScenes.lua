@@ -18,7 +18,7 @@ SC.anims = SC.anims or {}         -- sprite id -> { scene, frames = {}, fps, t0 
 SC.fades = SC.fades or {}         -- sprite id -> { from, to, t0, dur }
 SC.lights = SC.lights or {}       -- id -> { scene, light, x, y, z }
 SC.watch = SC.watch or { clicks = {}, keys = {} }   -- clicks: sprite id -> scene; keys: "code" -> { scene -> true }
-SC.zombies = SC.zombies or {}     -- online id -> IsoZombie (cache for bubbles that follow a puppet)
+SC.zombies = SC.zombies or {}     -- "z<online id>" / "o<object id>" -> IsoZombie (cache for bubbles that follow a puppet)
 
 local function num(v, d) local n = tonumber(v); if n == nil then return d end; return n end
 local function log(msg) if C.log then C.log(msg) else print("[ZomboidMCP] " .. tostring(msg)) end end
@@ -47,21 +47,23 @@ function SC.spriteRect(sp)
     return sx - w / 2, top, w, h
 end
 
-local function findZombie(zid)
-    zid = tonumber(zid)
-    if not zid or zid < 0 then return nil end
-    local z = SC.zombies[zid]
+-- the puppet a bubble follows: by online id (zid, multiplayer clients) or by object id (oid, single player)
+local function findZombie(zid, oid)
+    zid, oid = tonumber(zid), tonumber(oid)
+    local key
+    if zid and zid >= 0 then key = "z" .. zid elseif oid then key = "o" .. oid else return nil end
+    local z = SC.zombies[key]
     if z then
         local ok, dead = pcall(function() return z:isDead() end)
         if ok and not dead then return z end
-        SC.zombies[zid] = nil
+        SC.zombies[key] = nil
     end
     local ok, list = pcall(function() return getCell():getZombieList() end)
     if not ok or not list then return nil end
     for i = 0, list:size() - 1 do
         local zed = list:get(i)
-        local ok2, id = pcall(function() return zed:getOnlineID() end)
-        if ok2 and id == zid then SC.zombies[zid] = zed; return zed end
+        local ok2, id = pcall(function() if zid and zid >= 0 then return zed:getOnlineID() end return zed:getID() end)
+        if ok2 and id == (zid and zid >= 0 and zid or oid) then SC.zombies[key] = zed; return zed end
     end
     return nil
 end
@@ -77,8 +79,8 @@ local function bubbleAnchor(b)
         end
         return nil
     end
-    if b.zid then
-        local zed = findZombie(b.zid)
+    if b.zid or b.oid then
+        local zed = findZombie(b.zid, b.oid)
         if zed then
             local ok, x, y, z = pcall(function() return zed:getX(), zed:getY(), zed:getZ() end)
             if ok then b.x, b.y, b.z = x, y, z end
@@ -226,11 +228,10 @@ end
 -- bubble {scene, id, text, ttl?, sid? (follow a sprite), zid? (follow a zombie by online id), x?, y?, z?}
 C.commands.bubble = function(a)
     SC.ensure()
-    local zid = tonumber(a.zid)
-    -- single player: a zombie puppet's own Say line is visible, no second bubble needed
-    if zid and zid < 0 and not isClient() and not a.sid then return end
+    -- always drawn: a zombie puppet's own Say line is not rendered in single player (only the player's is)
     SC.bubbles[tostring(a.id or "b")] = { scene = a.scene, text = tostring(a.text or ""), t0 = C.now(), ttl = num(a.ttl, 4),
-        sid = a.sid and tostring(a.sid) or nil, zid = zid, x = tonumber(a.x), y = tonumber(a.y), z = tonumber(a.z) }
+        sid = a.sid and tostring(a.sid) or nil, zid = tonumber(a.zid), oid = tonumber(a.oid),
+        x = tonumber(a.x), y = tonumber(a.y), z = tonumber(a.z) }
 end
 C.commands.bubbleRemove = function(a) SC.bubbles[tostring(a.id or "")] = nil end
 

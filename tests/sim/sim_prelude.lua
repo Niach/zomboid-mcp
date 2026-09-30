@@ -141,7 +141,7 @@ CharacterStat = { PAIN = 1, PANIC = 2, STRESS = 3, FATIGUE = 4, ENDURANCE = 5, H
 -- A square's has(flag) merges its objects' sprite flags like IsoGridSquare.RecalcProperties does.
 SIM.squares = {}
 SIM.itemSeq = 0
-local function jlist(t)
+function jlist(t)
     return { size = function() return #t end, get = function(_, i) return t[i + 1] end, items = t,
         indexOf = function(_, v) for i, x in ipairs(t) do if x == v then return i - 1 end end return -1 end }
 end
@@ -401,7 +401,6 @@ function ISUIElement:getAbsoluteY() return self.y end
 -- fake zombies from addZombiesInOutfit walk one tile per tick towards their path target
 SIM.zombies = {}
 SIM.zombieSpeed = 1
-SIM.tiles = {}        -- "x,y,z" -> list of tile objects
 SIM.lights = {}
 SIM.sounds = {}
 SIM.weather = {}
@@ -460,36 +459,9 @@ function SIM.tick(n, dt)
     for _ = 1, (n or 1) do oldTick(1, dt); SIM.stepZombies() end
 end
 
--- tile objects on squares
-IsoObject = { new = function(sq, sprite, name)
-    local o = { __class = "IsoObject", sprite = sprite, name = name }
-    o.getSprite = function() return { getName = function() return o.sprite end } end
-    o.getSpriteName = function() return o.sprite end
-    o.getName = function() return o.name end
-    o.getObjectName = function() return "IsoObject" end
-    o.getObjectIndex = function() return 0 end
-    return o
-end }
 local oldGetCell = getCell
 function getCell()
     local cell = oldGetCell()
-    local oldGS = cell.getGridSquare
-    cell.getGridSquare = function(_, x, y, z)
-        local sq = oldGS(_, x, y, z)
-        if not sq then return nil end
-        local key = x .. "," .. y .. "," .. z
-        SIM.tiles[key] = SIM.tiles[key] or {}
-        sq.getX = function() return x end
-        sq.getY = function() return y end
-        sq.getZ = function() return z end
-        sq.getObjects = function() return javaList(SIM.tiles[key]) end
-        sq.getFloor = function() for _, o in ipairs(SIM.tiles[key]) do if o.floor then return o end end return nil end
-        sq.transmitAddObjectToSquare = function(_, o) table.insert(SIM.tiles[key], o) end
-        sq.transmitRemoveItemFromSquare = function(_, o)
-            for i, v in ipairs(SIM.tiles[key]) do if v == o then table.remove(SIM.tiles[key], i); return end end
-        end
-        return sq
-    end
     cell.addLamppost = function(_, x, y, z, r, g, b, rad)
         local l = { x = x, y = y, z = z, r = r, g = g, b = b, radius = rad }
         SIM.lights[#SIM.lights + 1] = l

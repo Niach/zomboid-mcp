@@ -166,9 +166,23 @@ advance(1.5)
 check(any(l.endswith("arrived true") for l in logs("merchant_t")), "walkTo returned true when the puppet arrived")
 check(abs(zed["x"] - (PX + 0.5)) < 1.1 and zed["paths"] >= 1, "puppet pathed to the target")
 check(zed["said"][1] == "hello there", "actor:say used the engine Say line")
-check(lua("return ZMCPClient.scenes.info().bubbles") == 0, "single player: no duplicate bubble for a zombie without online id")
+check(lua("return ZMCPClient.scenes.info().bubbles") == 1, "the client draws the bubble itself (a zombie's Say line is invisible in single player)")
+check(lua("return ZMCPClient.scenes.bubbles.a1 and ZMCPClient.scenes.bubbles.a1.oid") == zed["id"], "the bubble follows the puppet by object id")
 r = tool("scene_stop", {"name": "merchant_t"})
 check(r["was_running"] is True and zed["removed"] is True, "scene_stop removed the puppet")
+
+# --- a tile that holds a player cannot be pathed to: walkTo aims at the neighbouring tile on the puppet's side
+lua("local sq = SIM.square(%d, %d, 0); sq.getMovingObjects = function() return jlist({ { __class = 'IsoPlayer' } }) end" % (PX + 4, PY))
+tool("scene_start", {"name": "walk_t", "code": """
+local m = spawnActor{x = %d, y = %d, outfit = 'Bandit', name = 'W'}
+local ok = m:walkTo(%d + 0.5, %d + 0.5, { dist = 0.2, timeout = 30 })
+log('walked', tostring(ok))
+""" % (PX + 8, PY, PX + 4, PY)})
+zed = lua("return SIM.zombies[#SIM.zombies]")
+check(zed["target"][1] == PX + 5.5 and zed["target"][2] == PY + 0.5, "walkTo pathed to the tile east of the player's tile (%s)" % zed["target"])
+advance(1.5)
+check(any(l.endswith("walked true") for l in logs("walk_t")), "walkTo returned true on the goal tile")
+tool("scene_stop", {"name": "walk_t"})
 check(events("scene_stopped")[-1]["data"]["name"] == "merchant_t", "scene_stopped event")
 
 # --- sprite actor: pixel texture, moveTo (path + speed), frames, fade, bubble, click
@@ -322,13 +336,13 @@ lua("""
 local sq = getCell():getGridSquare(%d, %d, 0)
 sq:transmitAddObjectToSquare(IsoObject.new(sq, 'graffiti_01_3'))       -- added after the snapshot
 local objs, wall = sq:getObjects(), nil
-for i = 0, objs:size() - 1 do if objs:get(i).sprite == 'walls_01_5' then wall = objs:get(i) end end
+for i = 0, objs:size() - 1 do if objs:get(i).spriteName == 'walls_01_5' then wall = objs:get(i) end end
 sq:transmitRemoveItemFromSquare(wall)
 """ % (PX + 2, PY + 2))
 tool("scene_start", {"name": "snap2", "code": "RESTORED = restoreArea('%s')" % snap_file})
 res = lua("return ZMCP.scenes.list.snap2.env.RESTORED")
-tiles = lua("return SIM.tiles['%d,%d,0']" % (PX + 2, PY + 2))
-sprites = sorted(o["sprite"] for o in tiles.values())
+tiles = lua("return SIM.square(%d, %d, 0).objects" % (PX + 2, PY + 2))
+sprites = sorted(o["spriteName"] for o in tiles.values())
 check(res["removed"] == 1 and res["added"] == 1 and sprites == ["floors_01_1", "walls_01_5"], "restoreArea removed the graffiti and rebuilt the wall (%s)" % sprites)
 
 # --- world helpers forward to the curated tools with the right argument names

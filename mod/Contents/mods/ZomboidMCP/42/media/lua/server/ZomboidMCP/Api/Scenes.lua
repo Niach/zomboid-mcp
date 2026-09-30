@@ -385,9 +385,10 @@ local function buildEnv(scene)
     E.dist = dist
     E.distTo = function(o, x, y) return dist(o:getX(), o:getY(), x, y) end
     E.random = function(a, b)
-        if a == nil then return math.random() end
-        if b == nil then return math.floor(math.random() * a) + 1 end
-        return a + math.random() * (b - a)
+        -- math.random is nil in the single-player Lua state; ZombRandFloat exists everywhere
+        if a == nil then return ZombRandFloat(0, 1) end
+        if b == nil then return math.floor(ZombRandFloat(0, 1) * a) + 1 end
+        return a + ZombRandFloat(0, 1) * (b - a)
     end
     E.loaded = function(x, y, z) return getCell():getGridSquare(math.floor(x), math.floor(y), math.floor(z or 0)) ~= nil end
     E.square = function(x, y, z) return Z.square(x, y, z) end
@@ -567,26 +568,54 @@ local function buildEnv(scene)
         function actor.say(_, text, ttl)
             pcall(function() zed:Say(tostring(text)) end)
             local px, py, pz = actor.pos()
-            send("bubble", { id = actor.id, zid = actor.onlineId(), x = px, y = py, z = pz, text = tostring(text), ttl = num(ttl, 4) })
+            -- the client draws the bubble: a zombie's own Say line is not drawn in single player, and the dedicated
+            -- server may not transmit it. zid (online id) finds the puppet on multiplayer clients, oid in single player.
+            send("bubble", { id = actor.id, zid = actor.onlineId(), oid = try(function() return zed:getID() end),
+                x = px, y = py, z = pz, text = tostring(text), ttl = num(ttl, 4) })
             return true
         end
-        -- walkTo(x, y, opts): pathToLocation and wait until within opts.dist (1 tile) or opts.timeout seconds
-        -- (default 5 + 2 s per tile). Re-paths every 3 s. Returns true when arrived.
+        -- A tile that holds a player cannot be pathed to (the zombie stays idle without an error), so the goal
+        -- becomes the neighbouring tile on the actor's side.
+        local function tileHoldsPlayer(tx, ty, tz)
+            local sq = getCell():getGridSquare(tx, ty, tz)
+            if not sq then return false end
+            local mo = sq:getMovingObjects()
+            for i = 0, mo:size() - 1 do if instanceof(mo:get(i), "IsoPlayer") then return true end end
+            return false
+        end
+        -- pathToLocation alone is not enough for a passive puppet: with a clear straight line the engine picks its
+        -- "walk straight" mode (bMoving without bPathfind), which a useless zombie never executes, so it stays idle.
+        -- Forcing bPathfind puts it into PathFindState, which walks the real path (verified in single player).
+        local function pathTo(gx, gy, gz)
+            zed:pathToLocation(gx, gy, gz)
+            pcall(function() zed:setVariable("bPathfind", true); zed:setMoving(false) end)
+        end
+        local function goalTile(cx, cy, tx, ty, tz)
+            local gx, gy = math.floor(tx), math.floor(ty)
+            if not try(function() return tileHoldsPlayer(gx, gy, tz) end) then return gx, gy end
+            local dx, dy = cx - tx, cy - ty
+            if math.abs(dx) >= math.abs(dy) then gx = gx + (dx >= 0 and 1 or -1) else gy = gy + (dy >= 0 and 1 or -1) end
+            return gx, gy
+        end
+        -- walkTo(x, y, opts): pathToLocation and wait until within opts.dist (1 tile) of the target, on the goal tile,
+        -- or opts.timeout seconds (default 5 + 2 s per tile). Re-paths every 3 s. Returns true when arrived.
         function actor.walkTo(_, tx, ty, opts)
             currentTask()
             opts = type(opts) == "table" and opts or { timeout = tonumber(opts) }
             local ax, ay, az = actor.pos()
             local reach, tz = num(opts.dist, 1), math.floor(az)
             local deadline = Z.now() + num(opts.timeout, 5 + 2 * dist(ax, ay, tx, ty))
-            local lastPath = -1e9
+            local lastPath, gx, gy = -1e9, nil, nil
             while true do
                 if not actor.alive() then return false, "dead" end
                 local cx, cy = actor.pos()
                 if dist(cx, cy, tx, ty) <= reach then return true end
+                if gx and math.floor(cx) == gx and math.floor(cy) == gy then return true end
                 if Z.now() >= deadline then return false, "timeout" end
                 if Z.now() - lastPath >= 3 then
                     lastPath = Z.now()
-                    pcall(function() zed:pathToLocation(math.floor(tx), math.floor(ty), tz) end)
+                    gx, gy = goalTile(cx, cy, tx, ty, tz)
+                    pcall(pathTo, gx, gy, tz)
                 end
                 yieldReq({ wake = Z.now() + 0.25 })
             end
@@ -598,8 +627,12 @@ local function buildEnv(scene)
             actor.followTask = taskHandle(newTask(scene, function()
                 while actor.alive() do
                     local ok = pcall(function()
-                        local d = dist(zed:getX(), zed:getY(), target:getX(), target:getY())
-                        if d > keep then zed:pathToLocationF(target:getX(), target:getY(), target:getZ()) end
+                        local cx, cy = zed:getX(), zed:getY()
+                        local d = dist(cx, cy, target:getX(), target:getY())
+                        if d > keep then
+                            local gx, gy = goalTile(cx, cy, target:getX(), target:getY(), math.floor(target:getZ()))
+                            pathTo(gx, gy, math.floor(target:getZ()))
+                        end
                     end)
                     if not ok then return end
                     yieldReq({ wake = Z.now() + 1 })
@@ -609,7 +642,7 @@ local function buildEnv(scene)
         end
         function actor.stop()
             if actor.followTask then actor.followTask.stop(); actor.followTask = nil end
-            pcall(function() local px, py, pz = actor.pos(); zed:pathToLocationF(px, py, pz) end)
+            pcall(function() local px, py, pz = actor.pos(); pathTo(math.floor(px), math.floor(py), math.floor(pz)) end)
         end
         -- onNear(r, fn, opts): trigger when a player is within r tiles of the actor
         function actor.onNear(_, r, fn, opts)
