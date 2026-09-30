@@ -99,5 +99,9 @@ textures, models, client scripts, world sprites. So:
 - `getOnlinePlayers()` works on the server; `getPlayerFromUsername` returned nil there: loop and compare usernames
   (`ZMCP.player(name)` does).
 - `OnPlayerUpdate` / `OnZombieUpdate` do not fire on the dedicated server.
-- `model_place` in multiplayer: the carrier item syncs, the model assignment (`setWorldStaticModel`) is unverified; the
-  moving-entity layer is pure client side and needs no world sync.
+- `transmitCompleteItemToClients()` ADDS the object on every client again (an `AddItemToMap` packet): calling it after
+  `sq:addFloor`, `transmitAddObjectToSquare` or `AddWorldInventoryItem` (which all send once already) duplicated
+  floors and carrier items on the clients (verified live 2026-09-30). Set everything before the object is added.
+- `model_place` in multiplayer: the carrier item is created with `instanceItem`, gets its model name, and only then goes
+  through `AddWorldInventoryItem(item, ...)`, so the one send carries the name; the moving-entity layer is pure client
+  side and needs no world sync.

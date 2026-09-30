@@ -99,6 +99,8 @@ end
 local function cleanup(scene, reason)
     if scene.cleaned then return end
     scene.cleaned = true
+    local wasCurrent = S.current
+    S.current = nil                          -- cleanup never yields: world calls below run directly
     for _, fn in ipairs(scene.onStop) do pcall(fn, reason) end
     for ev, fns in pairs(scene.handlers) do
         for _, fn in ipairs(fns) do if Events[ev] then pcall(Events[ev].Remove, fn) end end
@@ -115,6 +117,7 @@ local function cleanup(scene, reason)
     scene.lights = {}
     V.enqueue("sceneClear", { scene = scene.name })     -- bubbles, dialogs, anims, click/key watchers on the clients
     for _, task in ipairs(scene.tasks) do task.done = true end
+    S.current = wasCurrent
 end
 
 local function finish(scene, status, err)
@@ -152,9 +155,47 @@ local function nearestPlayer(x, y)
     return best, bestD
 end
 
+-- Engine calls that change the world (transmitAddObjectToSquare, removeFromWorld, playServerSound, ...) fire Lua
+-- events, and on the dedicated server Kahlua runs those handlers on the main coroutine; the next pcall on the
+-- scene's own coroutine then dies with "Internal Kahlua error - coroutine changed in pcall" (verified live
+-- 2026-09-30: placeTile from a scene killed it, spawnItem did not). So every SDK call that touches the world runs
+-- on the main coroutine: the task yields {call = fn, args}, the scheduler (a bridge tick hook) runs it and resumes
+-- the task with the result on the next tick. Outside a task (condition functions, event callbacks) it runs directly.
+local function pack(...) return { n = select("#", ...), ... } end
+local function onMain(fn, ...)
+    if not S.current then return fn(...) end
+    local ok, results = coroutine.yield({ call = fn, args = pack(...) })
+    if not ok then error(results[1], 0) end
+    return unpack(results, 1, results.n)
+end
+S.onMain = onMain
+-- try(fn, ...): like pcall(fn, ...) for functions that make world calls (a world call yields, and a yield cannot
+-- cross a pcall): runs fn on the main coroutine under pcall there; returns ok, ... without raising.
+local function tryMain(fn, ...)
+    if not S.current then return pcall(fn, ...) end
+    local ok, results = coroutine.yield({ call = fn, args = pack(...) })
+    if not ok then return false, results[1] end
+    return true, unpack(results, 1, results.n)
+end
+-- run a {call} request on the main coroutine: returns ok plus the packed results for the task's resume
+local function serveCall(req)
+    local args = req.args or { n = 0 }
+    local r = pack(pcall(req.call, unpack(args, 1, args.n or #args)))
+    local results = { n = r.n - 1 }
+    for i = 2, r.n do results[i - 1] = r[i] end
+    return r[1], results
+end
+-- the tools that change the world through engine calls with Lua events (the visual tools only enqueue client
+-- messages and run directly, so sprite motion and overlays keep their timing)
+local WORLD_TOOLS = { place_object = true, remove_object = true, build_structure = true, spawn_item = true, give_item = true,
+    spawn_zombies = true, kill_zombies_area = true, set_weather = true, set_time = true, model_place = true, model_remove = true, model_move = true, model_swap = true,
+    collision_place = true, collision_clear = true, spawn_vehicle = true, vehicle_fix = true, falling_items = true }
+S.WORLD_TOOLS = WORLD_TOOLS
+
 local function callTool(name, args)
     local t = Z.tools[name]
     if not t then error("tool '" .. name .. "' is not loaded on this server") end
+    if WORLD_TOOLS[name] then return onMain(t.fn, args) end
     return t.fn(args)
 end
 
@@ -419,20 +460,30 @@ local function buildEnv(scene)
     E.time = function(hour, day, month, year) return callTool("set_time", { hour = hour, day = day, month = month, year = year }) end
     E.lightning = function(x, y, opts)
         opts = opts or {}
-        getClimateManager():transmitServerTriggerLightning(math.floor(x), math.floor(y), opts.strike ~= false, opts.light ~= false, opts.rumble ~= false)
-        return true
+        return onMain(function()
+            getClimateManager():transmitServerTriggerLightning(math.floor(x), math.floor(y), opts.strike ~= false, opts.light ~= false, opts.rumble ~= false)
+            return true
+        end)
     end
     -- sound(name, x, y, z): a vanilla sound at a square (server-side, everyone in range hears it); without a
     -- position: a UI sound on every client (or opts.player's) through the client mod.
     E.sound = function(soundName, x, y, z, player)
         if x and y then
-            local sq = Z.square(x, y, z or 0)
-            playServerSound(tostring(soundName), sq)
-        else
-            V.enqueue("sound", { name = tostring(soundName) }, player)
+            return onMain(function()
+                local sq = Z.square(x, y, z or 0)
+                playServerSound(tostring(soundName), sq)
+                return true
+            end)
         end
+        V.enqueue("sound", { name = tostring(soundName) }, player)
         return true
     end
+    -- engine(fn, ...): run fn on the main coroutine (for world-changing engine calls a scene makes itself, such as
+    -- IsoObject.new + transmitAddObjectToSquare or sq:addFloor); the SDK's own world helpers already do this.
+    E.engine = onMain
+    -- try(fn, ...): pcall that is safe around world calls (a plain pcall around placeTile / spawnActor / tool(...)
+    -- fails, because those yield to the main coroutine and a yield inside pcall is not allowed). Returns ok, ...
+    E.try = tryMain
     E.message = function(text, mode, player, opts)
         opts = opts or {}
         return callTool("server_message", { text = tostring(text), mode = mode or "notify", player = player and userOf(player) or nil,
@@ -464,6 +515,12 @@ local function buildEnv(scene)
     end
     E.draw = function(args) args.id = args.id or nextId("scn_" .. name .. "_d"); return callTool("overlay_draw", args) end
     E.clearDraw = function(id) return callTool("clear_visuals", { what = "overlays", id = id }) end
+    -- redraw(x1, y1, x2, y2, z1?, z2?): every client marks the cached render chunks of the area dirty (after a big
+    -- batch of world changes the engine may keep drawing the old picture until something marks the chunk)
+    E.redraw = function(x1, y1, x2, y2, z1, z2)
+        V.enqueue("redraw", { x1 = math.floor(x1), y1 = math.floor(y1), x2 = math.floor(x2), y2 = math.floor(y2), z1 = math.floor(z1 or 0), z2 = math.floor(z2 or z1 or 0) })
+        return true
+    end
     -- light(x, y, z, r, g, b, radius): a light source on every client (IsoCell:addLamppost). Lights are render state
     -- and are NOT saved by the engine (IsoCell.lamppostPositions has no save/load path, verified in 42.21 bytecode),
     -- so the scene re-sends them to every client that joins while it runs; scene_stop removes them.
@@ -509,7 +566,8 @@ local function buildEnv(scene)
         log(scene, "snapshot " .. id .. " (" .. #squares .. " squares)")
         return id
     end
-    E.restoreArea = function(id)
+    E.restoreArea = function(id) return onMain(E.restoreAreaNow, id) end
+    E.restoreAreaNow = function(id)
         local text = Z.readFile(tostring(id))
         if not text then error("restoreArea: snapshot not found: " .. tostring(id)) end
         local snap = J.decode(text)
@@ -552,13 +610,16 @@ local function buildEnv(scene)
     E.spawnActor = function(o)
         if type(o) ~= "table" or o.x == nil or o.y == nil then error("spawnActor{x, y, outfit?, name?, passive?} needs x and y") end
         local x, y, z = math.floor(o.x), math.floor(o.y), math.floor(o.z or 0)
-        Z.square(x, y, z)
-        local list = addZombiesInOutfit(x, y, z, 1, o.outfit, o.female == true and 100 or (o.female == false and 0 or 50))
-        local zed = list and list:size() > 0 and list:get(0) or nil
-        if not zed then error("addZombiesInOutfit returned nothing at " .. x .. "," .. y) end
+        local zed = onMain(function()
+            Z.square(x, y, z)
+            local list = addZombiesInOutfit(x, y, z, 1, o.outfit, o.female == true and 100 or (o.female == false and 0 or 50))
+            local z1 = list and list:size() > 0 and list:get(0) or nil
+            if not z1 then error("addZombiesInOutfit returned nothing at " .. x .. "," .. y) end
+            if o.passive ~= false then pcall(function() z1:setUseless(true) end) end
+            if o.walk then pcall(function() z1:setWalkType(tostring(o.walk)) end) end
+            return z1
+        end)
         local actor = { kind = "zombie", zombie = zed, name = tostring(o.name or nextId("actor")), id = nextId("a"), scene = name }
-        if o.passive ~= false then pcall(function() zed:setUseless(true) end) end
-        if o.walk then pcall(function() zed:setWalkType(tostring(o.walk)) end) end
         scene.actors[actor.id] = actor
         function actor.pos() return zed:getX(), zed:getY(), zed:getZ() end
         function actor.alive() local ok, d = pcall(function() return zed:isDead() end); return ok and not d end
@@ -658,9 +719,11 @@ local function buildEnv(scene)
             actor.stop()
             scene.actors[actor.id] = nil
             send("bubbleRemove", { id = actor.id })
-            local ok = pcall(function() zed:removeFromWorld(); zed:removeFromSquare() end)
-            if not ok then pcall(function() zed:setAttackedBy(nil); zed:Kill(nil) end) end
-            return true
+            return onMain(function()
+                local ok = pcall(function() zed:removeFromWorld(); zed:removeFromSquare() end)
+                if not ok then pcall(function() zed:setAttackedBy(nil); zed:Kill(nil) end) end
+                return true
+            end)
         end
         log(scene, "actor " .. actor.name .. " spawned at " .. x .. "," .. y)
         return actor
@@ -789,6 +852,10 @@ local function ready(task, t)
     if task.fresh then return true end
     local req = task.req or {}
     if req.stop then return false end
+    if req.call then                         -- a world call the task handed to the main coroutine (onMain)
+        local ok, results = serveCall(req)
+        return true, ok, results
+    end
     if req.wake then return t >= req.wake end
     if req.cond then
         local ok, v = pcall(req.cond)
@@ -800,6 +867,21 @@ local function ready(task, t)
     return true                      -- plain tick() yield
 end
 
+-- resume a task and service the world calls it hands to the main coroutine (onMain) right away, so a chain of
+-- placeTile / spawnActor / tool calls costs no tick: the task yields {call}, the call runs here, the task resumes
+-- with the result, up to MAX_CALLS times per resume (a runaway loop still yields the tick after that).
+S.MAX_CALLS = 200
+local function drive(scene, task, a, b)
+    local ok, res = resumeTask(scene, task, a, b)
+    local served = 0
+    while ok and not task.done and not scene.stopRequested and type(res) == "table" and res.call and served < S.MAX_CALLS do
+        served = served + 1
+        local cok, results = serveCall(res)
+        ok, res = resumeTask(scene, task, cok, results)
+    end
+    return ok, res
+end
+
 local function runScene(scene, t, deadline)
     if scene.status ~= "running" then return end
     local i = 1
@@ -809,7 +891,7 @@ local function runScene(scene, t, deadline)
         if not task.done then
             local go, a, b = ready(task, t)
             if go then
-                local ok, res = resumeTask(scene, task, a, b)
+                local ok, res = drive(scene, task, a, b)
                 scene.stats.steps = scene.stats.steps + 1
                 if not ok then
                     if task == scene.main then finish(scene, "error", res); return end
@@ -890,7 +972,7 @@ function S.start(name, code, opts)
     S.list[name] = scene
     Z.event("scene_start", { name = name, persistent = scene.persistent, restored = scene.restored })
     -- first step right away so compile-time and immediate errors come back with the tool result
-    local ok, res = resumeTask(scene, scene.main)
+    local ok, res = drive(scene, scene.main)
     if not ok then finish(scene, "error", res); return scene, res end
     if scene.stopRequested then finish(scene, "stopped", scene.stopRequested) end
     return scene

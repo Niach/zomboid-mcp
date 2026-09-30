@@ -10,7 +10,7 @@
 -- so the same stream reaches a fresh client after one (tests/sim/test_sim.py "restart").
 --
 -- Tools: run_lua_client, client_results, capture_input, texture_upload, texture_pixel, model_upload, model_place,
---        model_remove, world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
+--        model_remove, model_move, model_swap, world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
 --        plus the client side of script_install/list/remove (ZMCP.scriptSides.client).
 if isClient() then return end
 if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("Bridge.lua must be loaded before Api/Visuals.lua") end
@@ -153,7 +153,7 @@ function V.sendPlacement(pid, player)
     local p = store().placements[pid]
     if not p then return end
     V.enqueue("place", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model, name = p.name, gen = p.gen, item = p.item,
-        itemId = p.itemId, ox = p.ox, oy = p.oy, oz = p.oz, yrot = p.yrot }, player)
+        itemId = p.itemId, ox = p.ox, oy = p.oy, oz = p.oz, yrot = p.yrot, yaw = p.yaw }, player)
 end
 
 -- everything a (late-joining) client needs, in dependency order: textures, models, scripts, sprites, placements
@@ -215,6 +215,9 @@ V.onClientCommand = function(module, command, player, args)
     local user = userOf(player)
     if command == "hello" then
         V.clients[user] = { version = args.version, t = Z.now(), textures = {} }
+        -- the ack the client waits for (it repeats hello every 5 s until one arrives). Sent at once, not queued: behind
+        -- a queue backlog (model files for another player) it would come late and every retry would re-send it all
+        pcall(Z.toClients, "welcome", { version = Z.version }, player)
         local n = V.sendAllTo(player)
         Z.event("client_hello", { user = user, version = args.version, sent = n })
     elseif command == "execResult" then
@@ -293,7 +296,7 @@ end
 
 -- re-apply one placement on its (loaded) square; returns "ok" | "restored" | "missing"
 function V.reapply(sq, pid, p)
-    local wo, item = V.findCarrier(sq, p)
+    local _, item = V.findCarrier(sq, p)
     if not item then
         if not p.missing then p.missing = true; Z.event("model_place_missing", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model }) end
         return "missing"
@@ -303,7 +306,9 @@ function V.reapply(sq, pid, p)
     if current == p.name then return "ok" end
     item:setWorldStaticModel(p.name)
     if p.yrot then pcall(function() item:setWorldYRotation(p.yrot) end) end
-    if isServer() then pcall(function() wo:transmitCompleteItemToClients() end) end
+    -- no transmitCompleteItemToClients here: it would ADD a second carrier on every client. A client that has this
+    -- square gets the name from its own LoadGridsquare / "place" re-apply (ClientModels.lua, by item id); a client
+    -- that loads the chunk later receives the server's (now fixed) copy.
     p.restored = (p.restored or 0) + 1
     Z.event("model_place_restored", { pid = pid, x = p.x, y = p.y, z = p.z, model = p.model, was = current })
     return "restored"
@@ -446,7 +451,7 @@ local function collideKind(v)
     return string.lower(tostring(v))
 end
 
-Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier world item on the square and sets its world model (server side, saved with the world item, re-applied on every square load and re-sent to late joiners). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets, default 0.5,0.5,0), yrot? (degrees), collide? (true = an invisible solid blocker on the square, or a collision_place kind), pid? (placement id)}. Returns {pid, placed, ...}; model_remove {pid} takes it away again.", function(a)
+Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier world item on the square and sets its world model (server side, saved with the world item, re-applied on every square load and re-sent to late joiners). args: {id (model id), x, y, z?, item? (carrier, default Base.TirePiece), ox?, oy?, oz? (offsets inside the square, default 0.5,0.5,0; oz in z levels), yaw? (degrees about the vertical axis = the item's worldZRotation; without it the engine picks a random yaw), yrot? (degrees; worldYRotation ROLLS a Y-up model), collide? (true = an invisible solid blocker on the square, or a collision_place kind), pid? (placement id)}. Returns {pid, placed, ...}; model_remove {pid} takes it away again.", function(a)
     local id = checkId(a.id, "id")
     local s = store()
     local m = s.models[id]
@@ -460,19 +465,29 @@ Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier wo
     local sq = Z.square(x, y, z)
     local carrier = tostring(a.item or "Base.TirePiece")
     local ox, oy, oz = num(a.ox, 0.5), num(a.oy, 0.5), num(a.oz, 0)
-    local item = sq:AddWorldInventoryItem(carrier, ox, oy, oz)
-    if not item then error("AddWorldInventoryItem returned nil") end
+    -- the model name goes into the item's ModData BEFORE the item is put down: AddWorldInventoryItem(item, ...) sends
+    -- the new world item to the clients exactly once (IsoWorldInventoryObject.transmitCompleteItemToClients, an
+    -- AddItemToMap packet, 42.21 bytecode) and that copy carries the name. Never re-send it afterwards: every
+    -- transmitCompleteItemToClients ADDS another copy on the clients (verified live 2026-09-30: 29 carriers on the
+    -- server, 58 on the client, half of them flat tire sprites).
     local name = "zmcp_" .. id .. "_" .. m.gen
+    local item = instanceItem(carrier)
+    if not item then error("unknown carrier item type: " .. carrier) end
     item:setWorldStaticModel(name)
+    -- the yaw (worldZRotation) survives the IsoWorldInventoryObject constructor (it only randomizes a negative one),
+    -- so it rides along in the one send too
+    local yaw = tonumber(a.yaw)
+    if yaw then yaw = yaw % 360; item:setWorldZRotation(yaw) end
+    item = sq:AddWorldInventoryItem(item, ox, oy, oz)
+    if not item then error("AddWorldInventoryItem returned nil") end
+    -- the IsoWorldInventoryObject constructor zeroes the X/Y rotation, so yrot can only be set now; clients get it
+    -- from the "place" record (ClientModels.applyPlacement) and from the chunk save later
     local yrot = tonumber(a.yrot)
     if yrot then pcall(function() item:setWorldYRotation(yrot) end) end
-    -- MP: AddWorldInventoryItem already sent the carrier to the clients, before the model name went into its
-    -- ModData; resend the whole object so their copy carries it too (no-op in single player)
-    if isServer() then pcall(function() local wo = item:getWorldItem(); if wo then wo:transmitCompleteItemToClients() end end) end
     local pid = a.pid and checkId(tostring(a.pid), "pid") or nextId("p")
     local rec = { x = math.floor(x), y = math.floor(y), z = z, model = id, name = name, gen = m.gen, item = carrier,
         itemId = (pcall(function() return item:getID() end) and item:getID()) or nil,
-        ox = ox, oy = oy, oz = oz, yrot = yrot, placed = Z.now() }
+        ox = ox, oy = oy, oz = oz, yrot = yrot, yaw = yaw, placed = Z.now() }
     if collide then
         local ok, err = pcall(Z.collision.placeOne, rec.x, rec.y, rec.z, collide, "model:" .. pid)
         if ok then rec.collide = collide else rec.collideError = tostring(err) end
@@ -481,7 +496,7 @@ Z.tool("model_place", "Place a STATIC 3D model in the world: spawns a carrier wo
     V.pindex = nil
     V.sendPlacement(pid)
     Z.event("model_place", { pid = pid, id = id, x = rec.x, y = rec.y, z = rec.z, collide = rec.collide })
-    return { pid = pid, placed = name, x = rec.x, y = rec.y, z = rec.z, item = carrier, itemId = rec.itemId,
+    return { pid = pid, placed = name, x = rec.x, y = rec.y, z = rec.z, item = carrier, itemId = rec.itemId, yaw = yaw,
         collide = rec.collide, collideError = rec.collideError }
 end)
 
@@ -526,6 +541,79 @@ Z.tool("model_remove", "Remove a placed static model (model_place): the carrier 
     if flag(a.all) then V.enqueue("placeRemove", {}) end
     Z.event("model_remove", { pids = arr(targets), removed = res.removed, unloaded = res.unloaded })
     return res
+end)
+
+V.LEVEL_UNITS = 1.65     -- one z level in model units on a world item (measured live 2026-09-30, ENGINE_NOTES)
+
+local function placementOf(a)
+    local pid = a.pid and checkId(tostring(a.pid), "pid") or error("args.pid required")
+    local p = store().placements[pid]
+    if not p then error("unknown placement: " .. pid .. " (see visuals_list)") end
+    return pid, p
+end
+
+-- where a placement's model is (world x, y, fractional z level) at time t, following a running model_move
+function V.poseOf(p, t)
+    local ox, oy, oz = num(p.ox, 0.5), num(p.oy, 0.5), num(p.oz, 0)
+    local tw = p.tween
+    t = t or Z.now()
+    if tw and tw.dur > 0 and t < tw.t0 + tw.dur then
+        local f = math.max(0, (t - tw.t0) / tw.dur)
+        if tw.ease then f = f * f * (3 - 2 * f) end
+        ox, oy, oz = tw.ox + (ox - tw.ox) * f, tw.oy + (oy - tw.oy) * f, tw.oz + (oz - tw.oz) * f
+        return p.x + ox, p.y + oy, p.z + oz, true
+    end
+    return p.x + ox, p.y + oy, p.z + oz, false
+end
+
+Z.tool("model_move", "Move / turn a placed model (model_place) smoothly, anchored in the world: every client glides the carrier world item to the new pose (offsets from its home square, so it stays depth-sorted, lit and saved like any world item); the server sets the final pose at once (chunk save, late joiners). args: {pid, x?, y? (world tiles, fractional), z? (world level, fractional: 1.05 = just above the first floor), h? (extra height in model units, 1.65 per level), yaw? (degrees about the vertical axis), duration? (s, default 0 = jump), ease? (smooth start/stop)}. Keep the target within the home square's 8x8 chunk (the carrier is drawn into that chunk's texture). Returns {pid, x, y, z, ox, oy, oz, yaw, duration}.", function(a)
+    local pid, p = placementOf(a)
+    local wx, wy = tonumber(a.x), tonumber(a.y)
+    local ox = wx and (wx - p.x) or num(a.ox, num(p.ox, 0.5))
+    local oy = wy and (wy - p.y) or num(a.oy, num(p.oy, 0.5))
+    local oz = num(p.oz, 0)
+    if a.z ~= nil or a.h ~= nil then oz = (num(a.z, p.z) - p.z) + num(a.h, 0) / V.LEVEL_UNITS
+    elseif a.oz ~= nil then oz = num(a.oz, oz) end
+    local yaw = tonumber(a.yaw)
+    if yaw then yaw = yaw % 360 end
+    local dur = math.max(0, num(a.duration, 0))
+    local cx, cy = math.floor(p.x / 8), math.floor(p.y / 8)
+    local warning
+    if math.floor((p.x + ox) / 8) ~= cx or math.floor((p.y + oy) / 8) ~= cy then
+        warning = "the target leaves the home square's 8x8 chunk: the model may be clipped or culled there"
+    end
+    -- the server's own copy takes the final pose now (setOffX/Y/Z: no SyncIsoObject packet; the clients tween)
+    local sq = getCell():getGridSquare(p.x, p.y, p.z)
+    local wo, item
+    if sq then wo, item = V.findCarrier(sq, p) end
+    if wo then
+        pcall(function() wo:setOffX(ox); wo:setOffY(oy); wo:setOffZ(oz) end)
+        if yaw then pcall(function() item:setWorldZRotation(yaw) end) end
+    end
+    local fx, fy, fz = V.poseOf(p)
+    p.tween = dur > 0 and { ox = fx - p.x, oy = fy - p.y, oz = fz - p.z, t0 = Z.now(), dur = dur, ease = flag(a.ease) } or nil
+    p.ox, p.oy, p.oz = ox, oy, oz
+    if yaw then p.yaw = yaw end
+    V.enqueue("placeMove", { pid = pid, ox = ox, oy = oy, oz = oz, yaw = yaw, dur = dur, ease = flag(a.ease) })
+    Z.event("model_move", { pid = pid, ox = ox, oy = oy, oz = oz, yaw = yaw, duration = dur, loaded = wo ~= nil })
+    return { pid = pid, x = p.x + ox, y = p.y + oy, z = p.z + oz, ox = ox, oy = oy, oz = oz, yaw = p.yaw, duration = dur,
+        loaded = wo ~= nil, warning = warning }
+end)
+
+Z.tool("model_swap", "Show another uploaded model on a placed model's carrier (model_place), e.g. a figure raising its staff: the same world item (same id, pose and square) gets the new world model on the server (saved in its ModData) and on every client. No carrier is re-sent, so nothing is duplicated. args: {pid, id (model id)}. Returns {pid, model, name}.", function(a)
+    local pid, p = placementOf(a)
+    local id = checkId(a.id, "id")
+    local m = store().models[id]
+    if not m then error("unknown model: " .. id .. " (model_upload first)") end
+    local name = "zmcp_" .. id .. "_" .. m.gen
+    local sq = getCell():getGridSquare(p.x, p.y, p.z)
+    local item
+    if sq then _, item = V.findCarrier(sq, p) end
+    if item then item:setWorldStaticModel(name) end
+    p.model, p.name, p.gen = id, name, m.gen
+    V.sendPlacement(pid)             -- the client re-applies the name to the same carrier (by item id)
+    Z.event("model_swap", { pid = pid, model = id, loaded = item ~= nil })
+    return { pid = pid, model = id, name = name, loaded = item ~= nil }
 end)
 
 ---------------------------------------------------------------- tools: world sprites
@@ -653,7 +741,9 @@ Z.tool("visuals_list", "Everything the visual subsystem knows: textures [{id, ge
     local s = store()
     local textures, models, sprites, placements = {}, {}, {}, {}
     for pid, p in pairs(s.placements) do
+        local wx, wy, wz, moving = V.poseOf(p)
         placements[#placements + 1] = { pid = pid, model = p.model, name = p.name, gen = p.gen, x = p.x, y = p.y, z = p.z, item = p.item,
+            yaw = p.yaw, wx = wx, wy = wy, wz = wz, moving = moving,
             itemId = p.itemId, ox = p.ox, oy = p.oy, oz = p.oz, yrot = p.yrot, collide = p.collide, collideError = p.collideError,
             missing = p.missing, restored = p.restored, placed = p.placed }
     end

@@ -45,9 +45,7 @@ local function checkKind(kind, allowRemove)
 end
 K.checkKind = checkKind
 
-local function spriteNameOf(o)
-    return U.try(function() return o:getSprite() and o:getSprite():getName() end) or U.try(function() return o:getSpriteName() end)
-end
+local function spriteNameOf(o) return U.spriteName(o) end
 
 -- the blockers on a loaded square: [{obj, kind, index}]
 function K.blockersOn(sq)

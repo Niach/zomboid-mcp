@@ -1,5 +1,13 @@
 # Zomboid MCP protocol
 
+The MCP process never opens a network port into the game: it talks to the server-side bridge (`Bridge.lua`) through
+numbered JSON files in the game's Lua cache directory, one request file per tool call answered on the next server
+tick, plus a heartbeat file and an append-only event log (part 1). The bridge in turn talks to the client mod of
+every player through `sendServerCommand("zmcp", ...)` messages of about 3 kB, chunking code, textures and models,
+and the clients answer with `sendClientCommand` (part 2). Related: the tool catalogue in [TOOLS.md](TOOLS.md), the
+engine facts in [ENGINE_NOTES.md](ENGINE_NOTES.md), the scene SDK in [SCENES.md](SCENES.md), deployment in
+[DEPLOY.md](DEPLOY.md).
+
 Part 1: MCP ⇄ server (files in the Lua cache dir). Part 2: server ⇄ client mod (`sendServerCommand`).
 
 # Part 1: MCP ⇄ server bridge
@@ -250,7 +258,7 @@ Workshop mod runs the client.
 
 | command | args | when |
 |---|---|---|
-| `hello` | `{version}` | `OnGameStart`. The server answers with every registered texture, model, client script, world sprite, model placement and moving 3D entity, in that order (late join / reconnect / after a server restart). Event `client_hello` (with the counts). |
+| `hello` | `{version}` | `OnGameStart`, then again every 5 s from `OnTick` (at most 24 times) until the server's `welcome` arrives (a reconnect's first hello reaches the server before the player object exists and is dropped, verified 2026-09-30). The server answers `welcome {version}` and then every registered texture, model, client script, world sprite, model placement and moving 3D entity, in that order (late join / reconnect / after a server restart). Event `client_hello` (with the counts). |
 | `execResult` | `{id, ok, res, ms, module?}` | after every `exec` chunk set ran (`res` = the return value, tables JSON-encoded, or the error; ≤ 4000 chars). Event `client_exec_result`; `client_results {id}` shows `{to, results, pending, done}` and the MCP's `run_lua_client` waits for it. |
 | `texResult` | `{id, gen, ok, w?, h?, bytes?, err?}` | after a texture was written and loaded (or failed). Event `client_texture`. |
 | `fileResult` | `{id, gen, path, ok, bytes?, err?}` | after a `file` push was written. Event `client_file`. |
@@ -268,11 +276,12 @@ Workshop mod runs the client.
 
 | command | args | effect |
 |---|---|---|
+| `welcome` | `{version}` | the reply to `hello`, sent at once (not through the visuals queue); the client stops repeating its hello. |
 | `exec` | `{id, part, total, code, module?}` | chunked Lua. When all parts are in: `loadstring`, `pcall`, reply `execResult`. With `module` (= a client script name), the source is kept in `ZMCPClient.modules[name]`. |
 | `scriptRemove` | `{name}` | forget a client script and drop every hook registered under `name` (`ZMCPClient.off(name)`). |
 | `file` | `{id, gen, part, total, data, path}` | base64 chunks of any file → `~/Zomboid/Lua/<path>` (parent dirs are created; `..` refused). Reply `fileResult`. |
 | `model` | `{id, gen, mesh, texture, scale}` | runtime 3D model: once both files (`mesh` = `media/….x`, `texture` = `media/….png`, relative to the Lua dir) are present, `ModelScript.new()` + `setModule(Base)` + `InitLoadPP` + `Load` + `addModelScript` under the name `zmcp_<id>_<gen>`; `ZMCPClient.models.name(id)` returns it. Reply `modelResult`. |
-| `place` | `{pid, x, y, z, model, name, gen, item, itemId, ox, oy, oz, yrot}` | a `model_place` placement (`ZMCPClient.models.placements`): if the square is loaded, the carrier world item (by `itemId`, else by `item` type) gets `setWorldStaticModel(name)` back when it lost it, and the chunk level is marked dirty (`invalidateRenderChunkLevel(16)`); repeated on `LoadGridsquare` and after the model registers. |
+| `place` | `{pid, x, y, z, model, name, gen, item, itemId, ox, oy, oz, yrot}` | a `model_place` placement (`ZMCPClient.models.placements`): if the square is loaded, the carrier world item (by `itemId`, else by `item` type) gets `setWorldStaticModel(name)` (and `yrot`) back when it lost it (normally the carrier already arrives with the name: `model_place` sets it before the item is added and sent), and the chunk level is marked dirty (`invalidateRenderChunkLevel(16)`); repeated on `LoadGridsquare` and after the model registers. |
 | `placeRemove` | `{pid?}` | forget one placement, or all. |
 | `e3d`, `e3dMove`, `e3dRotate`, `e3dRemove` | see the `e3d` section below | moving 3D entities on the transparent `UI3DScene` layer (`ZMCPClient.e3d`): create/replace, motion (path or tween), rotation/spin/roll, remove. Reply `e3dResult`. |
 | `capture` | `{on}` | screen apps: the overlay consumes mouse events and is brought to the top (`on`), or is released (click-through, `backMost`). |
@@ -288,6 +297,7 @@ Workshop mod runs the client.
 | `say` | `{text}` | speech bubble on the local player. |
 | `heal` | `{}` | client-authoritative: every body part `RestoreToFullHealth`, stiffness cleared, pain/panic/stress/fatigue/hunger/thirst reset, `sendPlayerStatsChange`. |
 | `cure` | `{}` | client-authoritative: zombie infection and wound infection cleared on every body part and on `BodyDamage`. |
+| `redraw` | `{x1, y1, x2, y2, z1?, z2?}` | every loaded square of the box gets `invalidateRenderChunkLevel(64+128+1024+4096+16)` (`FBORenderChunk` `DIRTY_OBJECT_ADD/REMOVE`, `REDRAW`, `TREES`, `ITEM_MODIFY`) so the cached chunk pictures are rebuilt after a big server-side change (scene SDK `redraw`). |
 | `teleport` | `{x, y, z?}` | `player:teleportTo` (position is client-authoritative in MP). |
 | `clear` | `{what?, id?}` | `all` (sprites, overlays, falling items, notices, every script hook, capture off), `sprites`, `overlays`, `falling`, `notices`, `textures` (forget loaded textures; files stay), `models`, `hooks` (one name with `id`, or all). |
 | `ping` | `{}` | reply `pong`. |

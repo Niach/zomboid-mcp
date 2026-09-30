@@ -34,8 +34,9 @@ radius 0.45, centred on the origin in the XY plane, Y-up) and a 64×64 orange PN
 ```lua
 -- server: place and later remove the carrier (what model_place does; removal = remove the TirePiece world item)
 local sq = ZMCP.square(6405, 5500, 0)
-local item = sq:AddWorldInventoryItem("Base.TirePiece", 0.5, 0.5, 0.6)
-item:setWorldStaticModel("zmcp_star_1")
+local item = instanceItem("Base.TirePiece")
+item:setWorldStaticModel("zmcp_star_1")               -- before AddWorldInventoryItem, so the one send to clients carries it
+item = sq:AddWorldInventoryItem(item, 0.5, 0.5, 0.6)
 item:setWorldYRotation(30)
 return { placed = item:getID() }
 ```

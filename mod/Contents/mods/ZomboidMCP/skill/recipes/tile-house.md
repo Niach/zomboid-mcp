@@ -18,11 +18,11 @@ persistent, visible to everyone (verified live: a wall ring built and cleared).
     {"x": 6422, "y": 5510, "sprite": "walls_exterior_wooden_01_1"}, {"x": 6423, "y": 5510, "sprite": "walls_exterior_wooden_01_1"},
     {"x": 6420, "y": 5514, "sprite": "walls_exterior_wooden_01_1"}, {"x": 6421, "y": 5514, "sprite": "walls_exterior_wooden_01_1"},
     {"x": 6422, "y": 5514, "sprite": "walls_exterior_wooden_01_1"}, {"x": 6423, "y": 5514, "sprite": "walls_exterior_wooden_01_1"},
-    {"x": 6421, "y": 5511, "sprite": "floors_interior_wood_01_0"}, {"x": 6422, "y": 5511, "sprite": "floors_interior_wood_01_0"},
-    {"x": 6423, "y": 5511, "sprite": "floors_interior_wood_01_0"}, {"x": 6421, "y": 5512, "sprite": "floors_interior_wood_01_0"},
-    {"x": 6422, "y": 5512, "sprite": "floors_interior_wood_01_0"}, {"x": 6423, "y": 5512, "sprite": "floors_interior_wood_01_0"},
-    {"x": 6421, "y": 5513, "sprite": "floors_interior_wood_01_0"}, {"x": 6422, "y": 5513, "sprite": "floors_interior_wood_01_0"},
-    {"x": 6423, "y": 5513, "sprite": "floors_interior_wood_01_0"}
+    {"x": 6421, "y": 5511, "sprite": "floors_interior_tilesandwood_01_40"}, {"x": 6422, "y": 5511, "sprite": "floors_interior_tilesandwood_01_40"},
+    {"x": 6423, "y": 5511, "sprite": "floors_interior_tilesandwood_01_40"}, {"x": 6421, "y": 5512, "sprite": "floors_interior_tilesandwood_01_40"},
+    {"x": 6422, "y": 5512, "sprite": "floors_interior_tilesandwood_01_40"}, {"x": 6423, "y": 5512, "sprite": "floors_interior_tilesandwood_01_40"},
+    {"x": 6421, "y": 5513, "sprite": "floors_interior_tilesandwood_01_40"}, {"x": 6422, "y": 5513, "sprite": "floors_interior_tilesandwood_01_40"},
+    {"x": 6423, "y": 5513, "sprite": "floors_interior_tilesandwood_01_40"}
   ]}},
   {"tool": "place_object", "args": {"x": 6422, "y": 5514, "z": 0, "sprite": "fixtures_doors_01_0", "name": "Front door (decorative)"}},
   {"tool": "remove_object", "args": {"x": 6420, "y": 5510, "z": 0, "sprite": "walls_exterior_wooden_01_0", "all": true}}
@@ -43,7 +43,7 @@ The loop that generates the plan and places it is in `guides/world-and-tiles.md`
 ```lua
 -- server: remove every object of the hut's sprites in the 5x5 area
 local cx, cy, z = 6420, 5510, 0
-local mine = { walls_exterior_wooden_01_0 = true, walls_exterior_wooden_01_1 = true, floors_interior_wood_01_0 = true }
+local mine = { walls_exterior_wooden_01_0 = true, walls_exterior_wooden_01_1 = true, floors_interior_tilesandwood_01_40 = true }
 local removed = 0
 for x = cx, cx + 4 do
     for y = cy, cy + 4 do

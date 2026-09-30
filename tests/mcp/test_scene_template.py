@@ -17,12 +17,12 @@ class TestSceneTemplate(unittest.TestCase):
     def test_list_and_fetch(self):
         listing = self.mcp.tool_scene_template({}, None)
         names = {t["name"] for t in listing["templates"]}
-        self.assertEqual(names, {"merchant", "supply_drop", "meteor_shower", "haunted_house", "companion", "flappy"})
+        self.assertEqual(names, {"merchant", "supply_drop", "meteor_shower", "haunted_house", "companion", "flappy", "flappy_phone", "you_shall_not_pass"})
         for name in sorted(names):
             r = self.mcp.tool_scene_template({"name": name}, None)
             self.assertEqual(r["name"], name)
             self.assertIn("kind", r)
-            self.assertEqual(r["tool"], "app_start" if name == "flappy" else "scene_start")
+            self.assertEqual(r["tool"], "app_start" if name.startswith("flappy") else "scene_start")
             self.assertGreater(len(r["code"]), 500, name)
             self.assertTrue(os.path.isfile(r["path"]))
         with self.assertRaises(zomboid_mcp.GameError):
@@ -38,7 +38,11 @@ class TestSceneTemplate(unittest.TestCase):
         for kind in ("scenes", "apps"):
             d = os.path.join(ROOT, "examples", kind)
             for fn in sorted(os.listdir(d)):
-                ok, err = check(open(os.path.join(d, fn)).read(), "=" + fn)
+                path = os.path.join(d, fn)
+                if os.path.isdir(path):
+                    path = os.path.join(path, "scene.lua")          # folder examples ship scene.lua + art + README
+                    self.assertTrue(os.path.isfile(path), path)
+                ok, err = check(open(path).read(), "=" + fn)
                 self.assertTrue(ok, "%s: %s" % (fn, err))
 
 

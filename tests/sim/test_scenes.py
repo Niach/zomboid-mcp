@@ -159,6 +159,7 @@ m:say('hello there')
 state.actor = m.name
 wait(60)
 """ % (PX + 8, PY, PX, PY, PX, PY)})
+advance(0.1)          # spawnActor is a world call: it runs on the main coroutine at the next tick
 zed = lua("return SIM.zombies[#SIM.zombies]")
 check(zed is not None and zed["useless"] is True and zed["outfit"] == "Bandit", "actor spawned passive with the outfit")
 check(zed["facing"][1] == PX, "actor:face called faceLocationF")
@@ -178,6 +179,7 @@ local m = spawnActor{x = %d, y = %d, outfit = 'Bandit', name = 'W'}
 local ok = m:walkTo(%d + 0.5, %d + 0.5, { dist = 0.2, timeout = 30 })
 log('walked', tostring(ok))
 """ % (PX + 8, PY, PX + 4, PY)})
+advance(0.1)          # spawnActor runs on the main coroutine at the next tick
 zed = lua("return SIM.zombies[#SIM.zombies]")
 check(zed["target"][1] == PX + 5.5 and zed["target"][2] == PY + 0.5, "walkTo pathed to the tile east of the player's tile (%s)" % zed["target"])
 advance(1.5)
@@ -340,6 +342,7 @@ for i = 0, objs:size() - 1 do if objs:get(i).spriteName == 'walls_01_5' then wal
 sq:transmitRemoveItemFromSquare(wall)
 """ % (PX + 2, PY + 2))
 tool("scene_start", {"name": "snap2", "code": "RESTORED = restoreArea('%s')" % snap_file})
+advance(0.1)          # restoreArea changes the world: it runs on the main coroutine at the next tick
 res = lua("return ZMCP.scenes.list.snap2.env.RESTORED")
 tiles = lua("return SIM.square(%d, %d, 0).objects" % (PX + 2, PY + 2))
 sprites = sorted(o["spriteName"] for o in tiles.values())
@@ -360,6 +363,7 @@ sound('UIActivateButton')
 message('hello all', 'notify')
 dropItemsFromSky('Base.Banana', 3, %d, %d, { radius = 1, duration = 0.1, fall = 0.3 })
 """ % ((PX, PY) * 7)})
+advance(1.5)          # every world call takes one scheduler tick (main coroutine)
 check(calls("spawn_item")[0]["args"]["item"] == "Base.Axe" and calls("spawn_item")[0]["args"]["count"] == 2, "spawnItem forwarded")
 check(calls("give_item")[0]["args"]["player"] == "niach" and calls("give_item")[0]["args"]["count"] == 3, "giveItem forwarded with the username")
 check(calls("place_object")[0]["args"]["sprite"] == "walls_01_5" and calls("place_object")[0]["args"]["name"] == "Wall", "placeTile forwarded")
@@ -471,7 +475,152 @@ check(any("crate" in l.lower() for l in logs("ex_supply_drop")) and len(calls("s
 for name in ("merchant", "supply_drop", "meteor_shower", "haunted_house", "companion"):
     tool("scene_stop", {"name": "ex_" + name})
 check(scene("ex_merchant") is None and len(g.SIM.zombies) >= 3 and all(z["removed"] or z["dead"] for z in g.SIM.zombies.values()), "stopping the examples removed every puppet")
+# --- the "You shall not pass" installation (examples/scenes/you_shall_not_pass): eight models, a hall with a lava
+# floor, a bridge one floor up with stairs and rails, the wizard and the demon, the cutscene, a restart, the teardown
+import base64
+ysnp = open(os.path.join(EXAMPLES, "scenes", "you_shall_not_pass", "scene.lua")).read()
+mesh_b64 = base64.b64encode(b"xof 0303txt 0032\nMesh { 3; 0;0;0;, 1;0;0;, 0;1;0;; }").decode()
+png_b64 = base64.b64encode(open(os.path.join(ROOT, "art", "snail.png"), "rb").read()).decode()
+YSNP_MODELS = ("ysnp_pier", "ysnp_pier_broken", "ysnp_rock", "ysnp_stalagmite", "ysnp_lava", "ysnp_demon", "ysnp_wizard", "ysnp_wizard_up")
+lua("for _, n in ipairs({'fixtures_stairs_01_8', 'fixtures_stairs_01_9', 'fixtures_stairs_01_10'}) do SIM.tile(n) end")
+lua("ZMCP.visuals.PER_TICK = 400")
+# the real object, collision and 3D-entity tools (the earlier sections mock the world tools)
+for f in ("shared/ZomboidMCP/CollisionSprites.lua", "server/ZomboidMCP/Api/Common.lua", "server/ZomboidMCP/Api/TileSheets.lua",
+          "server/ZomboidMCP/Api/Objects.lua", "server/ZomboidMCP/Api/Collision.lua", "server/ZomboidMCP/Api/Models.lua"):
+    load(f)
+r, err = try_tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": PX + 4, "y": PY - 8, "length": 12}})
+advance(0.5)
+s = scene("ysnp")
+check(err is None and s["status"] == "error" and "not uploaded" in s["error"], "the scene refuses to start without its models (%s)" % (err or s["error"]))
+check("scale = 0.55" in s["error"], "the error names the pier's upload scale (%s)" % s["error"])
+YSNP_SCALE = {"ysnp_pier": 0.55, "ysnp_pier_broken": 0.55, "ysnp_wizard": 0.6, "ysnp_wizard_up": 0.6, "ysnp_demon": 0.6}   # scene.lua SCALE: 3.0-unit piers meet the deck one level up
+for mid in YSNP_MODELS:
+    tool("model_upload", {"id": mid, "mesh_base64": mesh_b64, "png_base64": png_b64, "scale": YSNP_SCALE.get(mid, 1)})
+advance(1.0)
+X0, Y0 = PX + 4, PY - 8
+XE = X0 + 11
+# the arena (clear_radius 12 around the hall centre X0 + 5.5, Y0 + 0.5): a meadow square with grass, a tree, a fence
+# and an apple on the ground inside the radius (beyond the hall's own clear margin), one tree outside it
+lua("SIM.tile('blends_natural_01_0', 1048576 + 101)")
+def seed(x, y):
+    lua('''local sq = SIM.square(%d, %d, 0); sq:addFloor('floors_exterior_natural_01_0')
+        for _, n in ipairs({'e_americanholly_1_0', 'fencing_01_0', 'blends_grassoverlays_01_3'}) do sq:transmitAddObjectToSquare(IsoObject.new(sq, n), -1) end
+        sq:AddWorldInventoryItem('Base.Apple', 0.5, 0.5, 0)''' % (x, y))
+def sprites(x, y):
+    return sorted(o["spriteName"] for o in (lua("return SIM.square(%d, %d, 0).objects" % (x, y)) or {}).values())
+seed(X0 + 5, Y0 + 11)
+seed(X0 + 5, Y0 + 13)
+seed(X0 + 5, Y0 + 16)
+r = tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": X0, "y": Y0, "z": 0, "length": 12, "cooldown": 5, "clear_radius": 12}})
+check(r["status"] == "running", "you_shall_not_pass starts (%s)" % r["error"])
+advance(2.0)
+s = scene("ysnp")
+check(s is not None and s["status"] == "running" and s["state"]["built"] is True, "the hall is built on the first run (%s)" % (s and s["lastLog"]))
+if not (s and s["state"]["built"] is True): print("SCENE LOGS:", logs("ysnp"))
+check(not any("is uploaded at scale" in l for l in logs("ysnp")), "every model is uploaded at the scale the hall is laid out for")
+pl = tool("visuals_list")["placements"]
+pids = sorted(p["pid"] for p in pl.values() if p["pid"].startswith("ysnp_"))
+n_piers, n_lava, n_rock, n_stal = (len([p for p in pids if p.startswith(k)]) for k in ("ysnp_pier_", "ysnp_lava_", "ysnp_rock_", "ysnp_stal_"))
+check(n_piers == 10 and n_lava == 9 and n_rock >= 12 and n_stal == 5, "piers, lava slabs, rock pillars and stalagmites placed (%d %d %d %d)" % (n_piers, n_lava, n_rock, n_stal))
+check(all(p["collide"] == "solid" for p in pl.values() if p["pid"].startswith("ysnp_rock_")) and all(p["collide"] is None for p in pl.values() if p["pid"].startswith("ysnp_pier_")), "rocks block, piers do not (a fallen player walks out)")
+bl = [b for b in tool("collision_list")["blockers"].values() if str(b["name"] or "").startswith("ysnp:")]
+kinds = {b["kind"] for b in bl}
+check(len(bl) > 60 and kinds == {"wall_n", "wall_w"} and any(b["z"] == 1 for b in bl), "invisible cavern walls and deck rails placed (%d blockers, z levels %s)" % (len(bl), sorted({b["z"] for b in bl})))
+check(lua("return SIM.square(%d, %d, 1).floor ~= nil and SIM.square(%d, %d, 1).floor.spriteName == 'floors_exterior_tilesandstone_01_0' and (SIM.square(%d, %d, 1).floorDuplicates or 0) == 0" % ((X0 + 5, Y0) * 3)), "the deck is a real floor one level up (addFloor, which syncs itself: no second transmit that would duplicate it on clients)")
+check(lua("local n = 0 for _, sq in pairs(SIM.squares) do n = n + (sq.floorDuplicates or 0) end return n") == 0, "no floor of the scene was transmitted twice")
+check(lua("return SIM.square(%d, %d, 0).floor.spriteName == 'floors_burnt_01_0'" % (X0 - 2, Y0 + 3)), "the hall floor was replaced")
+check(sprites(X0 + 5, Y0 + 11) == ["blends_natural_01_0"] and lua("return #SIM.square(%d, %d, 0).worldObjects" % (X0 + 5, Y0 + 11)) == 1,
+      "the arena cleared the meadow square down to one sand floor and kept the item on the ground (%s)" % sprites(X0 + 5, Y0 + 11))
+check("e_americanholly_1_0" in sprites(X0 + 5, Y0 + 13) and "e_americanholly_1_0" in sprites(X0 + 5, Y0 + 16), "squares beyond clear_radius keep their trees")
+check(lua("return SIM.square(%d, %d, 0).floor.spriteName" % (X0 + 5, Y0 - 11)) == "blends_natural_01_0" and lua("return SIM.square(%d, %d, 0).floor.spriteName" % (X0 + 5, Y0)) == "floors_burnt_01_0",
+      "the arena is a disc of sand around the hall, the hall keeps its burnt floor")
+check(s["state"]["arena"] is True and s["state"]["arena_radius"] == 12 and any(l.startswith("built arena") or "built arena" in l for l in logs("ysnp")), "state.arena records the radius (%s)" % s["state"]["arena_radius"])
+stairs = [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (X0, Y0 + 3)).values()]
+check("fixtures_stairs_01_8" in stairs and "fixtures_stairs_01_10" in [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (XE, Y0 + 1)).values()], "stairs at both ends (bottom south, top next to the deck)")
+def figs():
+    return {p["pid"]: p for p in tool("visuals_list")["placements"].values() if p["pid"] in ("ysnp_wizard", "ysnp_demon")}
+f = figs()
+check(set(f) == {"ysnp_wizard", "ysnp_demon"} and f["ysnp_wizard"]["z"] == 1 and f["ysnp_demon"]["z"] == 0 and f["ysnp_demon"]["oz"] == 0
+      and f["ysnp_demon"]["wy"] == Y0 + 2.5 and f["ysnp_wizard"]["wx"] == X0 + 4.5,
+      "the figures are world-anchored placements: the wizard on the deck, the demon on the lava south of the bridge (%s)" % sorted(f))
+check(f["ysnp_wizard"]["yaw"] == 150 and f["ysnp_demon"]["yaw"] == 210, "the figures half-turn towards each other (yaw %s / %s)" % (f["ysnp_wizard"]["yaw"], f["ysnp_demon"]["yaw"]))
+check(len(tool("entity3d_list")) == 0, "no figure on the 3D overlay layer any more")
+fig_items = lua("local n = 0 for _, r in ipairs(SIM.spawned) do if r.model and r.model:find('ysnp_wizard') then n = n + 1 end end return n")
+check(s["lights"] >= 9, "lava glow and the wizard's light (%d lights)" % s["lights"])
+errs_before = len(events("scene_error"))
+# a player walks onto the bridge: the cutscene runs (demon rises, flies, falls, is removed, returns)
+lua("SIM.player.x, SIM.player.y, SIM.player.z = %d + 0.5, %d + 0.5, 1" % (X0 + 6, Y0))
+advance(1.5)
+check(any("cutscene #1" in l for l in logs("ysnp")), "stepping onto the deck triggers the cutscene")
+advance(3.0)
+f = figs()
+check(f["ysnp_demon"]["moving"] is True and 0 < f["ysnp_demon"]["wz"] < 1.05, "the demon is rising out of the lava (wz %.2f)" % f["ysnp_demon"]["wz"])
+advance(9.5)          # the staff strike comes 13 s into the cutscene; the trigger polls every 0.5 s
+f = figs()
+check(f["ysnp_demon"]["wz"] > 1 and abs(f["ysnp_demon"]["wx"] - (X0 + 4 + 3.5)) < 0.6 and f["ysnp_demon"]["x"] == XE - 2,
+      "the demon rose out of the lava and flew up to the wizard, its carrier still on its home square (wz %.2f, wx %.1f)" % (f["ysnp_demon"]["wz"], f["ysnp_demon"]["wx"]))
+check(f["ysnp_wizard"]["model"] == "ysnp_wizard_up", "the wizard raised the staff (model_swap on the same carrier)")
+check(lua("local n = 0 for _, r in ipairs(SIM.spawned) do if r.model and r.model:find('ysnp_wizard') then n = n + 1 end end return n") == fig_items,
+      "the staff swap did not spawn another carrier")
+advance(1.5)
+broken = [p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_") and "broken" in p["name"]]
+check(len(broken) >= 2, "the piers under the demon cracked (%d broken)" % len(broken))
+advance(8.0)
+f = figs()
+check("ysnp_demon" not in f and f["ysnp_wizard"]["model"] == "ysnp_wizard", "the demon fell and is gone, the staff is down")
+broken = [p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_") and "broken" in p["name"]]
+check(len(broken) == 0 and len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_pier_")]) == 10, "the piers are whole again")
+advance(14.0)
+f = figs()
+check("ysnp_demon" in f and f["ysnp_demon"]["oz"] == 0 and f["ysnp_demon"]["wy"] == Y0 + 2.5 and scene("ysnp")["state"]["runs"] == 1, "the demon waits in the deep again; one run counted")
+check(len(events("scene_error")) == errs_before, "no scene_error during the cutscene (%s)" % [e["data"] for e in events("scene_error")[errs_before:]])
+lua("SIM.player.x, SIM.player.y, SIM.player.z = %d, %d, 0" % (PX, PY))
+# a restart: the persistent scene comes back, nothing is rebuilt, lights and entities are re-created
+lights_before = len(g.SIM.lights)
+lua("ZMCP.scenes = nil; ZMCP.tickHooks.scenes = nil")
+load("server/ZomboidMCP/Bridge.lua")
+load("server/ZomboidMCP/Api/Visuals.lua")
+load("server/ZomboidMCP/Api/Scenes.lua")
+rt.execute("for _, name in ipairs({'spawn_item', 'give_item', 'set_weather', 'set_time', 'spawn_zombies', 'kill_zombies_area'}) do ZMCP.tool(name, 'mock', function(a) CALLS[#CALLS + 1] = { tool = name, args = a }; return { mock = name } end) end")
+advance(2.0)
+s = scene("ysnp")
+check(s is not None and s["status"] == "running" and s["restored"] is True and s["state"]["built"] is True, "the installation restarts with the bridge and keeps its built state")
+check(len(g.SIM.lights) >= lights_before + 9 and not any("built " in l for l in logs("ysnp")), "lights re-created, nothing rebuilt")
+check(len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_")]) == len(pids), "placements untouched by the restart")
+# a re-run with a bigger clear_radius only clears the new ring; the hall, its blockers and carriers stay
+n_blockers = len(tool("collision_list")["blockers"])
+tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": X0, "y": Y0, "z": 0, "length": 12, "cooldown": 5, "clear_radius": 14}})
+advance(2.0)
+s = scene("ysnp")
+ring = [l for l in logs("ysnp") if "built arena: radius 12..14" in l]
+check(s["status"] == "running" and s["state"]["arena_radius"] == 14 and len(ring) == 1 and sprites(X0 + 5, Y0 + 13) == ["blends_natural_01_0"] and "e_americanholly_1_0" in sprites(X0 + 5, Y0 + 16),
+      "a bigger clear_radius extends the arena by the new ring only (%s)" % ring)
+check(len(tool("collision_list")["blockers"]) == n_blockers and len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_")]) == len(pids) and not any("built hall_floor" in l for l in logs("ysnp")[-5:]),
+      "the extension kept every blocker and carrier and rebuilt nothing")
+# teardown on request: models, blockers, deck, stairs go; the snapshot restores the area
+tool("scene_signal", {"name": "ysnp", "signal": "teardown"})
+advance(1.0)
+check(scene("ysnp")["status"] == "stopped" and len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_")]) == 0, "teardown removed every placement and stopped the scene")
+check(len([b for b in tool("collision_list")["blockers"].values() if str(b["name"] or "").startswith("ysnp:")]) == 0, "teardown removed the invisible walls and rails")
+check(lua("return SIM.square(%d, %d, 1).floor == nil" % (X0 + 5, Y0)) and "fixtures_stairs_01_8" not in [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (X0, Y0 + 3)).values()], "teardown removed the deck and the stairs")
+check(lua("return ZMCP.scenes.store().persistent.ysnp == nil") or scene("ysnp")["status"] == "stopped", "a stopped installation does not restart")
+tool("scene_stop", {"name": "ysnp", "clear_state": True})
+for mid in YSNP_MODELS:
+    tool("clear_visuals", {"what": "models", "id": mid}) if False else None
+lua("ZMCP.visuals.PER_TICK = 12")
+
 flappy = open(os.path.join(EXAMPLES, "apps", "flappy.lua")).read()
+phone = open(os.path.join(EXAMPLES, "apps", "flappy_phone.lua")).read()
+tool("app_start", {"name": "flappy_phone", "code": phone})
+advance(0.4)
+check(lua("return ZMCPClient.apps.list.flappy_phone ~= nil and ZMCPClient.apps.list.flappy_phone.focus == true"), "flappy_phone app starts focused (%s)" % events("app_result")[-1]["data"].get("err"))
+lua("SIM.fire('OnKeyStartPressed', 57)")
+for _ in range(30):
+    g.SIM.now = g.SIM.now + 1 / 30.0
+    lua("SIM.fire('OnTick'); SIM.render()")
+check(lua("return ZMCPClient.apps.list.flappy_phone ~= nil") and len([d for d in lua("return SIM.render()").values() if d["kind"] == "rect"]) > 8, "flappy_phone draws the phone and the game and survives a second of play")
+tool("app_stop", {"name": "flappy_phone"})
+advance(0.2)
 tool("app_start", {"name": "flappy", "code": flappy})
 advance(0.4)          # the queue still holds the examples' removals (12 messages per tick)
 check(lua("return ZMCPClient.apps.list.flappy ~= nil and ZMCPClient.apps.list.flappy.focus == true"), "flappy app starts focused (%s)" % events("app_result")[-1]["data"].get("err"))
@@ -490,7 +639,7 @@ lua("SIM.fire('OnKeyStartPressed', 1)")
 check(lua("return ZMCPClient.apps.list.flappy == nil") and g.SIM.consume is False, "Esc leaves flappy")
 
 errs = [l for l in g.SIM.out.values() if ("error" in l.lower() or "failed" in l.lower()) and "bridge_loaded" not in l]
-expected = ("boom", "child", "at once", "draw boom", "compile error", "scene_error", "scenes_loaded", "not lua", "app broken stopped")
+expected = ("boom", "child", "at once", "draw boom", "compile error", "scene_error", "scenes_loaded", "not lua", "app broken stopped", "not uploaded")
 unexpected = [l for l in errs if not any(x in l for x in expected)]
 check(not unexpected, "no unexpected errors in the log: " + "; ".join(unexpected[:5]))
 

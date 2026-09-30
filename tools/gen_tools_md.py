@@ -24,7 +24,7 @@ GROUPS = [
     ("World", ["spawn_item", "spawn_vehicle", "vehicle_fix", "spawn_zombies", "kill_zombies_area", "place_object",
                "remove_object", "build_structure", "collision_place", "collision_list", "collision_clear",
                "set_weather", "set_time"]),
-    ("Visuals (client push)", ["texture_upload", "texture_pixel", "model_upload", "model_place", "model_remove", "world_sprite",
+    ("Visuals (client push)", ["texture_upload", "texture_pixel", "model_upload", "model_place", "model_remove", "model_move", "model_swap", "world_sprite",
                                "falling_items", "overlay_draw", "server_message", "capture_input", "visuals_list",
                                "clear_visuals"]),
     ("Moving 3D entities (client push)", ["entity3d_spawn", "entity3d_move", "entity3d_rotate", "entity3d_remove",
@@ -67,6 +67,12 @@ def render():
     if missing:
         raise SystemExit("gen_tools_md.py: add these tools to a group: %s" % missing)
     out = ["# MCP tools", "",
+           "Every tool the Zomboid MCP server exposes, with its arguments and where it runs, in the families below: "
+           "scripting (run Lua on the server or clients, persistent scripts), discovery (status, players, world queries, "
+           "the engine API index), players, world (items, vehicles, zombies, tiles, collision, weather and time), "
+           "visuals pushed to clients (textures, 3D models, sprites, overlays), moving 3D entities, scenes and screen "
+           "apps, and server admin. The table right below lists them all with one line each; the sections after it "
+           "give the full description and argument table of each tool.", "",
            "Generated from `mod/Contents/mods/ZomboidMCP/mcp/zmcp_catalog.py` by `tools/gen_tools_md.py` (`make docs`); "
            "do not edit by hand. The catalogue is the schema every tool is validated against, and "
            "`tests/mcp/test_catalog.py` checks it against the Lua tools (`ZMCP.tool(...)` in `Api/*.lua` and "

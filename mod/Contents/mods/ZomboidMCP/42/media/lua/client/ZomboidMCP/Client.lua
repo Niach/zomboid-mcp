@@ -42,7 +42,7 @@ require "ZomboidMCP/ClientApps"
 
 ZMCPClient = ZMCPClient or {}
 local C = ZMCPClient
-C.version = "0.3.0"          -- keep equal to ZMCP.version in Bridge.lua
+C.version = "0.3.1"          -- keep equal to ZMCP.version in Bridge.lua
 C.MODULE = "zmcp"
 C.commands = C.commands or {}        -- command -> function(args)
 C.renderHooks = C.renderHooks or {}  -- name -> function(overlay)   (pushed code draws here)
@@ -278,9 +278,24 @@ C.commands.cure = function()
     pcall(function() bd:setIsFakeInfected(false) end)
     pcall(function() bd:setInfectionTime(-1) end)
     pcall(function() bd:setInfectionMortalityDuration(-1) end)
-    pcall(function() bd:setInfectionLevel(0) end)
-    pcall(function() bd:setWetness(0) end)
+    -- (setInfectionLevel / setWetness do not exist in 42.21: a client running the Lua debugger with "Break On Error"
+    -- freezes on any error, even one a pcall catches, so only methods the API index lists are called here)
     C.log("cured")
+end
+
+-- redraw {x1, y1, x2, y2, z1?, z2?}: mark the cached render chunks of an area dirty (objects added/removed, trees,
+-- floors, items) after a big server-side change; the engine only redraws a chunk FBO when something marks it
+C.commands.redraw = function(a)
+    local cell = getCell()
+    local x1, y1, x2, y2 = math.floor(tonumber(a.x1) or 0), math.floor(tonumber(a.y1) or 0), math.floor(tonumber(a.x2) or 0), math.floor(tonumber(a.y2) or 0)
+    local z1, z2 = math.floor(tonumber(a.z1) or 0), math.floor(tonumber(a.z2) or tonumber(a.z1) or 0)
+    local flags = 64 + 128 + 1024 + 4096 + 16       -- FBORenderChunk DIRTY_OBJECT_ADD/REMOVE, REDRAW, TREES, ITEM_MODIFY
+    local n = 0
+    for x = x1, x2 do for y = y1, y2 do for z = z1, z2 do
+        local sq = cell:getGridSquare(x, y, z)
+        if sq then pcall(function() sq:invalidateRenderChunkLevel(flags) end); n = n + 1 end
+    end end end
+    C.log("redraw " .. n .. " squares")
 end
 
 C.commands.teleport = function(a)
@@ -308,19 +323,34 @@ function C.onCommand(command, args)
     end
 end
 
+-- hello: announce this client and ask for everything (textures, models, scripts, sprites, placements, entities,
+-- scene lights). OnGameStart fires it, but on a reconnect (and sometimes on the first join) that hello reaches the
+-- server before the player object exists and is dropped (verified 2026-09-30), so it is repeated every few seconds
+-- from OnTick until the server's "welcome" (sent straight back, outside the visuals queue) arrives. Capped at
+-- HELLO_MAX tries: every hello that does arrive makes the server re-send the whole state, so a server that never
+-- answers (older bridge without "welcome") must not get one every 5 s forever.
+C.HELLO_RETRY = 5
+C.HELLO_MAX = 24
+C.helloAcked = C.helloAcked or false
+C.lastHello = C.lastHello or 0
+C.helloTries = C.helloTries or 0
 function C.hello()
     C.ensureOverlay()
+    C.lastHello = C.now()
+    C.helloTries = C.helloTries + 1
     C.send("hello", { version = C.version })
 end
+C.commands.welcome = function(a) C.helloAcked = true end
 
 C.handlers.OnServerCommand = function(module, command, args)
     if module ~= C.MODULE then return end
     C.onCommand(command, args)
 end
-C.handlers.OnGameStart = function() C.hello() end
+C.handlers.OnGameStart = function() C.helloAcked = false; C.helloTries = 0; C.hello() end
 C.handlers.OnTick = function()
-    if C.isEmpty(C.tickHooks) then return end
     local t = C.now()
+    if not C.helloAcked and C.helloTries < C.HELLO_MAX and t - C.lastHello >= C.HELLO_RETRY and C.player() then C.hello() end
+    if C.isEmpty(C.tickHooks) then return end
     for name, fn in pairs(C.tickHooks) do
         local ok, err = pcall(fn, t)
         if not ok then C.tickHooks[name] = nil; C.log("tick hook '" .. tostring(name) .. "' removed: " .. tostring(err)) end

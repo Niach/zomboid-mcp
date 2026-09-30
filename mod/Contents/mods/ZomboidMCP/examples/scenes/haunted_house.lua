@@ -78,7 +78,7 @@ end, function(player)
     ghost:fade(0, 1.5)
     ghost:remove()
     -- the resident: a passive zombie who shuffles to the visitor, whispers and is gone
-    local ok, resident = pcall(spawnActor, { kind = "zombie", outfit = "Ghillie", x = x + 1, y = y + 1, z = z, name = "Resident", passive = true })
+    local ok, resident = try(spawnActor, { kind = "zombie", outfit = "Ghillie", x = x + 1, y = y + 1, z = z, name = "Resident", passive = true })
     if ok then
         resident:say("You are not welcome here.")
         resident:walkTo(player:getX(), player:getY(), { dist = 2, timeout = 12 })
@@ -93,7 +93,7 @@ end, { cooldown = cooldown, interval = 0.5 })
 -- teardown: scene_stop restores the area from the snapshot (lights and sprites are removed automatically)
 onStop(function(reason)
     if reason == "scene_stop" and state.snapshot then
-        local ok, res = pcall(restoreArea, state.snapshot)
+        local ok, res = try(restoreArea, state.snapshot)
         log("restore:", ok and (res.removed .. " removed, " .. res.added .. " added") or tostring(res))
         state.built = false
     end

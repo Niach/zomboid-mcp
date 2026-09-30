@@ -6,7 +6,8 @@ it arrives, drift a sprite across the map, ask a player a question and react to 
 tracked and removed by `scene_stop`. A **screen app** is a Lua chunk that runs on a player's client (`app_start`),
 draws on the overlay and reads keys and mouse: a flappy bird, a HUD mini-game, a menu.
 
-Examples: `examples/scenes/*.lua` and `examples/apps/flappy.lua` (shipped inside the mod at `mod/Contents/mods/ZomboidMCP/examples/`, the repo root `examples/` is a symlink to it), served by `scene_template {name}`. Tools:
+Examples: `examples/scenes/*.lua`, `examples/apps/flappy.lua` and `examples/apps/flappy_phone.lua` (the same game inside a
+phone frame with the world visible around it; shipped inside the mod at `mod/Contents/mods/ZomboidMCP/examples/`, the repo root `examples/` is a symlink to it), served by `scene_template {name}`. Tools:
 `scene_start`, `scene_stop`, `scene_list`, `scene_logs`, `scene_signal`, `scene_template`, `app_start`, `app_stop`,
 `app_list` (docs/TOOLS.md). Client commands: docs/PROTOCOL.md part 2, "Scenes and apps".
 
@@ -101,7 +102,10 @@ These forward to the curated tools with validated arguments; errors carry the to
 | `light(x, y, z, r, g, b, radius)` | a light on every client (`IsoCell:addLamppost`). Returns `{id, remove()}`. Lights are render state: **the engine does not save them** (verified in 42.21: `IsoCell.lamppostPositions` is only touched by add/remove/update/dispose, no save/load path), which is why a persistent scene re-creates them on every start and the scene re-sends them to every client that joins. `scene_stop` removes them. |
 | `texture(id)` / `texture(id, def)` | returns the id of an uploaded texture (`texture_upload`), erroring early when missing; with `def = {palette, rows}` registers pixel art (`texture_pixel`) so a scene can ship its own sprites without a PNG. `"item:Base.X"` and vanilla texture names pass through. |
 | `sprite(args)` / `draw(args)` / `clearDraw(id)` | raw `world_sprite` (owned by the scene) and `overlay_draw`. Prefer `spriteActor`. |
+| `redraw(x1, y1, x2, y2, z1?, z2?)` | every client marks the cached render chunks of the box dirty (client command `redraw`), after a big batch of world changes the chunk picture may otherwise lag (removed trees still drawn). |
 | `tool(name, args)` | call any registered tool (also `entity3d_*` from ZOM-11 when present: check `ZMCP.tools.entity3d_spawn` first). |
+| `engine(fn, ...)` | run `fn` on the main coroutine and return its results: for world-changing engine calls a scene makes itself (`IsoObject.new` + `transmitAddObjectToSquare`, `sq:addFloor`, `createNewGridSquare`...). The SDK's own world helpers already do this. |
+| `try(fn, ...)` | `pcall` that is safe around world calls (`local ok, actor = try(spawnActor, {...})`); a plain `pcall` around them fails (see "Writing a scene", errors). |
 
 ### Actors: zombie puppets
 
@@ -160,9 +164,15 @@ or a function). `ease.linear|inQuad|outQuad|inOutQuad|inCubic|outCubic|inOutCubi
    One-shot sequences (a supply drop) just run top to bottom and end.
 4. **Budget.** Everything that repeats goes through `every`/`ambient`/`trigger` with sensible periods (0.5 s and up).
    Use `near`/`ambient` so idle installations cost nothing when nobody is there. `scene_list` shows `stats.ms` and
-   `overBudget`.
-5. **Errors.** `pcall` engine calls you are not sure about (`local ok, r = pcall(spawnActor, {...})`), but never
-   `pcall` around `wait` (a yield inside `pcall` is not portable). Check `scene_logs` after starting.
+   `overBudget`. Big world edits (clearing or flooring thousands of squares) go in slices: one `engine(fn)` per
+   ~200 squares, then `tick()` (the YSNP arena, `examples/scenes/you_shall_not_pass/scene.lua`).
+5. **Errors.** Use `try(fn, ...)` (`local ok, r = try(spawnActor, {...})`) for calls that may fail, never a plain
+   `pcall` around `wait` or around a world call: `placeTile`, `spawnActor`, `tool(...)`, `sound`, `lightning`,
+   `restoreArea`, `actor:remove` and every other SDK call that changes the world hands the work to the main
+   coroutine (it yields like `wait`, but costs no tick), because on the dedicated server the Lua events such calls
+   fire leave a scene coroutine in a state where the next `pcall` dies with "coroutine changed in pcall" (verified
+   live 2026-09-30). `engine(function() ... end)` runs a block of your own engine calls the same way, so a `pcall`
+   inside it is fine. Check `scene_logs` after starting.
 6. **Cleanup and etiquette on a live server.** Players see everything immediately. Announce with `message`, keep
    puppets passive, keep sounds sparse, remove what you add (`onStop`, `restoreArea`), and stop test scenes when
    done (`scene_stop`). Hordes, killing, teleporting, changing a character: only when asked. Test in single player
@@ -199,7 +209,9 @@ Rules: a callback that throws stops the app and reports it (`app_result` event w
 still reach the game (Esc also opens the pause menu in single player, pick keys the game does not use). Movement is
 blocked with `IsoPlayer:setBlockMovement(true)` while a focused app runs and released on exit. Multiplayer: an app runs
 for one player or for all; shared state is optional through `app.send` + a scene's `onSignal("app:<name>")` +
-`scene_signal`/`server_message` back, or simply through `run_lua_client`. `examples/apps/flappy.lua` is the reference.
+`scene_signal`/`server_message` back, or simply through `run_lua_client`. `examples/apps/flappy.lua` is the reference;
+`examples/apps/flappy_phone.lua` draws the same game inside a phone frame (bezel, speaker slit) centred on the screen,
+clipping the game to the phone's screen by hand, so the world stays visible around it (the showcase capture).
 
 ## Offline testing
 

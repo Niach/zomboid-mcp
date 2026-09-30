@@ -89,10 +89,14 @@ SIM.items = { ["Base.Banana"] = { icon = "Banana" }, ["Base.Apple"] = { icon = "
 function getScriptManager()
     return { getItem = function(_, t) local it = SIM.items[t]; if it then return { getIcon = function() return it.icon end } end return nil end }
 end
+SIM.carrierTypes = { ["Base.TirePiece"] = true }
+-- instanceItem(type): a detached InventoryItem (nil for unknown types); sq:AddWorldInventoryItem(item, ...) puts it down
 function instanceItem(t)
     local it = SIM.items[t]
-    if not it then return nil end
-    return { getTex = function() return texture("Item_" .. it.icon, 32, 32) end }
+    if not it and not SIM.carrierTypes[t] then return nil end
+    local item = SIM.newItem(t)
+    item.getTex = function() if it then return texture("Item_" .. it.icon, 32, 32) end return nil end
+    return item
 end
 
 -- world
@@ -159,13 +163,17 @@ end
 local function newSprite(name, id)
     local sp = { name = name, id = id or -1, props = newProps() }
     sp.getName = function() return sp.name end
+    sp.setName = function(_, n) sp.name = n end
+    sp.getID = function() return sp.id end
     sp.getProperties = function() return sp.props end
     return sp
 end
 SIM.sprites = { named = {}, ints = {} }
 IsoSpriteManager = { instance = {} }
 local ISM = IsoSpriteManager.instance
--- getSprite(String) creates a blank sprite for unknown names (the engine does too); getSprite(int) does not
+-- getSprite(String) creates a blank sprite for unknown names (the engine does too); getSprite(int) does not.
+-- The sim treats an unknown name as a vanilla tile it does not list (named, id -1: IsoObject.new(sq, 'graffiti_01_3')
+-- in the tests). AddSprite, like the engine's, never sets IsoSprite.name: only the tile definitions (SIM.tile) do.
 function ISM:getSprite(key)
     if type(key) == "number" then return SIM.sprites.ints[key] end
     local sp = SIM.sprites.named[key]
@@ -175,16 +183,18 @@ end
 function ISM:AddSprite(name, id)
     local sp = SIM.sprites.named[name]
     if sp then return sp end
-    sp = newSprite(name, id)
+    sp = newSprite(nil, id)
     SIM.sprites.named[name] = sp
     if id then SIM.sprites.ints[id] = sp end
     return sp
 end
 function ISM:getNamedMap() return { containsKey = function(_, k) return SIM.sprites.named[k] ~= nil end } end
+-- a vanilla tile as IsoWorld.LoadTileDefinitions makes it: registered with an id AND named
+function SIM.tile(name, id) local sp = ISM:AddSprite(name, id); sp:setName(name); return sp end
 -- a couple of vanilla sprites the tests may place
-ISM:AddSprite("walls_exterior_wooden_01_2", 1048576 + 2):getProperties():set(IsoFlagType.WallN)
+SIM.tile("walls_exterior_wooden_01_2", 1048576 + 2):getProperties():set(IsoFlagType.WallN)
 ISM:AddSprite("walls_exterior_wooden_01_2"):getProperties():set(IsoFlagType.collideN)
-ISM:AddSprite("floors_exterior_natural_01_0", 1048576 + 100)
+SIM.tile("floors_exterior_natural_01_0", 1048576 + 100)
 IsoObject = { new = function(sq, spriteName, name)
     local o = { __class = "IsoObject", sq = sq, spriteName = spriteName, name = name, modData = {} }
     o.sprite = ISM:getSprite(spriteName)
@@ -198,18 +208,33 @@ IsoObject = { new = function(sq, spriteName, name)
     o.getSquare = function() return sq end
     return o
 end }
--- an object loaded from a save: the engine resolves the sprite by its numeric id
+-- the chunk save of one object (IsoObject.save -> WorldDictionary.getIdForSpriteName(spriteName)): a registered
+-- sprite (id >= 0, not 20000000) without a name throws the NullPointerException that aborts the whole chunk save
+-- (ServerChunkLoader$SaveChunkThread); returns what would be written (the id, or the name as a string)
+function SIM.saveObject(o)
+    local spn = o.getSpriteName and o.getSpriteName() or nil
+    if spn == nil then return -1 end
+    local sp = SIM.sprites.named[spn]
+    if sp and sp.id >= 0 and sp.id ~= 20000000 then
+        if sp.name == nil then error("NullPointerException: sprite.name is null (DictionaryData.getIdForSpriteName: " .. spn .. ")") end
+        if sp.name == spn then return sp.id end
+    end
+    return spn
+end
+function SIM.saveSquare(sq) local n = 0; for _, o in ipairs(sq.objects) do SIM.saveObject(o); n = n + 1 end return n end
+-- an object loaded from a save: the engine resolves the sprite by its numeric id and then by the sprite's NAME
+-- (DictionaryData.getSpriteNameFromID returns IsoSprite.name, null for a nameless sprite: the object loses it)
 function SIM.loadObject(sq, spriteId, name)
     local sp = ISM:getSprite(spriteId)
-    if not sp then return nil end
+    if not sp or sp.name == nil then return nil end
     local o = IsoObject.new(sq, sp.name, name)
     sq.objects[#sq.objects + 1] = o
     return o
 end
-function SIM.addWorldItem(sq, itemType, ox, oy, oz, id)
+-- a detached item (instanceItem); SIM.addWorldItem puts it on a square
+function SIM.newItem(itemType, id)
     SIM.itemSeq = SIM.itemSeq + 1
-    local rec = { item = itemType, x = sq.x, y = sq.y, z = sq.z, ox = ox, oy = oy, oz = oz, id = id or SIM.itemSeq, modData = {}, modelSets = 0, transmits = 0 }
-    SIM.spawned[#SIM.spawned + 1] = rec
+    local rec = { item = itemType, id = id or SIM.itemSeq, modData = {}, modelSets = 0, transmits = 0 }
     local item = { rec = rec, __class = "InventoryItem" }
     item.getID = function() return rec.id end
     item.getFullType = function() return rec.item end
@@ -220,11 +245,40 @@ function SIM.addWorldItem(sq, itemType, ox, oy, oz, id)
     item.setWorldStaticModel = function(_, n) rec.model = n; rec.modelSets = rec.modelSets + 1 end
     item.setWorldYRotation = function(_, r) rec.yrot = r end
     item.getWorldYRotation = function() return rec.yrot or 0 end
+    item.setWorldZRotation = function(_, r) rec.yaw = r; rec.yawSets = (rec.yawSets or 0) + 1 end
+    item.getWorldZRotation = function() return rec.yaw or -1 end
     item.getModData = function() return rec.modData end
+    return item
+end
+-- AddWorldInventoryItem(type or item, ox, oy, oz): the engine sends the new world item to the clients once
+-- (IsoWorldInventoryObject.transmitCompleteItemToClients = an AddItemToMap packet); rec.sentModel is the model name
+-- that send carried. A second transmitCompleteItemToClients adds ANOTHER copy on every client (rec.transmits counts
+-- those duplicates, verified live 2026-09-30). The IsoWorldInventoryObject constructor zeroes X/Y rotation and
+-- randomizes a negative Z rotation (the yaw); rec.sentYaw is the yaw that send carried.
+-- Offsets: setOffX/Y/Z only set the field (rec.ox/oy/oz); setOffset(x, y, z) would also sync (rec.offsetSyncs);
+-- invalidateRenderChunkLevel on the world object counts redraw requests (rec.redraws).
+function SIM.addWorldItem(sq, itemOrType, ox, oy, oz, id)
+    local item = type(itemOrType) == "table" and itemOrType or SIM.newItem(itemOrType, id)
+    local rec = item.rec
+    rec.x, rec.y, rec.z, rec.ox, rec.oy, rec.oz = sq.x, sq.y, sq.z, ox, oy, oz
+    rec.yrot = nil
+    if rec.yaw == nil or rec.yaw < 0 then rec.yaw = 123 end
+    rec.sentModel = rec.model
+    rec.sentYaw = rec.yaw
+    rec.redraws = 0
+    SIM.spawned[#SIM.spawned + 1] = rec
     local wo = { __class = "IsoWorldInventoryObject", item = item, rec = rec }
     wo.getItem = function() return item end
     wo.getSquare = function() return sq end
     wo.transmitCompleteItemToClients = function() rec.transmits = rec.transmits + 1 end
+    wo.getOffX = function() return rec.ox end
+    wo.getOffY = function() return rec.oy end
+    wo.getOffZ = function() return rec.oz end
+    wo.setOffX = function(_, v) rec.ox = v end
+    wo.setOffY = function(_, v) rec.oy = v end
+    wo.setOffZ = function(_, v) rec.oz = v end
+    wo.setOffset = function(_, x, y, z) rec.ox, rec.oy, rec.oz = x, y, z; rec.offsetSyncs = (rec.offsetSyncs or 0) + 1 end
+    wo.invalidateRenderChunkLevel = function(_, flags) rec.redraws = rec.redraws + 1; rec.lastDirty = flags end
     item.getWorldItem = function() return wo end
     rec.wo = wo
     sq.worldObjects[#sq.worldObjects + 1] = wo
@@ -244,15 +298,34 @@ function SIM.square(x, y, z)
     sq.getFloor = function() return sq.floor end
     sq.getMovingObjects = function() return jlist({}) end
     sq.getVehicleContainer = function() return nil end
-    sq.transmitAddObjectToSquare = function(_, o) sq.objects[#sq.objects + 1] = o; sq.recalcs = sq.recalcs + 1 end
+    -- transmitAddObjectToSquare(obj, index): -1 appends; 0 puts the object first (a floor sprite there becomes the floor)
+    sq.transmitAddObjectToSquare = function(_, o, index)
+        if index == 0 then table.insert(sq.objects, 1, o); if o.spriteName and o.spriteName:find("^floors_") then sq.floor = o end
+        else sq.objects[#sq.objects + 1] = o end
+        sq.recalcs = sq.recalcs + 1
+    end
     sq.transmitRemoveItemFromSquare = function(_, o)
+        if o == sq.floor then sq.floor = nil end
         for i, x in ipairs(sq.objects) do if x == o then table.remove(sq.objects, i); sq.recalcs = sq.recalcs + 1; return 1 end end
         for i, x in ipairs(sq.worldObjects) do if x == o then table.remove(sq.worldObjects, i); return 1 end end
         return 0
     end
     sq.RecalcAllWithNeighbours = function() sq.recalcs = sq.recalcs + 1 end
     sq.invalidateRenderChunkLevel = function(_, flags) sq.invalidated = sq.invalidated + 1; sq.lastDirty = flags end
-    sq.AddWorldInventoryItem = function(_, itemType, ox, oy, oz) return SIM.addWorldItem(sq, itemType, ox, oy, oz) end
+    sq.AddWorldInventoryItem = function(_, itemOrType, ox, oy, oz) return SIM.addWorldItem(sq, itemOrType, ox, oy, oz) end
+    -- addFloor(sprite): the vanilla floor builder (ISWoodenFloor): replaces the floor object, returns it, and sends
+    -- it to the clients itself; an extra transmitCompleteItemToClients would add a DUPLICATE floor on every client
+    -- (sq.floorDuplicates counts those, verified live 2026-09-30)
+    sq.addFloor = function(_, spriteName)
+        local o = IsoObject.new(sq, spriteName)
+        o.transmitCompleteItemToClients = function() sq.floorDuplicates = (sq.floorDuplicates or 0) + 1 end
+        if sq.floor then for i, x in ipairs(sq.objects) do if x == sq.floor then table.remove(sq.objects, i); break end end end
+        table.insert(sq.objects, 1, o)
+        sq.floor = o
+        sq.recalcs = sq.recalcs + 1
+        return o
+    end
+    sq.getChunk = function() return { invalidateRenderChunkLevels = function() end } end
     sq.has = function(_, f) for _, o in ipairs(sq.objects) do if o.sprite.props:has(f) then return true end end return false end
     sq.isSolid = function() return sq:has(IsoFlagType.solid) end
     sq.isSolidTrans = function() return sq:has(IsoFlagType.solidtrans) end
@@ -263,14 +336,18 @@ function SIM.loadSquare(x, y, z) local sq = SIM.square(x, y, z); SIM.fire("LoadG
 function getCell()
     return { getGridSquare = function(_, x, y, z)
             if math.abs(x - SIM.player.x) > 50 or math.abs(y - SIM.player.y) > 50 then return nil end
+            if z and z > 0 and not SIM.squares[math.floor(x) .. "," .. math.floor(y) .. "," .. math.floor(z)] then return nil end   -- upper levels exist only once created
             return SIM.square(x, y, z)
         end,
+        -- createNewGridSquare(x, y, z, connect): what vanilla building does for upper-floor squares that do not exist yet
+        createNewGridSquare = function(_, x, y, z) SIM.created = (SIM.created or 0) + 1; return SIM.square(x, y, z) end,
         getZombieList = function() return jlist({}) end, getVehicles = function() return jlist({}) end }
 end
 function getGameTime() return { getTimeOfDay = function() return 12 end, getDay = function() return 1 end, getMonth = function() return 6 end, getYear = function() return 1993 end } end
 function getCore() return { getZoom = function() return SIM.zoom or 1 end, getScreenWidth = function() return 1920 end, getScreenHeight = function() return 1080 end } end
-function isoToScreenX(pn, x, y, z) return (x - y) * 32 / (SIM.zoom or 1) + 960 end
-function isoToScreenY(pn, x, y, z) return ((x + y) * 16 - z * 96) / (SIM.zoom or 1) + 540 end
+-- IsoUtils.XToScreen is (x - y) * 32 * Core.tileScale (2 with the 2x textures of a 4K client), YToScreen likewise
+function isoToScreenX(pn, x, y, z) return (x - y) * 32 * (SIM.tileScale or 1) / (SIM.zoom or 1) + 960 end
+function isoToScreenY(pn, x, y, z) return ((x + y) * 16 - z * 96) * (SIM.tileScale or 1) / (SIM.zoom or 1) + 540 end
 UIFont = { Small = "Small", Medium = "Medium", Large = "Large", Title = "Title" }
 function getTextManager() return { MeasureStringX = function(_, f, s) return #s * 7 end, getFontHeight = function() return 16 end } end
 
@@ -386,12 +463,12 @@ end }
 SIM.vanillaModels = { RadioBlue_Ground = true }
 -- inverse of the isoToScreen mocks above (camera centred on world 0,0 at screen 960,540)
 function screenToIsoX(pn, u, v, z)
-    local zoom = SIM.zoom or 1
+    local zoom = (SIM.zoom or 1) / (SIM.tileScale or 1)
     local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
     return (A + B) / 2
 end
 function screenToIsoY(pn, u, v, z)
-    local zoom = SIM.zoom or 1
+    local zoom = (SIM.zoom or 1) / (SIM.tileScale or 1)
     local A, B = (u - 960) * zoom / 32, (v - 540) * zoom / 16 + z * 6
     return (B - A) / 2
 end

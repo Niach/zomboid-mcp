@@ -72,6 +72,12 @@ check(lua("return ZMCP.tools.texture_upload ~= nil and ZMCP.tools.world_sprite ~
 lua("SIM.fire('OnGameStart')")
 check(g.SIM.uiAdded == 1 and g.SIM.consume is False, "overlay created once, click-through")
 check(len(events("client_hello")) == 1, "hello reached the server")
+lua("SIM.tick(80)")
+check(lua("return ZMCPClient.helloAcked == true and ZMCPClient.helloTries == 1") and len(events("client_hello")) == 1, "the server's welcome stopped the hello retries (one hello in 8 s)")
+lua("ZMCPClient.helloAcked = false; ZMCPClient.helloTries = 0; ZMCPClient.lastHello = SIM.now; SAVED_WELCOME = ZMCPClient.commands.welcome; ZMCPClient.commands.welcome = function() end")
+lua("SIM.tick(1400)")
+check(lua("return ZMCPClient.helloTries") == 24 and len(events("client_hello")) == 25, "without a welcome the hello repeats every 5 s, capped at 24 tries")
+lua("ZMCPClient.commands.welcome = SAVED_WELCOME; ZMCPClient.helloAcked = true")
 
 # --- texture upload: chunks -> file -> texture -> texResult
 r = tool("texture_upload", {"id": "snail", "png_base64_file": "zmcp_tex_snail.b64.txt"})
@@ -151,7 +157,7 @@ r = tool("run_lua_client", {"code": code, "id": "e1"})
 check(r["chunks"] == 3, "exec split into 3 chunks")
 lua("SIM.tick(1)")
 res = tool("client_results", {"id": "e1"})
-check(res["results"]["niach"]["ok"] is True and res["results"]["niach"]["res"] == "hi 0.3.0" and res["done"] is True, "execResult came back with the return value, done=true")
+check(res["results"]["niach"]["ok"] is True and res["results"]["niach"]["res"] == "hi 0.3.1" and res["done"] is True, "execResult came back with the return value, done=true")
 r = tool("run_lua_client", {"code": "return {a = 1}", "id": "e0"})
 check(list(r["to"].values()) == ["niach"], "run_lua_client records recipients")
 check(tool("client_results", {"id": "e0"})["done"] is False and list(tool("client_results", {"id": "e0"})["pending"].values()) == ["niach"], "pending until the client answers")
@@ -220,6 +226,7 @@ check(events("client_model")[-1]["data"]["ok"] is True, "client reported modelRe
 r = tool("model_place", {"id": "star", "x": 6080, "y": 5385, "yrot": 45})
 star_rec = g.SIM.spawned[len(g.SIM.spawned)]
 check(r["placed"] == "zmcp_star_1" and star_rec["model"] == "zmcp_star_1" and star_rec["yrot"] == 45, "model_place spawned a carrier item with the world model")
+check(star_rec["sentModel"] == "zmcp_star_1" and star_rec["transmits"] == 0, "the carrier went to the clients once, already carrying the model name (no second transmit that duplicates it)")
 pid1 = r["pid"]
 check(pid1.startswith("p") and r["itemId"] == star_rec["id"] and r["collide"] is None, "model_place records the placement (pid, carrier item id)")
 vl = tool("visuals_list")
@@ -232,8 +239,10 @@ sq = lua("return SIM.square(6080, 5385, 0)")
 check(sq["invalidated"] >= 1 and sq["lastDirty"] == 16, "client asked the chunk for a redraw (DIRTY_ITEM_MODIFY) after applying the placement")
 # the carrier lost its model (older save / client copy made before the name was set): square load re-applies it
 star_rec["model"] = None
+star_rec["yrot"] = None
 lua("SIM.loadSquare(6080, 5385, 0)")
-check(star_rec["model"] == "zmcp_star_1", "LoadGridsquare re-applied the world model to the carrier item")
+check(star_rec["model"] == "zmcp_star_1" and star_rec["yrot"] == 45, "LoadGridsquare re-applied the world model and yrot to the carrier item")
+check(star_rec["transmits"] == 0, "the restore did not re-send the carrier (that would duplicate it on the clients)")
 check(len(events("model_place_restored")) >= 1 and tool("visuals_list")["placements"][1]["restored"] >= 1, "restore counted in the registry and logged as an event")
 # a model placement with collision: the blocker sits on the same square
 r = tool("model_place", {"id": "star", "x": 6081, "y": 5385, "collide": True, "pid": "gate"})
@@ -244,6 +253,58 @@ r = tool("model_remove", {"pid": "gate"})
 check(r["removed"] == 1 and r["blockers"] == 1 and len(sq["objects"]) == 0 and len(sq["worldObjects"]) == 0, "model_remove took the carrier item and its blocker away")
 lua("SIM.tick(1)")
 check(lua("return ZMCPClient.models.placements.gate == nil and ZMCPClient.models.placements['%s'] ~= nil" % pid1), "client forgot the removed placement only")
+
+# --- world-anchored figures: model_place with a yaw, model_move (client tween of the carrier), model_swap
+spawned_before = len(g.SIM.spawned)
+r = tool("model_place", {"id": "star", "x": 6090, "y": 5385, "z": 0, "yaw": 75, "pid": "fig"})
+fig = g.SIM.spawned[len(g.SIM.spawned)]
+check(r["yaw"] == 75 and fig["yaw"] == 75 and fig["sentYaw"] == 75 and fig["transmits"] == 0, "model_place {yaw}: worldZRotation set before the one send (the constructor keeps a yaw >= 0)")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements.fig.yaw") == 75, "the client's placement record carries the yaw")
+r = tool("model_move", {"pid": "fig", "x": 6091.5, "y": 5386.5, "z": 1.05, "yaw": 15, "duration": 2, "ease": True})
+check(abs(r["ox"] - 1.5) < 1e-6 and abs(r["oy"] - 1.5) < 1e-6 and abs(r["oz"] - 1.05) < 1e-6 and r["yaw"] == 15 and r["loaded"] is True and r["warning"] is None,
+      "model_move converts world coordinates to offsets from the home square (%s)" % dict(r))
+check(abs(fig["ox"] - 1.5) < 1e-6 and abs(fig["oz"] - 1.05) < 1e-6 and fig["yaw"] == 15 and (fig["offsetSyncs"] or 0) == 0,
+      "the server's carrier takes the final pose at once (setOffX/Y/Z, no SyncIsoObject)")
+pl = [p for p in tool("visuals_list")["placements"].values() if p["pid"] == "fig"][0]
+check(pl["ox"] == 1.5 and pl["yaw"] == 15 and pl["moving"] is True and abs(pl["wx"] - 6090.5) < 0.05, "the record holds the final pose; visuals_list follows the tween (wx %.2f)" % pl["wx"])
+# the client's copy is the same object in single player: put it back to the start pose to watch the client tween
+fig["ox"], fig["oy"], fig["oz"], fig["yaw"] = 0.5, 0.5, 0, 75
+lua("ZMCPClient.models.tweens = {}")
+t0 = g.SIM.now
+lua("SIM.tick(1, 0.0)")         # the queued placeMove reaches the client
+check(lua("return ZMCPClient.models.tweens.fig ~= nil"), "the client started a tween of the carrier")
+g.SIM.now = t0 + 1.0
+lua("ZMCPClient.models.stepTweens(SIM.now)")
+check(abs(fig["ox"] - 1.0) < 0.01 and abs(fig["oz"] - 0.525) < 0.01 and abs(fig["yaw"] - 45) < 0.5 and fig["redraws"] >= 1 and fig["lastDirty"] == 272,
+      "half way (eased): offsets, height and yaw interpolated, the chunk level redrawn (ox %.2f oz %.2f yaw %.1f)" % (fig["ox"], fig["oz"], fig["yaw"]))
+g.SIM.now = t0 + 2.5
+lua("ZMCPClient.models.stepTweens(SIM.now)")
+check(abs(fig["ox"] - 1.5) < 1e-6 and abs(fig["oy"] - 1.5) < 1e-6 and abs(fig["oz"] - 1.05) < 1e-6 and fig["yaw"] == 15 and lua("return ZMCPClient.models.tweens.fig == nil"),
+      "tween finished at the final pose")
+check(fig["transmits"] == 0 and len(g.SIM.spawned) == spawned_before + 1 and len(lua("return SIM.square(6090, 5385, 0).worldObjects")) == 1,
+      "no carrier was re-sent or added: still one world item on the home square")
+r = tool("model_move", {"pid": "fig", "x": 6101.5, "y": 5385.5})
+check(r["warning"] is not None and "chunk" in r["warning"], "model_move warns when the target leaves the home chunk")
+tool("model_move", {"pid": "fig", "x": 6090.5, "y": 5385.5, "z": 0, "duration": 0})
+lua("SIM.tick(1)")
+check(abs(fig["ox"] - 0.5) < 1e-6 and abs(fig["oz"]) < 1e-6 and lua("return ZMCPClient.models.tweens.fig == nil"), "duration 0 jumps")
+# model_swap: the same carrier shows another model
+tool("model_upload", {"id": "star2", "mesh_base64_file": "zmcp_model_star.x.b64.txt", "png_base64": g.SIM.fs["zmcp_model_star.png.b64.txt"]})
+lua("SIM.tick(3)")
+sets = fig["modelSets"]
+r = tool("model_swap", {"pid": "fig", "id": "star2"})
+check(r["name"] == "zmcp_star2_1" and fig["model"] == "zmcp_star2_1" and r["loaded"] is True, "model_swap sets the new world model on the server's carrier")
+lua("SIM.tick(1)")
+check(lua("return ZMCPClient.models.placements.fig.name") == "zmcp_star2_1" and fig["transmits"] == 0 and len(lua("return SIM.square(6090, 5385, 0).worldObjects")) == 1
+      and tool("visuals_list")["placements"] and [p for p in tool("visuals_list")["placements"].values() if p["pid"] == "fig"][0]["model"] == "star2",
+      "the client got the new name for the same carrier (by item id); no re-send, still one world item")
+# a late joiner / square reload gets the pose from the record
+fig["ox"], fig["oz"], fig["yaw"] = 0.9, 0.3, 200
+lua("SIM.loadSquare(6090, 5385, 0)")
+check(abs(fig["ox"] - 0.5) < 1e-6 and abs(fig["oz"]) < 1e-6 and fig["yaw"] == 15, "a square load re-applies the recorded offsets and yaw")
+tool("model_remove", {"pid": "fig"})
+lua("ZMCP.visuals.store().models.star2 = nil; ZMCPClient.models.clear('star2'); SIM.tick(1)")   # keep the later late-join counts
 
 # --- collision blockers: invisible objects with the vanilla flags, registered sprites with fixed ids
 cs = lua("return ZMCPCollision")
@@ -258,6 +319,17 @@ r = tool("collision_place", {"x": 6070, "y": 5390, "w": 3, "h": 2, "kind": "soli
 check(r["placed"] == 0 and r["existing"] == 6, "placing again is a no-op (one blocker per kind per square)")
 r = tool("collision_place", {"x": 6070, "y": 5390, "kind": "wall_n"})
 check(r["placed"] == 1 and len(lua("return SIM.square(6070, 5390, 0)")["objects"]) == 2, "a second kind stacks on the same square")
+# the chunk save: a registered sprite without a NAME throws in WorldDictionary.getIdForSpriteName (the live server's
+# SaveChunkThread NullPointerException that kept whole chunks from being written, so everything on them vanished)
+check(lua("for _, k in ipairs(ZMCPCollision.ORDER) do local n = ZMCPCollision.spriteName(k); if IsoSpriteManager.instance:getSprite(n):getName() ~= n then return false end end return true"), "every collision sprite carries its name (AddSprite alone leaves IsoSprite.name nil)")
+check(lua("local sq = SIM.square(6070, 5390, 0); return SIM.saveSquare(sq) == 2 and SIM.saveObject(sq.objects[1]) == ZMCPCollision.spriteId('solidtrans')"), "chunk save of the blocker square works and writes the fixed sprite id")
+r = tool("place_object", {"x": 6073, "y": 5390, "sprite": "walls_exterior_wooden_01_2", "name": "probe"})
+check(lua("return SIM.saveSquare(SIM.square(6073, 5390, 0)) == 1"), "chunk save of a place_object tile works")
+lua("IsoSpriteManager.instance:getSprite('zmcp_collision_solidtrans'):setName(nil)")      # a sprite from the old registration
+check(lua("return not pcall(SIM.saveSquare, SIM.square(6070, 5390, 0))"), "a nameless registered sprite breaks the save (the bug)")
+lua("ZMCPCollision.register()")
+check(lua("return pcall(SIM.saveSquare, SIM.square(6070, 5390, 0))"), "re-registration names an existing nameless sprite, the save works again")
+tool("remove_object", {"x": 6073, "y": 5390, "name": "probe"})
 wq = tool("world_query", {"x": 6071, "y": 5390, "radius": 2, "what": "objects"})
 names = sorted(set(o["sprite"] for o in wq["objects"].values()))
 check(wq["objectCount"] == 7 and names == ["zmcp_collision_solidtrans", "zmcp_collision_wall_n"] and all(o["name"] == "ZMCP_collision" for o in wq["objects"].values()), "world_query lists the blockers by sprite and name")
@@ -294,7 +366,7 @@ check(g.SIM.scene is not None and g.SIM.scene.view == "UserDefined" and list(g.S
 check(g.SIM.scene.grid is False and g.SIM.scene.gizmo == "none", "grid and gizmo off (no debug text)")
 o = scene_obj("star")
 check(o["model"] == "zmcp_star_1", "scene object created from the registered runtime model")
-check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].z - 100) < 1e-3, f"placed at world 100,100 -> scene X=Z=100 (k=1 at zoom 1) ({o['t'].x:.2f},{o['t'].z:.2f})")
+check(abs(o["t"].x - 100) < 0.01 and abs(o["t"].z - 100) < 0.01, f"placed at world 100,100 -> scene X=Z=100 (k=1 at zoom 1) ({o['t'].x:.2f},{o['t'].z:.2f})")
 check(abs(o["t"].y - 1.35) < 1e-3, "lifted by h = roll radius")
 check(abs(o["s"].x - 3) < 1e-3 and abs(o["s"].y - 3) < 1e-3, "scale 3 applied")
 ux, uy = lua("return SIM.scene:sceneToUIX(%f, %f, %f), SIM.scene:sceneToUIY(%f, %f, %f)" % (o["t"].x, 0, o["t"].z, o["t"].x, 0, o["t"].z))
@@ -325,6 +397,20 @@ frame()
 o = scene_obj("star")
 check(abs(o["t"].x - 55) < 0.2 and abs(o["s"].x - 1.5) < 1e-3, "zoom 2 halves scene units and the object scale")
 g.SIM.zoom = 1
+# the drift fix: a 2x-texture client (Core.tileScale 2: 64 px per tile at zoom 1). The layer measures pixels per tile
+# with isoToScreenX/Y, so the entity's ground point still lands on its world position and the model doubles in size
+# with the world; the constant 32 px/tile of the first version put it at half the distance from the screen centre
+# (it slid along with the camera)
+g.SIM.tileScale = 2
+frame()
+o = scene_obj("star")
+ex, ey = lua("local x, y = ZMCPClient.e3d.positionAt(ZMCPClient.e3d.list.star, ZMCPClient.now()); return x, y")
+ux, uy = lua("return SIM.scene:sceneToUIX(%f, 0, %f), SIM.scene:sceneToUIY(%f, 0, %f)" % (o["t"].x, o["t"].z, o["t"].x, o["t"].z))
+check(abs(ux - lua("return isoToScreenX(0, %f, %f, 0)" % (ex, ey))) < 0.5 and abs(uy - lua("return isoToScreenY(0, %f, %f, 0)" % (ex, ey))) < 0.5,
+      "tileScale 2: the entity's ground point projects onto isoToScreenX/Y of its world position (no drift with the camera)")
+check(abs(o["s"].x - 6) < 0.01, "tileScale 2: scale follows the world (2 scene units per model unit at scale 3 -> 6) (%.2f)" % o["s"].x)
+lua("SIM.camX = 0")
+g.SIM.tileScale = 1
 # tween + rotate + spin
 r = tool("entity3d_move", {"id": "star", "x": 100, "y": 100, "duration": 4, "ease": True})
 check(r["motion"] == "to" and r["duration"] == 4, "entity3d_move: tween")
@@ -339,7 +425,7 @@ lua("SIM.tick(1)")
 g.SIM.now = t1 + 6
 frame()
 o = scene_obj("star")
-check(abs(o["t"].x - 100) < 1e-3 and abs(o["t"].y - 2) < 1e-3 and abs(o["r"].x - 10) < 1e-6, "tween finished, h and rx applied")
+check(abs(o["t"].x - 100) < 0.01 and abs(o["t"].y - 2) < 1e-3 and abs(o["r"].x - 10) < 1e-6, "tween finished, h and rx applied")
 ry1 = o["r"].y
 g.SIM.now = t1 + 7
 frame()
@@ -436,6 +522,32 @@ rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end
 check(lua("return COUNTER") == 2, "bridge reload re-ran the persistent server script")
 tool("script_remove", {"name": "counter"})
 check(len(tool("script_list")["server"]) == 0, "server script removed")
+# ZOM-16: the tools and tick hooks a script registers are unregistered by script_remove (install, call, remove)
+r = tool("script_install", {"name": "demo_tool", "code": """
+ZMCP.tool("demo_hello", "says hi", function(a) return { hi = a.who or "world" } end)
+ZMCP.tool("ping", "overridden ping", function() return { pong = "script" } end)
+DEMO_TICKS = 0
+ZMCP.tickHooks.demo_tool = function(t) DEMO_TICKS = DEMO_TICKS + 1 end
+return "demo installed"
+"""})
+check(sorted(r["tools"].values()) == ["demo_hello", "ping"] and list(r["hooks"].values()) == ["demo_tool"], "script_install reports the tools and hooks the script registered (%s)" % dict(r))
+check(tool("demo_hello", {"who": "sim"})["hi"] == "sim" and any(t["name"] == "demo_hello" for t in tool("tools_list").values()), "the script's tool works and is listed")
+check(tool("ping")["pong"] == "script", "the script overrode the core ping tool")
+rt.eval("function(s, n) local f, e = loadstring(s, n) if not f then error(e) end return f end")(src, "=Bridge.lua")()
+check(lua("return ZMCP.scriptTools.demo_tool ~= nil and ZMCP.scriptTools.demo_tool.tools.demo_hello == true and ZMCP.scriptTools.demo_tool.hooks.demo_tool == true"), "the replay on a bridge reload re-records the script's tools and hooks")
+lua("SIM.tick(2)")
+check(lua("return DEMO_TICKS") >= 1, "the script's tick hook runs")
+r = tool("script_remove", {"name": "demo_tool"})
+check(sorted(r["tools"].values()) == ["demo_hello", "ping"] and list(r["hooks"].values()) == ["demo_tool"], "script_remove reports what it unregistered (%s)" % dict(r))
+check(not any(t["name"] == "demo_hello" for t in tool("tools_list").values()) and lua("return ZMCP.tools.demo_hello == nil"), "tools_list no longer lists the script's tool")
+check(tool("ping")["pong"] is True and lua("return ZMCP.tickHooks.demo_tool == nil and ZMCP.scriptTools.demo_tool == nil"), "the core ping tool is back and the tick hook is gone")
+try:
+    tool("script_install", {"name": "broken_tool", "code": 'ZMCP.tool("half_done", "x", function() end)\nerror("boom after registering")'})
+    check(False, "a failing script is reported")
+except Exception as ex:
+    check("boom" in str(ex) and len(tool("script_list")["server"]) == 0, "a failing script is reported and not recorded")
+check(lua("return ZMCP.tools.half_done ~= nil"), "what a failing chunk registered before its error stays (no record to clean it with)")
+lua("ZMCP.tools.half_done = nil")
 try:
     tool("script_install", {"name": "x", "code": "return 1", "side": "nowhere"})
     check(False, "unknown side rejected")

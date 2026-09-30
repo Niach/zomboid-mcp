@@ -178,8 +178,11 @@ recorded so it runs again on every bridge reload and server start, before player
 is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who
 joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them.
 Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list),
-tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps.
-Return value: {name, side, file, result} (server: the chunk's return value; client: chunks sent and the recipients).
+tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. While a server script's chunk runs (on install
+and on every replay) the tools and tick hooks it registers are recorded under the script name, so script_remove can
+unregister them again.
+Return value: {name, side, file, result, tools, hooks} (server: the chunk's return value plus the tool and tick-hook
+names it registered; client: chunks sent and the recipients).
 Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays).
 Rules from %s: make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers
 and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
@@ -196,10 +199,11 @@ run_lua_server with ZMCP.readFile(file) to read a script's source.
 """, _obj({}), game="script_list")
 
 tool("script_remove", """
-Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the file stays and
-anything the script already registered (tools, tick hooks, event handlers) stays active until its own cleanup runs
-or the server restarts; to undo immediately, run the cleanup with run_lua_server. Client side: every client drops the
-hooks registered under the script's name at once.
+Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the tools (ZMCP.tool)
+and tick hooks (ZMCP.tickHooks.<name>) the script registered are unregistered at once (a core tool the script had
+overridden comes back) and returned as {tools, hooks}; the file stays, and Events handlers or globals the script set
+up stay active until its own cleanup runs (run it with run_lua_server) or the server restarts. Client side: every
+client drops the hooks registered under the script's name at once.
 """, _obj({
     "name": _s("Script name."),
     "side": _s("Where it lives.", enum=["server", "client"], default="server"),
@@ -231,11 +235,14 @@ Read-only. Moodles, stats and infection are the server's copy of client-owned st
 
 tool("world_query", """
 Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players,
-objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and
-vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many
-squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the
-centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find sprite
-names and object indexes for place_object / remove_object and to check what spawn tools did.
+objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or
+'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to
+place_object, e.g. 'ZMCP_collision' for blockers), ground items [{x, y, type, name, condition}] and vehicles [{id,
+script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the
+area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must
+be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find the sprite, name or index that
+remove_object takes when cleaning up place_object / build_structure / collision_place results, and to check what
+spawn tools did.
 """, _obj({
     "x": X, "y": Y, "z": Z,
     "radius": _i("Radius in tiles.", default=10, minimum=0, maximum=80),
@@ -391,12 +398,14 @@ Returns the object's index on the square (for remove_object).
 
 tool("remove_object", """
 Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by
-sprite name (first match, or every match with `all`) or by object index from world_query. Without sprite or index
-it only lists the square's objects. Floors are refused unless `force`. Removing vanilla map objects is irreversible
-without a map reset. Returns what was removed and the remaining objects.
+sprite name and/or object name as world_query lists them (first match, or every match with `all`; both must match
+when both are given) or by object index from world_query. Without sprite, name or index it only lists the square's
+objects [{index, sprite, type, name, floor}]. Floors are refused unless `force`. Removing vanilla map objects is
+irreversible without a map reset. Returns what was removed and the remaining objects.
 """, _obj({
     "x": X, "y": Y, "z": Z,
-    "sprite": _s("Remove objects with this sprite name."),
+    "sprite": _s("Remove objects with this sprite name (world_query 'sprite')."),
+    "name": _s("Remove objects with this object name (world_query 'name'), e.g. 'ZMCP_collision' or the name given to place_object."),
     "index": _i("Object index on the square, from world_query or a previous listing.", minimum=0),
     "all": _b("Remove every object matching the sprite, not just the first.", default=False),
     "force": _b("Allow removing the floor tile.", default=False),
@@ -540,17 +549,20 @@ which is saved with the world and sent to clients with the item; the placement i
 item lost it. A client that has not registered the ModelScript yet (files still streaming after a join) shows the
 carrier item's flat sprite until the registration lands, then the 3D model. The model itself has NO collision:
 `collide` puts an invisible blocker on the same square in one call (true = solid; or a collision_place kind such
-as solidtrans). Offsets are fractions of the tile, oz lifts the model. Returns {pid, placed, x, y, z, item, itemId,
-collide}; model_remove {pid} takes it away. Moving 3D objects are entity3d_spawn / entity3d_move (a transparent
-3D layer, smooth but no occlusion).
+as solidtrans). Offsets are fractions of the tile, oz lifts the model (in z levels), yaw turns it about the
+vertical axis. Returns {pid, placed, x, y, z, item, itemId, yaw, collide}; model_remove {pid} takes it away,
+model_move {pid, ...} glides it to another pose (still a world object: depth-sorted, lit, saved) and model_swap
+{pid, id} shows another model on the same carrier. For figures that must stand IN the world use these; entity3d_*
+draws on a transparent layer over the world (smooth, fast, but never occluded by walls or other models).
 """, _obj({
     "id": _s("Model id from model_upload."),
     "x": X, "y": Y, "z": Z,
     "item": _s("Carrier world item type.", default="Base.TirePiece"),
     "ox": _n("Offset within the tile, x.", default=0.5, minimum=-5, maximum=5),
     "oy": _n("Offset within the tile, y.", default=0.5, minimum=-5, maximum=5),
-    "oz": _n("Height offset.", default=0, minimum=-5, maximum=10),
-    "yrot": _n("Rotation around the vertical axis in degrees.", minimum=-360, maximum=360),
+    "oz": _n("Height offset in z levels (1 = one floor up).", default=0, minimum=-5, maximum=10),
+    "yaw": _n("Turn about the vertical axis in degrees (the item's worldZRotation). Without it the engine picks a random yaw.", minimum=-360, maximum=360),
+    "yrot": _n("worldYRotation in degrees: this ROLLS a Y-up model (tips it over); upright props leave it out.", minimum=-360, maximum=360),
     "collide": _s("Collision under the model: 'true' / 'solid' (blocks walking, zombies and sight), 'solidtrans' "
                   "(blocks walking, see-through), 'wall_n' / 'wall_w' / 'wall_nw' (invisible wall on those edges), "
                   "'false' (default: none).", enum=["false", "true", "solid", "solidtrans", "wall_n", "wall_w", "wall_nw"],
@@ -568,6 +580,33 @@ Returns {removed, unloaded, missing, blockers, pids}.
     "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
     "all": _b("Remove every placement.", default=False),
 }), game="model_remove")
+
+tool("model_move", """
+Move or turn a placed model (model_place) smoothly while it stays a real world object (depth-sorted against walls
+and other models, lit, saved): every client glides the carrier world item to the new pose over `duration` seconds
+(offsets from its home square, set every frame on the client), the server sets the final pose on its own copy at
+once, so the chunk save and late joiners get it. Position in world tiles (x, y) and a fractional level (z, e.g. 1.05
+= hovering just above the first floor) plus an optional extra height h in model units; yaw turns it about the
+vertical axis. Keep the target inside the home square's 8x8 chunk (the carrier is drawn into that chunk's texture;
+the result carries a warning otherwise). Returns {pid, x, y, z, ox, oy, oz, yaw, duration, loaded, warning}.
+""", _obj({
+    "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
+    "x": _n("Target world x in tiles (fractions allowed)."), "y": _n("Target world y in tiles (fractions allowed)."),
+    "z": _n("Target level, fractions allowed (1.05 = just above the first floor).", minimum=-2, maximum=31),
+    "h": _n("Extra height in model units (1.65 per level).", minimum=-10, maximum=50),
+    "yaw": _n("Target turn about the vertical axis in degrees (shortest way).", minimum=-360, maximum=360),
+    "duration": _n("Seconds; 0 jumps.", default=0, minimum=0, maximum=600),
+    "ease": _b("Smooth start and stop (smoothstep).", default=False),
+}, ["pid"]), game="model_move")
+
+tool("model_swap", """
+Show another uploaded model on a placed model's carrier (model_place): the same world item (same item id, square
+and pose) gets the new world model on the server (saved in its ModData) and on every client, e.g. a figure
+raising its staff. Nothing is re-sent, so nothing is duplicated. Returns {pid, model, name, loaded}.
+""", _obj({
+    "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
+    "id": _s("Model id from model_upload."),
+}, ["pid", "id"]), game="model_swap")
 
 ENTITY_ID = _s("Entity id (letters, digits, _ . -).", pattern="^[A-Za-z0-9_.-]+$")
 WX = _n("World x in tiles (fractions allowed; east).")
@@ -838,11 +877,14 @@ tool("scene_template", """
 Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start:
 merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real
 crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area),
-companion (follows the player and comments), flappy (a complete flappy bird screen app). Without a name it lists the
+companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game
+inside a phone frame with the world visible around it), you_shall_not_pass (the endgame showcase: a permanent lava
+cavern, a stone bridge one floor up, the grey wizard, the fire demon and a re-triggerable cutscene; needs its eight
+models uploaded first, see examples/scenes/you_shall_not_pass/README.md). Without a name it lists the
 templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name,
 kind, code, path, summary} is documentation, nothing runs.
 """, _obj({
-    "name": _s("Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy. Omit to list."),
+    "name": _s("Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy, flappy_phone, you_shall_not_pass. Omit to list."),
 }), local="scene_template")
 
 tool("app_start", """

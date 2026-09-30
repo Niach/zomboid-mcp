@@ -155,13 +155,23 @@ function U.playerSummary(p)
     }
 end
 
+-- the sprite name of a tile object, trying every accessor 42.21 offers (a placed IsoObject answered nil to the
+-- first one on the live server, ZOM-17): IsoObject:getSpriteName(), IsoSprite:getName(), the sprite's parent object
+-- name, and the texture name as a last resort. nil when nothing answers.
+function U.spriteName(o)
+    local function nonEmpty(v) if type(v) == "string" and v ~= "" then return v end return nil end
+    return nonEmpty(U.try(function() return o:getSpriteName() end))
+        or nonEmpty(U.try(function() local sp = o:getSprite(); return sp and sp:getName() end))
+        or nonEmpty(U.try(function() local sp = o:getSprite(); return sp and sp:getParentObjectName() end))
+        or nonEmpty(U.try(function() return o:getTextureName() end))
+end
+
 function U.objectInfo(o, index)
-    local sprite = U.try(function() return o:getSprite() and o:getSprite():getName() end)
     return {
         index = index,
-        sprite = sprite or U.try(function() return o:getSpriteName() end),
+        sprite = U.spriteName(o),
         type = U.try(function() return o:getObjectName() end),
-        name = U.try(function() return o:getName() end),
+        name = U.try(function() local n = o:getName(); if n ~= "" then return n end return nil end),
     }
 end
 

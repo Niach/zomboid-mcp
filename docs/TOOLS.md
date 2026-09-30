@@ -1,5 +1,7 @@
 # MCP tools
 
+Every tool the Zomboid MCP server exposes, with its arguments and where it runs, in the families below: scripting (run Lua on the server or clients, persistent scripts), discovery (status, players, world queries, the engine API index), players, world (items, vehicles, zombies, tiles, collision, weather and time), visuals pushed to clients (textures, 3D models, sprites, overlays), moving 3D entities, scenes and screen apps, and server admin. The table right below lists them all with one line each; the sections after it give the full description and argument table of each tool.
+
 Generated from `mod/Contents/mods/ZomboidMCP/mcp/zmcp_catalog.py` by `tools/gen_tools_md.py` (`make docs`); do not edit by hand. The catalogue is the schema every tool is validated against, and `tests/mcp/test_catalog.py` checks it against the Lua tools (`ZMCP.tool(...)` in `Api/*.lua` and `Bridge.lua`). Direction: **scripting-first** (top of `docs/PLAN.md`): `run_lua_server` / `run_lua_client` do everything, the curated tools below cover the common operations with validated arguments. The raw Lua behind each one is in `docs/recipes/`.
 
 Arguments marked * are required. `player` arguments accept the account name or the character name and may be omitted when exactly one player is online. Coordinates are world tiles (`x` east, `y` south, `z` floor). Tools that the MCP process answers itself are marked *local*; the others run in the game through the bridge (`docs/PROTOCOL.md`).
@@ -23,9 +25,9 @@ level, bleeding parts, asleep, god mode, invisible), hours survived, zombie kill
 [{id, name, level, xp}], inventory summary (item types by count, weight), equipped and worn items, moodles and stats.
 Read-only |
 | [`world_query`](#world_query) | Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players,
-objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and
-vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many
-squares in the area were not loaded |
+objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or
+'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to
+place_object, e.g |
 | [`wait_for`](#wait_for) | Block until the game bridge is alive and a condition holds: a named player is online, or at least `min_players`
 are |
 | [`events_poll`](#events_poll) | Events the game appended since your last call: script errors, client results and client texture/model loads, tool
@@ -69,6 +71,12 @@ base64 or as file paths on this machine |
 occlusion and no flicker |
 | [`model_remove`](#model_remove) | Remove a static model placed with model_place: the carrier world item, the collision blocker placed with it (if
 `collide` was set) and the placement record, on the server and on every client |
+| [`model_move`](#model_move) | Move or turn a placed model (model_place) smoothly while it stays a real world object (depth-sorted against walls
+and other models, lit, saved): every client glides the carrier world item to the new pose over `duration` seconds
+(offsets from its home square, set every frame on the client), the server sets the final pose on its own copy at
+once, so the chunk save and late joiners get it |
+| [`model_swap`](#model_swap) | Show another uploaded model on a placed model's carrier (model_place): the same world item (same item id, square
+and pose) gets the new world model on the server (saved in its ModData) and on every client, e.g |
 | [`world_sprite`](#world_sprite) | Show a texture in the world for everyone (or one player), anchored bottom-centre at a tile position, scaled with the
 camera zoom and always drawn on top of the world (no wall occlusion; it is not an object and has no collision).
 Texture: an uploaded id, 'item:Base.Banana' (an inventory icon) or any vanilla texture path getTexture accepts.
@@ -117,7 +125,10 @@ and a pending waitSignal(signal) returns the data |
 | [`scene_template`](#scene_template) | Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start:
 merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real
 crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area),
-companion (follows the player and comments), flappy (a complete flappy bird screen app) |
+companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game
+inside a phone frame with the world visible around it), you_shall_not_pass (the endgame showcase: a permanent lava
+cavern, a stone bridge one floor up, the grey wizard, the fire demon and a re-triggerable cutscene; needs its eight
+models uploaded first, see examples/scenes/you_shall_not_pass/README.md) |
 | [`app_start`](#app_start) | Push a client screen app: a Lua chunk that runs on the player's client and draws on the overlay, e.g |
 | [`app_stop`](#app_stop) | Stop a screen app on every client or one player: its onExit runs, input capture and player movement are released, its
 hooks are gone |
@@ -149,7 +160,7 @@ per-client results (ok / error / running / stopped) and the last score each clie
 
 ### `script_install`
 
-*game*. Install or replace a persistent script. side 'server' (default): the Lua source is written to the game's Lua directory as zmcp_script_<name>.lua.txt, executed right now in the server Lua state (like run_lua_server) and recorded so it runs again on every bridge reload and server start, before players join. side 'client': the source is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them. Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list), tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. Return value: {name, side, file, result} (server: the chunk's return value; client: chunks sent and the recipients). Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays). Rules from the "zomboid engine handbook" skill (skill/SKILL.md in the mod: a categorized map of every Lua-reachable engine function, guides for overlays and screen apps, textures, 3D models, world/tiles, items, zombies, vehicles, weather, players and scenes, tested snippets and every known B42 gotcha): make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
+*game*. Install or replace a persistent script. side 'server' (default): the Lua source is written to the game's Lua directory as zmcp_script_<name>.lua.txt, executed right now in the server Lua state (like run_lua_server) and recorded so it runs again on every bridge reload and server start, before players join. side 'client': the source is stored on the server, pushed to every connected client now (like run_lua_client) and re-sent to every player who joins; register its hooks with ZMCPClient.on(<name>, event, fn) so script_remove can drop them. Use it for anything that must keep working: new tools (ZMCP.tool(name, desc, fn) makes them appear in tools/list), tick hooks (ZMCP.tickHooks.<name>), event handlers, HUDs, screen apps. While a server script's chunk runs (on install and on every replay) the tools and tick hooks it registers are recorded under the script name, so script_remove can unregister them again. Return value: {name, side, file, result, tools, hooks} (server: the chunk's return value plus the tool and tick-hook names it registered; client: chunks sent and the recipients). Errors: a server script with a compile or runtime error is reported and not recorded (the previous version stays). Rules from the "zomboid engine handbook" skill (skill/SKILL.md in the mod: a categorized map of every Lua-reachable engine function, guides for overlays and screen apps, textures, 3D models, world/tiles, items, zombies, vehicles, weather, players and scenes, tested snippets and every known B42 gotcha): make the code re-runnable (keep state in a global table like `MyMod = MyMod or {}`, store handlers and Events.X.Remove them before adding again), keep big data in files rather than ModData, never block the tick.
 
 | argument | type | description |
 |---|---|---|
@@ -165,7 +176,7 @@ No arguments.
 
 ### `script_remove`
 
-*game*. Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the file stays and anything the script already registered (tools, tick hooks, event handlers) stays active until its own cleanup runs or the server restarts; to undo immediately, run the cleanup with run_lua_server. Client side: every client drops the hooks registered under the script's name at once.
+*game*. Forget a persistent script so it no longer runs on reloads, restarts or joins. Server side: the tools (ZMCP.tool) and tick hooks (ZMCP.tickHooks.<name>) the script registered are unregistered at once (a core tool the script had overridden comes back) and returned as {tools, hooks}; the file stays, and Events handlers or globals the script set up stay active until its own cleanup runs (run it with run_lua_server) or the server restarts. Client side: every client drops the hooks registered under the script's name at once.
 
 | argument | type | description |
 |---|---|---|
@@ -197,7 +208,7 @@ No arguments.
 
 ### `world_query`
 
-*game*. Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players, objects with their sprite names [{x, y, index, sprite, type, name}], ground items [{x, y, type, name, condition}] and vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find sprite names and object indexes for place_object / remove_object and to check what spawn tools did.
+*game*. Inspect the loaded world around a tile: zombies [{id, x, y, z, outfit, crawling, female, health, target}], players, objects [{x, y, index, sprite, type, name}] (sprite = the tile sprite name such as 'walls_exterior_wooden_01_2' or 'zmcp_collision_solid', type = the Java class such as IsoObject / IsoTree / IsoDoor, name = the object name given to place_object, e.g. 'ZMCP_collision' for blockers), ground items [{x, y, type, name, condition}] and vehicles [{id, script, x, y, z, speed, engineRunning, engineQuality, driver}] within `radius` tiles, plus how many squares in the area were not loaded. Server-side, read-only, limited to the loaded area near online players (the centre square must be loaded) and to 40 tiles for objects/items/vehicles, 80 for zombies. Use it to find the sprite, name or index that remove_object takes when cleaning up place_object / build_structure / collision_place results, and to check what spawn tools did.
 
 | argument | type | description |
 |---|---|---|
@@ -353,14 +364,15 @@ No arguments.
 
 ### `remove_object`
 
-*game*. Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by sprite name (first match, or every match with `all`) or by object index from world_query. Without sprite or index it only lists the square's objects. Floors are refused unless `force`. Removing vanilla map objects is irreversible without a map reset. Returns what was removed and the remaining objects.
+*game*. Remove a world object from a square (transmitRemoveItemFromSquare). Server-authoritative and persistent. Select by sprite name and/or object name as world_query lists them (first match, or every match with `all`; both must match when both are given) or by object index from world_query. Without sprite, name or index it only lists the square's objects [{index, sprite, type, name, floor}]. Floors are refused unless `force`. Removing vanilla map objects is irreversible without a map reset. Returns what was removed and the remaining objects.
 
 | argument | type | description |
 |---|---|---|
 | `x` * | integer | World tile x (east). Use players_list for a reference position. |
 | `y` * | integer | World tile y (south). |
 | `z` | integer | Floor level, 0 = ground. (default `0`, 0..31) |
-| `sprite` | string | Remove objects with this sprite name. |
+| `sprite` | string | Remove objects with this sprite name (world_query 'sprite'). |
+| `name` | string | Remove objects with this object name (world_query 'name'), e.g. 'ZMCP_collision' or the name given to place_object. |
 | `index` | integer | Object index on the square, from world_query or a previous listing. (0..) |
 | `all` | boolean | Remove every object matching the sprite, not just the first. (default `False`) |
 | `force` | boolean | Allow removing the floor tile. (default `False`) |
@@ -469,7 +481,7 @@ No arguments.
 
 ### `model_place`
 
-*game*. Place an uploaded 3D model in the world as a STATIC object: the server spawns a carrier world item on the square (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper occlusion and no flicker. Server-authoritative and PERMANENT: the model name lives in the carrier item's ModData, which is saved with the world and sent to clients with the item; the placement is also recorded (visuals_list 'placements') and re-sent to every joining client, and whenever the square loads the model is re-applied if the item lost it. A client that has not registered the ModelScript yet (files still streaming after a join) shows the carrier item's flat sprite until the registration lands, then the 3D model. The model itself has NO collision: `collide` puts an invisible blocker on the same square in one call (true = solid; or a collision_place kind such as solidtrans). Offsets are fractions of the tile, oz lifts the model. Returns {pid, placed, x, y, z, item, itemId, collide}; model_remove {pid} takes it away. Moving 3D objects are entity3d_spawn / entity3d_move (a transparent 3D layer, smooth but no occlusion).
+*game*. Place an uploaded 3D model in the world as a STATIC object: the server spawns a carrier world item on the square (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper occlusion and no flicker. Server-authoritative and PERMANENT: the model name lives in the carrier item's ModData, which is saved with the world and sent to clients with the item; the placement is also recorded (visuals_list 'placements') and re-sent to every joining client, and whenever the square loads the model is re-applied if the item lost it. A client that has not registered the ModelScript yet (files still streaming after a join) shows the carrier item's flat sprite until the registration lands, then the 3D model. The model itself has NO collision: `collide` puts an invisible blocker on the same square in one call (true = solid; or a collision_place kind such as solidtrans). Offsets are fractions of the tile, oz lifts the model (in z levels), yaw turns it about the vertical axis. Returns {pid, placed, x, y, z, item, itemId, yaw, collide}; model_remove {pid} takes it away, model_move {pid, ...} glides it to another pose (still a world object: depth-sorted, lit, saved) and model_swap {pid, id} shows another model on the same carrier. For figures that must stand IN the world use these; entity3d_* draws on a transparent layer over the world (smooth, fast, but never occluded by walls or other models).
 
 | argument | type | description |
 |---|---|---|
@@ -480,8 +492,9 @@ No arguments.
 | `item` | string | Carrier world item type. (default `Base.TirePiece`) |
 | `ox` | number | Offset within the tile, x. (default `0.5`, -5..5) |
 | `oy` | number | Offset within the tile, y. (default `0.5`, -5..5) |
-| `oz` | number | Height offset. (default `0`, -5..10) |
-| `yrot` | number | Rotation around the vertical axis in degrees. (-360..360) |
+| `oz` | number | Height offset in z levels (1 = one floor up). (default `0`, -5..10) |
+| `yaw` | number | Turn about the vertical axis in degrees (the item's worldZRotation). Without it the engine picks a random yaw. (-360..360) |
+| `yrot` | number | worldYRotation in degrees: this ROLLS a Y-up model (tips it over); upright props leave it out. (-360..360) |
 | `collide` | `false` \| `true` \| `solid` \| `solidtrans` \| `wall_n` \| `wall_w` \| `wall_nw` | Collision under the model: 'true' / 'solid' (blocks walking, zombies and sight), 'solidtrans' (blocks walking, see-through), 'wall_n' / 'wall_w' / 'wall_nw' (invisible wall on those edges), 'false' (default: none). (default `false`) |
 | `pid` | string | Placement id (letters, digits, _ . -); default generated (p1, p2, ...). |
 
@@ -493,6 +506,30 @@ No arguments.
 |---|---|---|
 | `pid` | string | Placement id from model_place. |
 | `all` | boolean | Remove every placement. (default `False`) |
+
+### `model_move`
+
+*game*. Move or turn a placed model (model_place) smoothly while it stays a real world object (depth-sorted against walls and other models, lit, saved): every client glides the carrier world item to the new pose over `duration` seconds (offsets from its home square, set every frame on the client), the server sets the final pose on its own copy at once, so the chunk save and late joiners get it. Position in world tiles (x, y) and a fractional level (z, e.g. 1.05 = hovering just above the first floor) plus an optional extra height h in model units; yaw turns it about the vertical axis. Keep the target inside the home square's 8x8 chunk (the carrier is drawn into that chunk's texture; the result carries a warning otherwise). Returns {pid, x, y, z, ox, oy, oz, yaw, duration, loaded, warning}.
+
+| argument | type | description |
+|---|---|---|
+| `pid` * | string | Placement id from model_place. |
+| `x` | number | Target world x in tiles (fractions allowed). |
+| `y` | number | Target world y in tiles (fractions allowed). |
+| `z` | number | Target level, fractions allowed (1.05 = just above the first floor). (-2..31) |
+| `h` | number | Extra height in model units (1.65 per level). (-10..50) |
+| `yaw` | number | Target turn about the vertical axis in degrees (shortest way). (-360..360) |
+| `duration` | number | Seconds; 0 jumps. (default `0`, 0..600) |
+| `ease` | boolean | Smooth start and stop (smoothstep). (default `False`) |
+
+### `model_swap`
+
+*game*. Show another uploaded model on a placed model's carrier (model_place): the same world item (same item id, square and pose) gets the new world model on the server (saved in its ModData) and on every client, e.g. a figure raising its staff. Nothing is re-sent, so nothing is duplicated. Returns {pid, model, name, loaded}.
+
+| argument | type | description |
+|---|---|---|
+| `pid` * | string | Placement id from model_place. |
+| `id` * | string | Model id from model_upload. |
 
 ### `world_sprite`
 
@@ -735,11 +772,11 @@ No arguments.
 
 ### `scene_template`
 
-*local*. Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start: merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area), companion (follows the player and comments), flappy (a complete flappy bird screen app). Without a name it lists the templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name, kind, code, path, summary} is documentation, nothing runs.
+*local*. Return one of the example scenes or screen apps shipped with the mod, ready to adapt and pass to scene_start / app_start: merchant (a passive zombie merchant who greets, walks to the player and trades), supply_drop (parachute sprite and a real crate of items), meteor_shower, haunted_house (a persistent trigger-driven sequence with lights and a restorable area), companion (follows the player and comments), flappy (a complete flappy bird screen app), flappy_phone (the same game inside a phone frame with the world visible around it), you_shall_not_pass (the endgame showcase: a permanent lava cavern, a stone bridge one floor up, the grey wizard, the fire demon and a re-triggerable cutscene; needs its eight models uploaded first, see examples/scenes/you_shall_not_pass/README.md). Without a name it lists the templates with one-line summaries. Answered by the MCP process from examples/ (no game round trip); the returned {name, kind, code, path, summary} is documentation, nothing runs.
 
 | argument | type | description |
 |---|---|---|
-| `name` | string | Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy. Omit to list. |
+| `name` | string | Template name: merchant, supply_drop, meteor_shower, haunted_house, companion, flappy, flappy_phone, you_shall_not_pass. Omit to list. |
 
 ### `app_start`
 

@@ -71,11 +71,11 @@ local function listObjects(sq)
     return out
 end
 
-Z.tool("remove_object", "Remove a tile object from a square by sprite name or object index (transmitRemoveItemFromSquare; server-side, synced). Without sprite/index it just lists the square's objects. Floors need force=true.", function(a)
+Z.tool("remove_object", "Remove a tile object from a square by sprite name, object name or object index (transmitRemoveItemFromSquare; server-side, synced). Without sprite/name/index it just lists the square's objects (each with sprite, type, name, index). Floors need force=true.", function(a)
     local x, y, z = U.pos(a)
     local sq = Z.square(x, y, z)
-    local sprite, index = U.optStr(a, "sprite"), a.index
-    if not sprite and index == nil then
+    local sprite, objName, index = U.optStr(a, "sprite"), U.optStr(a, "name"), a.index
+    if not sprite and not objName and index == nil then
         return { x = sq:getX(), y = sq:getY(), z = z, objects = listObjects(sq), removed = {} }
     end
     local force, all = U.bool(a, "force", false), U.bool(a, "all", false)
@@ -87,11 +87,17 @@ Z.tool("remove_object", "Remove a tile object from a square by sprite name or ob
         if index >= objs:size() then error("index " .. index .. " out of range (square has " .. objs:size() .. " objects)") end
         targets[1] = objs:get(index)
     else
+        -- sprite and/or name: both must match when both are given (first match, or every match with `all`)
         U.each(sq:getObjects(), function(o)
-            local n = U.try(function() return o:getSprite() and o:getSprite():getName() end) or U.try(function() return o:getSpriteName() end)
-            if n == sprite and (all or #targets == 0) then targets[#targets + 1] = o end
+            local spriteOk = not sprite or U.spriteName(o) == sprite
+            local nameOk = not objName or U.try(function() return o:getName() end) == objName
+            if spriteOk and nameOk and (all or #targets == 0) then targets[#targets + 1] = o end
         end)
-        if #targets == 0 then error("no object with sprite '" .. sprite .. "' on " .. sq:getX() .. "," .. sq:getY() .. "," .. z) end
+        if #targets == 0 then
+            local what = sprite and ("sprite '" .. sprite .. "'") or ""
+            if objName then what = what .. (sprite and " and " or "") .. "name '" .. objName .. "'" end
+            error("no object with " .. what .. " on " .. sq:getX() .. "," .. sq:getY() .. "," .. z .. " (call without sprite/name/index to list the square)")
+        end
     end
     local removed = {}
     for _, o in ipairs(targets) do

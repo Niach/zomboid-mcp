@@ -21,6 +21,8 @@
 --   ZMCP.argText(args, key)              a string argument, or the file the MCP moved it to (args.<key>_file)
 --   ZMCP.statusDoc()                     the heartbeat document (Api/World.lua extends the status tool with it)
 --   ZMCP.scriptSides.<side>              {install(name, code), remove(name), list()} for script_* with side ~= "server"
+--   ZMCP.scriptTools[name]               {tools, hooks, replaced} registered while server script <name> ran (install and
+--                                        every replay); script_remove drops them from ZMCP.tools / ZMCP.tickHooks again
 --   ZMCP.playerNames(), ZMCP.charName(p), ZMCP.now(), ZMCP.version, ZMCP.tools, ZMCP.scripts()
 --
 -- Hot reload: this file is fully re-runnable. It removes its own event handlers before re-adding them and
@@ -35,10 +37,12 @@ if not ZMCPJson then error("ZomboidMCP/Json.lua must be loaded before Bridge.lua
 ZMCP = ZMCP or {}
 local Z = ZMCP
 local J = ZMCPJson
-Z.version = "0.3.0"
+Z.version = "0.3.1"
 Z.tools = Z.tools or {}            -- name -> { fn = function(args) ... end, desc = "..." }
 Z.tickHooks = Z.tickHooks or {}    -- name -> function(t)
 Z.scriptSides = Z.scriptSides or {} -- side -> { install = fn(name, code), remove = fn(name), list = fn() }
+Z.scriptTools = Z.scriptTools or {} -- script name -> { tools = {name=true}, hooks = {name=true}, replaced = {name=old} }
+Z.currentScript = nil               -- the server script whose chunk is running right now (tool registrations are attributed to it)
 Z.handlers = Z.handlers or {}
 
 for ev, fn in pairs(Z.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
@@ -198,6 +202,13 @@ end
 -- register a tool: Z.tool(name, description, function(args) return result end)
 function Z.tool(name, desc, fn)
     if type(fn) ~= "function" then error("ZMCP.tool: fn must be a function") end
+    local rec = Z.currentScript and Z.scriptTools[Z.currentScript]
+    if rec and not rec.tools[name] then
+        rec.tools[name] = true
+        local prev = rec.prev
+        if prev and prev.tools[name] then rec.replaced[name] = prev.replaced[name]   -- re-run: keep what the first run had replaced
+        elseif Z.tools[name] then rec.replaced[name] = Z.tools[name] end            -- a core tool the script overrides comes back on remove
+    end
     Z.tools[name] = { fn = fn, desc = desc or "" }
 end
 
@@ -412,10 +423,53 @@ local function scriptFile(name)
     return "zmcp_script_" .. Z.checkName(name, "script name") .. ".lua.txt"    -- getFileWriter refuses .lua
 end
 
+-- run a server script's file with the registrations attributed to it: every ZMCP.tool(...) and every new
+-- ZMCP.tickHooks.<name> the chunk leaves behind is recorded in Z.scriptTools[name] so script_remove can drop them
+local function runScript(name, file)
+    local previous = Z.scriptTools[name]          -- a re-run (install over an older version, replay on reload)
+    local rec = { tools = {}, hooks = {}, replaced = {}, prev = previous }
+    Z.scriptTools[name] = rec
+    local before = {}
+    for k in pairs(Z.tickHooks) do if not (previous and previous.hooks[k]) then before[k] = true end end
+    local outer = Z.currentScript
+    Z.currentScript = name
+    local ok, res = pcall(runLuaFile, file)
+    Z.currentScript = outer
+    for k in pairs(Z.tickHooks) do if not before[k] then rec.hooks[k] = true end end   -- new hooks, and the old ones it still owns
+    rec.prev = nil
+    if not ok then error(res, 0) end
+    return res
+end
+
+local function sortedKeys(t)
+    local out = {}
+    for k in pairs(t) do out[#out + 1] = k end
+    table.sort(out)
+    return out
+end
+
+-- forget what a script registered: its tools (restoring any tool it had overridden) and its tick hooks
+local function dropScriptTools(name)
+    local rec = Z.scriptTools[name]
+    local dropped = { tools = {}, hooks = {} }
+    if not rec then return dropped end
+    for _, t in ipairs(sortedKeys(rec.tools)) do
+        if Z.tools[t] then
+            Z.tools[t] = rec.replaced[t]     -- nil unless the script had replaced an existing tool
+            dropped.tools[#dropped.tools + 1] = t
+        end
+    end
+    for _, h in ipairs(sortedKeys(rec.hooks)) do
+        if Z.tickHooks[h] then Z.tickHooks[h] = nil; dropped.hooks[#dropped.hooks + 1] = h end
+    end
+    Z.scriptTools[name] = nil
+    return dropped
+end
+
 function Z.loadScripts()
     local loaded, failed = {}, {}
     for _, name in ipairs(Z.scriptNames()) do
-        local ok, err = pcall(runLuaFile, scripts()[name].file)
+        local ok, err = pcall(runScript, name, scripts()[name].file)
         if ok then loaded[#loaded + 1] = name
         else failed[#failed + 1] = name; Z.event("script_error", { name = name, side = "server", error = tostring(err) }) end
     end
@@ -426,13 +480,20 @@ Z.scriptSides.server = {
     install = function(name, code)
         local file = scriptFile(name)
         writeFile(file, code)
-        local result = runLuaFile(file)
+        local previous = Z.scriptTools[name]
+        local ok, result = pcall(runScript, name, file)
+        if not ok then
+            Z.scriptTools[name] = previous          -- the previous version (if any) stays installed and keeps its record
+            error(result, 0)
+        end
         scripts()[name] = { file = file, installed = Z.now() }
-        return { file = file, result = result }
+        local rec = Z.scriptTools[name]
+        return { file = file, result = result, tools = J.array(sortedKeys(rec.tools)), hooks = J.array(sortedKeys(rec.hooks)) }
     end,
     remove = function(name)
         if not scripts()[name] then error("no such server script: " .. tostring(name)) end
         scripts()[name] = nil
+        return dropScriptTools(name)
     end,
     list = function()
         local out = {}
@@ -483,7 +544,7 @@ Z.tool("run_file", "Execute a Lua file from the Lua cache dir (~/Zomboid/Lua/) o
     return runLuaFile(a.file)
 end)
 
-Z.tool("script_install", "Install or replace a persistent script: args {name, code, side? = server|client}. It runs now and again on every bridge load / server start (server) or for every player who joins (client).", function(a)
+Z.tool("script_install", "Install or replace a persistent script: args {name, code, side? = server|client}. It runs now and again on every bridge load / server start (server) or for every player who joins (client). Server: the tools (ZMCP.tool) and tick hooks (ZMCP.tickHooks.<name>) the chunk registers are recorded under the script name and returned as {tools, hooks}; script_remove unregisters them.", function(a)
     local name = Z.checkName(a.name, "script name")
     local code = Z.argText(a, "code")
     local sideName, s = side(a)
@@ -500,12 +561,12 @@ Z.tool("script_list", "Installed persistent scripts per side: {server = [{name, 
     return out
 end)
 
-Z.tool("script_remove", "Forget a persistent script: args {name, side? = server|client}. Handlers it registered stay until its own cleanup runs or the next restart.", function(a)
+Z.tool("script_remove", "Forget a persistent script: args {name, side? = server|client}. Server: the tools and tick hooks the script registered are unregistered at once (returned as {tools, hooks}); Events handlers it added stay until its own cleanup runs or the next restart. Client: every client drops the hooks registered under the script name.", function(a)
     local name = Z.checkName(a.name, "script name")
     local sideName, s = side(a)
-    s.remove(name)
-    Z.event("script_remove", { name = name, side = sideName })
-    return { removed = name, side = sideName }
+    local dropped = s.remove(name) or {}
+    Z.event("script_remove", { name = name, side = sideName, tools = dropped.tools and J.array(dropped.tools) or nil })
+    return { removed = name, side = sideName, tools = J.array(dropped.tools or {}), hooks = J.array(dropped.hooks or {}) }
 end)
 
 Z.tool("status", "The bridge heartbeat (zmcp_status.json), written fresh: version, bootId, paused, players, time, tools, scripts, stats.", function()

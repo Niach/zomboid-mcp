@@ -64,11 +64,40 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 
 - **World-item model rotation:** `item:setWorldYRotation(a)` ROLLS a Y-up model (tips it over), it does not turn it around the vertical axis; for upright props leave the rotation at 0 (verified 2026-09-30 with the standing stones: yrot 75 laid the stone flat).
 - **World-item model scale:** a runtime `ModelScript` on a world item renders about 1 tile per model unit; the same mesh on the UI3DScene layer needs `ZMCPClient.e3d.MODEL_SCALE = 1.6` to match (verified side by side).
-- **Animals (B42):** `addAnimal(cell, x, y, z, "cow", AnimalDefinitions.getDef("cow"):getBreedByName("angus"))` then `animal:addToWorld()` (the debug menu does both). Breeds: angus, simmental, holstein. Animals are drawn only near the player and inside the view cone (`getAlpha(0)` is 0 otherwise) and they flee while stressed: `setDebugStress(0)`; `isWild()` was already false. Invisible `solidtrans` blockers did not keep them in.
+- **Animals (B42):** `addAnimal(cell, x, y, z, "cow", AnimalDefinitions.getDef("cow"):getBreedByName("angus"))` then `animal:addToWorld()` (the debug menu does both). Breeds: angus, simmental, holstein. Animals are drawn only near the player and inside the view cone (`getAlpha(0)` is 0 otherwise) and they flee while stressed: `setDebugStress(0)`; `isWild()` was already false. **No fences for animals through `collision_place`:** invisible `solidtrans` blockers did not keep them in (verified 2026-09-30, a paddock of blockers, the cows walked out while stressed); the same goes for `solid`. Animal movement is its own system (`IsoAnimal.pathToLocation`, `canClimbFences`, `climbOverFence`, `getAnimalZone` / `shouldCreateZone`, `zombie.characters.animals`): B42 keeps livestock in with real fence tiles inside a designated zone, not with square flags. If a pen must hold, build it from the vanilla tall fence tiles (`fencing_01_8` / `_9` north and `_10` / `_11` west carry `WallN` / `WallW` + `TallHoppableN/W`; the low `fencing_01_1..6` are `Hoppable` and climbable) with `build_structure`, calm the animal with `setDebugStress(0)` and expect it to test the fence; unverified live, so treat animals as set dressing rather than something a scene can pen.
 - **Corpses and blood:** `IsoDeadBody` objects are in `sq:getStaticMovingObjects()` (`removeFromWorld` + `removeFromSquare`); floor blood goes with the vanilla `sq:removeBlood(false, false)` followed by `sq:getChunk():invalidateRenderChunkLevels(0)` so the chunk redraws.
 - **Chunk render cache:** after removing or changing world objects from Lua call `sq:getChunk():invalidateRenderChunkLevels(0)`, otherwise the old picture can stay in the cached chunk FBO.
 - **Single-player Lua state:** `math.random` is nil (use `ZombRand` / `ZombRandFloat`); the UI manager can drop a full-screen `ISUIElement` after a hot reload (`isRemoved()` stays true even after re-adding; check `UIManager.getUI():contains(el.javaObject)` and `addToUIManager()` again); the debug console hides with `UIManager.getDebugConsole():setVisible(false)`.
 - **Passive actors:** `addZombiesInOutfit(x, y, z, 1, outfit, 50)` then `z:setUseless(true)`; `pathToLocation(x, y, z)` walks a useless zombie (verified: Farmer, Chef, Doctor outfits wandering), and `zombiesNear` tools can skip them via `isUseless()`. Three traps (verified in single player, `IsoGameCharacter.pathToAux` disassembled): when the straight line to the target is clear (`PolygonalMap2.lineClearCollide`) the engine sets `bMoving` without `bPathfind`, a "walk straight" mode that a useless zombie in `ZombieIdleState` never executes (`movex/movey` are zeroed), so it stays idle; call `pathToLocation(x, y, z)` and then `setVariable("bPathfind", true)` + `setMoving(false)` to force `PathFindState`, which walks the real path (scene `walkTo` / `follow` do). A path onto the tile a **player stands on** fails too, so aim at a neighbouring tile. And a zombie's `Say(text)` line is **not drawn** in single player (the player's is), so scenes draw their own bubble on the client. Kahlua: `tostring(z:pathToLocation(...))` fails with "Not enough arguments" because a void Java method returns no value.
+
+## Scenes on the dedicated server: coroutines and pcall (verified 2026-09-30)
+- A world change made from inside a scene coroutine (`placeTile` → `transmitAddObjectToSquare`, which fires Lua
+  events) leaves Kahlua in a state where the **next `pcall` on that coroutine dies with "Internal Kahlua error -
+  coroutine changed in pcall"** and the tool call that resumed the scene reports "call stack depth changed"
+  (`spawnItem` and `playServerSound` did not trigger it, `placeTile` did, reproducibly). `Api/Scenes.lua` therefore
+  hands every world-changing SDK call to the scheduler (`onMain`: the task yields `{call}`, the bridge tick runs
+  it on the main coroutine and resumes the task with the results in the same tick); `try(fn, ...)` and
+  `engine(fn)` are the scene-side helpers. A yield cannot cross a `pcall`, so a plain `pcall` around such a call
+  fails too: scenes use `try`.
+- A client running with the **Lua debugger's "Break On Error"** freezes the whole game on any Lua error, even one
+  caught by `pcall` (the `cure` command calling the non-existent `BodyDamage:setInfectionLevel` froze the owner's
+  client mid-session). Client code only calls methods the API index lists; `BodyDamage` has `setInfected`,
+  `setIsFakeInfected`, `setInfectionTime`, `setInfectionMortalityDuration` but no `setInfectionLevel` / `setWetness`.
+- `IsoObject:getSpriteName()` answers for every object on the live server (vanilla and placed); `world_query`
+  lists all of them with `sprite` and `name` (2026-09-30, 69 objects around a placed wall ring, none without a name).
+- `IsoPlayer:teleportTo(x, y, z)` on the client works for an admin in multiplayer once the client mod is alive
+  (a frozen debugger client silently drops every command).
+
+- **Coroutines and pcall (dedicated server, verified 2026-09-30):** an engine call that fires Lua events
+  (`transmitAddObjectToSquare` → `OnObjectAdded`, ...) made from inside a coroutine runs the handlers on the main
+  Kahlua coroutine; the next `pcall` on the calling coroutine then throws `Internal Kahlua error - coroutine changed
+  in pcall`. `spawnItem` (`AddWorldInventoryItem`) and `addZombiesInOutfit` did not trigger it, `IsoObject.new` +
+  `transmitAddObjectToSquare` did. The scene SDK therefore hands every world-changing call to the scheduler on the
+  main coroutine (`docs/SCENES.md`, "World calls run on the main coroutine"); any other coroutine code must do the same.
+- **A client running the Lua debugger with "Break On Error"** freezes the whole game on any Lua error, including one
+  that a `pcall` catches (PZ dumps the stack trace of caught errors too and the debugger breaks on it). The client
+  mod must therefore never call a method that may not exist in 42.21 as a feature test (`BodyDamage:setInfectionLevel`
+  and `setWetness` were such calls; removed). Pressing the continue arrow and unticking "Break On Error" resumes.
 
 ## Live server rules for sessions
 - **Allowed:**
@@ -121,7 +150,8 @@ Everything the runtime 3D system needs lives in three places that the engine bri
   entities3d` and `collision` (registries, metadata only). Bridge.lua reads it on every load.
 - **Files in the Lua cache dir**: `zmcp_model_<id>.x.b64` / `.png.b64`, `zmcp_tex_<id>.b64`, `zmcp_cscript_*.lua.txt`
   (the data; streamed to clients on demand, never held in the server heap).
-- **The chunk save**: carrier world items (`model_place`) and blocker objects (`collision_place`).
+- **The chunk save**: carrier world items (`model_place`) and blocker objects (`collision_place`). The save only
+  works while every sprite on the chunk has a name (see "Placed objects and the chunk save").
 Every client `hello` (join, reconnect) is answered with the whole state in dependency order: textures, models,
 client scripts, world sprites, **model placements**, **moving entities** (`V.sendAllTo` in Api/Visuals.lua calls
 `Api/Models.lua` last). `tests/sim/test_sim.py` ("server restart") wipes the Lua state, reloads the mod from the
@@ -131,12 +161,29 @@ stored ModData + files, replays a hello and asserts the same models / placements
   writes that table (`KahluaTable.save`) plus `worldXRotation / worldYRotation / worldZRotation`
   (`javap -c zombie.inventory.InventoryItem`). `getWorldStaticModel` reads the same key (with a `Flatpack`
   special case). The item's ModData also travels with the item to clients. In MP `AddWorldInventoryItem` sends
-  the carrier before the name is set, so `model_place` calls `wo:transmitCompleteItemToClients()` afterwards
-  (`IsoObject`, re-sends the object with `InventoryItem.saveWithSize`; **unverified live**).
+  the new world item itself (`IsoWorldInventoryObject.transmitCompleteItemToClients`), so `model_place` creates
+  the carrier with `instanceItem`, sets the name first and only then calls `sq:AddWorldInventoryItem(item, ox, oy, oz)`:
+  the one send carries the name. The `IsoWorldInventoryObject(item, sq, x, y, z)` constructor zeroes
+  `worldXRotation / worldYRotation` (and randomizes Z when it is < 0), so `yrot` is set afterwards and reaches
+  clients through the `place` record (ClientModels re-applies name and `yrot` by item id).
+- **`transmitCompleteItemToClients` ADDS, it never updates** (verified live 2026-09-30, bytecode 42.21):
+  `IsoObject.transmitCompleteItemToClients` sends an `AddItemToMap` packet and the client adds a new object. Calling it
+  on an object that was already sent duplicates it on every client. Seen live: `model_place` re-sending the
+  carrier left 29 carriers on the server and 58 on the client (half of them flat tire sprites); the YSNP scene's
+  `sq:addFloor(sprite)` + `obj:transmitCompleteItemToClients()` left 180 extra floor objects on the client.
+  `sq:addFloor`, `sq:transmitAddObjectToSquare(obj, i)` (= `AddTileObject(obj, i)` + that transmit) and
+  `sq:AddWorldInventoryItem(...)` (4-argument forms) already transmit once on the server: never add a second one.
+  To change an object clients already have, remove and re-add it, or apply the change on the clients too.
+  `addFloor` also removes the old floor, grass overlays and similar with `transmitRemoveItemFromSquare`, keeps rugs,
+  and updates roof, pathfinding and `IsoRegions`; `getFloor()` returns the first object whose sprite has
+  `solidfloor` (not simply index 0).
+- **A reconnect's first `hello` can be lost** (verified live 2026-09-30): `OnGameStart` fires before the server has
+  the player object, and the server drops the command. The client repeats `hello` every 5 s (at most 24 times)
+  until the server's `welcome`, which the server sends at once instead of through the visuals queue.
 - **Safety net:** `model_place` records `{square, carrier type + item id, model name, offsets, yrot}` in
   `visuals.placements`; on every `LoadGridsquare` (fires on the server and on clients for each square a chunk
   brings in) the carrier is looked up (by item id, then by type + model name) and the model re-applied if it is
-  missing (`model_place_restored` event, `restored` counter in `visuals_list`); a carrier that is gone (picked up)
+  missing (`model_place_restored` event, `restored` counter in `visuals_list`; server-side only, never re-sent); a carrier that is gone (picked up)
   is flagged `missing`. Clients do the same from the streamed `place` commands (ClientModels.lua).
 - **A placed model whose ModelScript is not registered yet** (fresh client, model files still streaming): the
   engine draws the carrier item's flat sprite (a tire piece icon) instead. `ItemModelRenderer.renderMain` →
@@ -147,6 +194,65 @@ stored ModData + files, replays a hello and asserts the same models / placements
   hello order (models before placements and entities) and the client-side re-apply after `modelResult`.
 - **Moving entities** are pure client state driven by the `e3d` stream: nothing to save on clients; the server
   registry (`entities3d`) plus the hello resend (with `elapsed`) is the persistence.
+- **Replacing a model's mesh** (verified live 2026-09-30, YSNP wizard and demon): `model_upload` with the same id
+  bumps `gen`, streams new files (`media/zmcp_model_<id>_<gen>.x`) and registers a new ModelScript
+  `zmcp_<id>_<gen>` on every client; the old name stays registered, so running `entity3d_*` entities keep drawing
+  the old mesh until they are re-spawned (`entity3d_spawn` with the same id: the client sees the new model name and
+  re-creates the scene object). Placements (`model_place`) pick up the new name through `refreshPlacements`.
+  Big meshes go through the `*_base64_file` args (a file in the Lua dir; the MCP does this itself above its blob
+  threshold): a 238 KB `.x` = 317 K base64 chars, far below `V.MAX_B64` (1.2 M), streamed in 157 chunks within
+  about a second.
+- **World-item model height** (verified live 2026-09-30, YSNP piers): one z level (96 px at zoom 1) is about
+  **1.65 model units** on a `model_place` carrier; the 3.0-unit piers meet the z + 1 deck at `model_upload` scale
+  0.55 (at scale 1 they were almost two levels tall). A floor one level up is drawn over the z = 0 models under it.
+- **Runtime upper floors are "orphan structures"** (42.21 `FBORenderCutaways$OrphanStructures`): a square at
+  z >= 1 with a player-built floor or stairs and no building. While one would hide the player on screen,
+  `IsoCell.occludedByOrphanStructureFlag` is true and the renderer cuts such squares above the player's level
+  away: seen live, the YSNP deck vanished over the piers (its two end squares stayed) whenever the owner stood
+  next to the bridge on the ground, and came back when they walked off.
+  Read the flag with `getClassFieldVal(getCell(), field)` in `run_lua_client`; take pictures when it is false.
+- **Moving-entity scale and depth** (verified live 2026-09-30 at zoom 1, 4K): on the UI3DScene layer with
+  `MODEL_SCALE = 1` one model unit is one tile, so a 2.17-unit wizard reads as about 1.2 players, just under one
+  z level. The layer is drawn over the world with its own depth buffer only: a figure partly below the ground (a
+  negative `h`) is not hidden by the floor or the lava, it simply looks like it floats in front of whatever is
+  south of it; stand figures on the surface and keep them on the camera side (south / east) of tall world models.
+  `ry = 45` shows the model's +Z front to the camera, a larger `ry` turns the front towards +x (east).
+
+## Placed objects and the chunk save (verified live 2026-09-30)
+- **A registered sprite without a name breaks the whole chunk save.** `IsoObject.save` looks the object's
+  `spriteName` up with `WorldDictionary.getIdForSpriteName` → `DictionaryData.getIdForSpriteName(name)`: for a
+  name not in the dictionary it takes `IsoSpriteManager.getSprite(name)` and, if that sprite's `id >= 0` (and not
+  `20000000`), calls `sprite.name.equals(name)`. `IsoSpriteManager.AddSprite(name)` / `AddSprite(name, id)` never
+  set `IsoSprite.name` (only `LoadTileDefinitions` does for vanilla tiles), so an object on a sprite registered by
+  `AddSprite(name, id)` threw `NullPointerException: "sprite.name" is null at DictionaryData.getIdForSpriteName`
+  in `ServerChunkLoader$SaveChunkThread` on every save. The chunk was then **never written**: at the next load
+  (walk away and back, restart) it came back from the map, and **everything** our tools had put on it was gone
+  (tiles from `place_object`, carrier items, blockers, runtime floors at z = 1). This was our collision sprites
+  (`zmcp_collision_*`); fixed by `sprite:setName(name)` in `CollisionSprites.lua` (server and clients; the load
+  side, `DictionaryData.getSpriteNameFromID`, also returns `sprite.name`, null for a nameless sprite).
+- **Rule:** every sprite a mod creates with `AddSprite` must get `setName(name)`; never call
+  `IsoSpriteManager.getSprite(name)` for unknown names (it adds a nameless id -1 sprite: harmless for the save,
+  but the object loses its sprite at reload). Vanilla tile sprites (`place_object`, `build_structure`, `addFloor`)
+  are named and save fine. World items (`IsoWorldInventoryObject`) have no `spriteName` and sprite id `20000000`,
+  both skipped by the dictionary. Check a live area for offenders: objects whose `getSprite():getName()` is nil
+  while `getSpriteName()` is set and `getSprite():getID() >= 0`; repair in place with `getSprite():setName(spriteName)`
+  (the objects share the sprite instance, so fixing the registered sprite fixes all of them).
+- **Evidence:** before the fix every periodic save logged the NPE; after `setName` (server via `pz load`, the
+  owner's client via `run_lua_client`) no NPE in the following saves, and an unload test (owner teleported ~300
+  tiles away, chunks unloaded and saved, back after ~2 min, chunk objects re-created) kept a `place_object` wall,
+  a `collision_place` blocker (square still `isSolid`), a `model_place` carrier with its world model, the YSNP
+  scene's blockers and z = 1 rails, and a runtime z = 1 floor.
+- **Runtime squares above ground persist.** `IsoCell.createNewGridSquare(x, y, 1, true)` on the server goes through
+  `ServerMap.setGridSquare` → `IsoChunk.setSquare`, which widens the chunk's `minLevel / maxLevel`
+  (`setMinMaxLevel`); `IsoChunk.Save` writes those levels. A floor added there (`addFloor` or
+  `IsoObject.new` + `transmitAddObjectToSquare`) survived the unload test; no `setModified` or extra call needed.
+- **Clearing a large area** (verified live 2026-09-30, YSNP `clear_radius = 40`): 4 845 squares around a player,
+  3 566 objects (trees, bushes, grass objects, boulders) removed with `transmitRemoveItemFromSquare` and one
+  `sq:addFloor` each, in 25 slices of 200 squares (one main-coroutine call per slice, a tick between slices): about
+  1.5 s, no errors, no chunk save NPE afterwards; the client then had exactly one floor on every square. Squares the
+  player has **never seen** (they were behind trees) stay black after the clearing (`sq:isSeen(0)` false, light 0,
+  `isCouldSee` true) until they enter the player's view cone: vanilla fog of war, not a render cache problem (a
+  chunk invalidate does not change it).
 
 ## Collision blockers for custom 3D models (ZOM-14, bytecode-verified 2026-09-30, live test pending)
 Custom models (`model_place` carriers, `entity3d_*` scene objects) have no collision. `collision_place` places
@@ -171,9 +277,11 @@ invisible tile objects that carry the vanilla flags; the engine then treats them
   `OnServerStarted`. `PropertyContainer.CreateKeySet()` only rebuilds the key list (no derived flags).
 - **Our sprites** (`shared/ZomboidMCP/CollisionSprites.lua`, loaded by the server and by every client):
   `zmcp_collision_solid {invisible, solid}`, `_solidtrans {invisible, solidtrans}`, `_wall_n {invisible, WallN,
-  collideN, cutN}`, `_wall_w {…W}`, `_wall_nw {both}`. `IsoObject.save` writes only the **numeric sprite id**
-  (`sprite.id`, -1 without a sprite) and `load` resolves it through `IsoSpriteManager.getSprite(int)` (after
-  `WorldConverter.tilesetConversions`), so the sprites are created with **fixed ids** via `AddSprite(name, id)`:
+  collideN, cutN}`, `_wall_w {…W}`, `_wall_nw {both}`. `IsoObject.save` writes the **numeric sprite id**
+  (`sprite.id`, -1 without a sprite) plus the object's `spriteName` as a dictionary id (see "Placed objects and the
+  chunk save": this needs `IsoSprite.name`, so every sprite is also given its name with `setName`), and `load`
+  resolves the sprite through `IsoSpriteManager.getSprite(int)` (after `WorldConverter.tilesetConversions`), so the
+  sprites are created with **fixed ids** via `AddSprite(name, id)`:
   `2097676288 + kind` = `IsoWorld.getSpriteID(8000, 1, k)` = `1048576 + (8000 - 2) * 262144 + k`; vanilla tile
   ids end near 121 million (tileset 460), `IsoChunk.Fix2x` only remaps ids below ~250 000. `AddSprite(name)`
   without an id (what `getSprite(name)` does for unknown names) would leave id -1 and the object would lose its

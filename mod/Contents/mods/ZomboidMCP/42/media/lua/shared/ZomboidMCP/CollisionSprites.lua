@@ -11,7 +11,8 @@
 -- (PolygonalMap2.squareChanged, called from AddTileObject) read exactly these flags, and IsoObject.render skips
 -- sprites with the `invisible` flag.
 --
--- Persistence: IsoObject.save writes only the numeric sprite id, so every sprite gets a FIXED id far above the
+-- Persistence: IsoObject.save writes the sprite id that WorldDictionary finds for the object's sprite name (and the
+-- load maps it back to IsoSprite.name), so every sprite gets a NAME (setName) and a FIXED id far above the
 -- vanilla range (IsoWorld.getSpriteID: tileset 460 ends near 121 million; ours start at "tileset 8000") and is
 -- re-registered whenever the sprite manager is (re)built: at file load, OnLoadedTileDefinitions (every world
 -- init, before chunks load), OnGameStart (clients / SP host) and OnServerStarted (dedicated server). Registration
@@ -61,6 +62,11 @@ local function registerKind(kind)
     local sprite
     if sm:getNamedMap():containsKey(name) then sprite = sm:getSprite(name) else sprite = sm:AddSprite(name, id) end
     if not sprite then error("AddSprite returned nil for " .. name) end
+    -- AddSprite never sets IsoSprite.name (vanilla tiles get it from LoadTileDefinitions). A registered sprite
+    -- (id >= 0) without a name makes every chunk save throw (DictionaryData.getIdForSpriteName: sprite.name.equals
+    -- -> NullPointerException in ServerChunkLoader$SaveChunkThread), so the chunk is never written and everything
+    -- placed on it vanishes at reload; loading resolves the saved id back through sprite.name as well.
+    if sprite:getName() ~= name then sprite:setName(name) end
     local props = sprite:getProperties()
     for _, flag in ipairs(def.flags) do
         local f = IsoFlagType[flag]

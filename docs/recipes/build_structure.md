@@ -5,7 +5,7 @@ Tool: `build_structure` (server). Batch `place_object`. Same engine calls in a l
 ```lua
 -- server: a 4x4 wooden wall ring with a floor, ground level, around cx,cy
 local cx, cy, z = 6420, 5510, 0
-local WALL_W, WALL_N, FLOOR = "walls_exterior_wooden_01_0", "walls_exterior_wooden_01_1", "floors_interior_wood_01_0"
+local WALL_W, WALL_N, FLOOR = "walls_exterior_wooden_01_0", "walls_exterior_wooden_01_1", "floors_interior_tilesandwood_01_40"
 local plan = {}
 for i = 0, 3 do
     plan[#plan + 1] = { x = cx, y = cy + i, sprite = WALL_W }        -- west wall
@@ -29,7 +29,10 @@ return { placed = placed, errors = errors }
 
 Notes:
 - Sheet/index conventions differ per sheet; check the tile numbers in `sprite_search` output (and the in-game tile
-  picker of the debug build menu) before assuming `_0` is the west wall.
+  picker of the debug build menu) before assuming `_0` is the west wall. Floors: there is no `floors_interior_wood_01`
+  sheet in 42.21 (the tool reports `unknown sprite`); wooden floors live in `floors_interior_tilesandwood_01`
+  (`_40` Hardwood, `_41` Oakwood, `_42` Birchwood, `_45` Finewood, `_52` Pinewood), carpets in `floors_interior_carpet_01`.
+- `world_query {what: "objects"}` lists what you placed with `sprite` and `name`; `remove_object` takes either.
 - Clean-up is the same loop with [remove_object](remove_object.md) per entry, or `sq:transmitRemoveItemFromSquare(o)`
   for every object whose sprite name is in your plan.
 - Keep batches under a few hundred objects per call: every placement sends a packet to each client.

@@ -25,10 +25,11 @@ flicker. That is the Claude star. Moving or rotating it every frame is a differe
   `client_model {ok, name}` events confirm it; `ZMCPClient.models.name("star")` returns the name in client code.
   Late joiners get every model on `hello`.
 - `model_place {id, x, y, z?, item?, ox?, oy?, oz?, yrot?, collide?, pid?}`: the server spawns a carrier world item
-  (default `Base.TirePiece`) on the square with `AddWorldInventoryItem(item, ox, oy, oz)`, sets
-  `item:setWorldStaticModel(name)` and records the placement (`pid`, default `p<n>`). `collide` adds an invisible
-  blocker on the square (`true` = `solid`, or any `collision_place` kind). Single player verified; in multiplayer the
-  carrier syncs and is re-sent after the model name is set (unverified live: test with a second player).
+  (default `Base.TirePiece`): `instanceItem(type)`, `item:setWorldStaticModel(name)`, then
+  `AddWorldInventoryItem(item, ox, oy, oz)`, and records the placement (`pid`, default `p<n>`). `collide` adds an invisible
+  blocker on the square (`true` = `solid`, or any `collision_place` kind). In multiplayer `AddWorldInventoryItem`
+  sends the carrier once, already carrying the name. Never call `transmitCompleteItemToClients` on it again: that
+  ADDS a second carrier on every client (verified live).
 - `model_remove` (`{pid}` or `{all: true}`) removes the carrier item, its blocker and the record everywhere;
   `visuals_list` lists every placement under `placements` (`pid`, model name, square, carrier item id, `collide`,
   `missing`, `restored`).
@@ -87,6 +88,14 @@ with an invisible blocker:
   when generating it, or lift with `oz` (`setOffset`): at scale 3, `oz` 0.45 still left the star about a fifth in the
   ground, so start around 0.6 and adjust live.
 - `scale` in the ModelScript multiplies the mesh units; the star mesh has radius 0.45, so scale 3 is about 1.35 tiles.
+- **Height: one z level is about 1.65 model units on a world item** (measured live 2026-09-30 against a floor one
+  level up: the YSNP piers, 3.0 units tall, reach the deck at `scale` 0.55; at scale 1 they stood almost two levels
+  high). Size anything that has to meet an upper floor with that, then check it from a spot where the upper floor
+  is not cut away (see the next point).
+- **Upper floors outside buildings vanish near the player.** A runtime floor at z >= 1 that is not part of a
+  building is an "orphan structure": while it would cover the player on screen, the vanilla cutaway hides such
+  squares above the player's level (`IsoCell.occludedByOrphanStructureFlag`, read with `getClassFieldVal`). Models underneath
+  then look like they carry nothing; judge the picture from a spot where the flag is false.
 - `worldItem:setOffset(x, y, z)` may exceed 0..1; `InventoryItem.setWorldX/Y/ZRotation` exist.
 
 ## Generating a `.x` mesh with Python (no Blender needed)
@@ -185,9 +194,10 @@ return name
 ```lua
 -- server: place a registered model on a carrier world item and roll it 45 degrees (what model_place does)
 local sq = ZMCP.square(6405, 5500, 0)
-local item = sq:AddWorldInventoryItem("Base.TirePiece", 0.5, 0.5, 0.6)   -- (type, ox, oy, oz)
-item:setWorldStaticModel("zmcp_star_1")                                 -- name from model_upload / client_model event
-item:setWorldYRotation(45)
+local item = instanceItem("Base.TirePiece")
+item:setWorldStaticModel("zmcp_star_1")               -- name from model_upload / client_model event; set BEFORE it is sent
+item = sq:AddWorldInventoryItem(item, 0.5, 0.5, 0.6)  -- (item, ox, oy, oz): adds it and sends it to the clients once
+item:setWorldYRotation(45)                            -- after: putting it down zeroes X/Y rotation (clients: model_place's place record)
 return { id = item:getID(), x = sq:getX(), y = sq:getY() }
 ```
 

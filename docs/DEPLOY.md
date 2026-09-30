@@ -1,5 +1,11 @@
 # Deploying Zomboid MCP (ZOM-9)
 
+Releasing Zomboid MCP has four parts: upload the mod to its public Steam Workshop item with `tools/upload.sh`
+(SteamCMD, verified afterwards through the public API and an anonymous download), switch the dedicated server's
+mod lists to the Workshop item (a record of the one-time change on the Coolify service), install the MCP server and
+the "zomboid engine" skill on the machine that runs Claude Code (`mcp/install.sh`), and walk through the acceptance
+demos with the owner in the game. The last section lists what to note down afterwards.
+
 Everything here changes the live server or the Workshop item: do it with the owner in chat. Deployment specifics
 (ssh target, container, volume, SteamCMD paths, Steam user, Workshop id) live in `~/.config/zomboid-mcp/local.env`
 and never in the repo (see `docs/local.env.example`).
@@ -9,7 +15,7 @@ and never in the repo (see `docs/local.env.example`).
 ```sh
 make test                              # everything green
 tools/upload.sh --dry-run              # shows the generated VDF and the SteamCMD command
-tools/upload.sh "0.3.0: scripting-first bridge, client runtime, MCP server"
+tools/upload.sh "0.3.1: scenes (You shall not pass, haunted house, phone Flappy), docs"
 ```
 
 - `tools/upload.sh` renders `tools/workshop.vdf.template` (title "Zomboid MCP", **visibility 0 = public**,
@@ -69,7 +75,7 @@ For the Workshop copy use the path under `~/.steam/steam/steamapps/workshop/cont
    `world_sprite {id: "snail", texture: "snail", x, y, tiles: 3, path: [[x+10, y]], speed: 0.5, loop: "pingpong"}`
 4. static 3D Claude star: `model_upload {id: "star", mesh_path: "art/3d/zmcp_star.x", png_path: "art/3d/zmcp_star.png", scale: 3}`
    then `model_place {id: "star", x, y}`; moving via `entity3d_*` if ZOM-11 landed
-5. a tile structure: `build_structure` wall ring, `remove_object` to clear it
+5. a tile structure: `build_structure` wall ring with a floor (`walls_exterior_wooden_01_0/1`, `floors_interior_tilesandwood_01_40`; `floors_interior_wood_01_*` does not exist in 42.21), `world_query` to see the placed objects by sprite/name, `remove_object` to clear it
 6. a flappy bird screen app (`app_start` with `examples/apps/flappy.lua`, ZOM-10)
 7. a scene with a passive zombie merchant (`scene_start` with `examples/scenes/merchant.lua`, ZOM-10)
 8. hot reload without restart: `script_install` a tool, call it, `script_remove`

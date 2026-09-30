@@ -42,7 +42,7 @@ from zmcp_game import (GameBridge, GameError, LocalTransport, SshTransport,  # n
                        default_lua_dir, log, poll_command, DEFAULT_POLL_FILE)
 from zmcp_index import ApiIndex, default_index_dir   # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 SERVER_NAME = "zomboid-mcp"
 
 # JSON-RPC error codes
@@ -332,6 +332,8 @@ class ZomboidMCP(object):
         "haunted_house": ("scenes", "A persistent, trigger-driven haunted-house sequence with lights, sounds, puppets and a restorable area."),
         "companion": ("scenes", "A companion who follows the nearest player and comments on what happens."),
         "flappy": ("apps", "A complete flappy bird screen app drawn from shapes, score reported to the server."),
+        "flappy_phone": ("apps", "The flappy bird inside a phone frame in the middle of the screen, the world visible around it (the showcase capture)."),
+        "you_shall_not_pass": ("scenes", "The endgame showcase: a permanent lava cavern with a stone bridge one floor up, the grey wizard and the fire demon, and a re-triggerable cutscene (needs the eight models of examples/scenes/you_shall_not_pass/art, see its README)."),
     }
 
     def _examples_dirs(self):
@@ -355,6 +357,8 @@ class ZomboidMCP(object):
         kind, summary = self.TEMPLATES[name]
         for d in dirs:
             path = os.path.join(d, kind, name + ".lua")
+            if not os.path.isfile(path):                                   # a folder example: <name>/scene.lua + art + README
+                path = os.path.join(d, kind, name, "scene.lua")
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as f:
                     code = f.read()

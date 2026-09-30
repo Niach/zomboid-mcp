@@ -30,6 +30,23 @@ No `io`, no `bit` (use arithmetic), **no `next()`** (`for _ in pairs(t) do retur
 `tostring()` needs an argument, `os.date` works, Java overloads resolve by argument count, Java lists are
 `:size()` / `:get(i)` from 0, strings are Java strings (`string.byte` gives UTF-16 units), pattern sets must not start
 a range with an escaped char (`[%]-~]` is not a range). Return plain tables/strings/numbers/booleans from chunks.
+Two more traps with Java objects: a **void Java method returns no value at all**, so `tostring(zed:pathToLocation(x, y, z))`
+or `print(obj:voidMethod())` fails with "Not enough arguments" (call it on its own line, then `tostring` something
+else); and **a Java method cannot be referenced without calling it**: `obj:method and obj:method()` is a syntax error
+and `obj.method` is nil for Java objects, so feature-test with `pcall(function() return obj:method() end)` instead.
+
+- Inside a coroutine (scenes) an engine call that fires Lua events breaks the next `pcall` on that coroutine
+  (`coroutine changed in pcall`, dedicated server): scenes use `try` / `engine` (docs/SCENES.md), never `pcall`
+  around a world call.
+
+## Persistence of placed objects
+
+- Tiles, blockers, carrier items and runtime squares (also `createNewGridSquare` at z > 0) are saved with their
+  chunk. **One object whose sprite has an id but no name** (`IsoSpriteManager.AddSprite(name, id)` without
+  `sprite:setName(name)`) makes the server's chunk save throw (`"sprite.name" is null at
+  DictionaryData.getIdForSpriteName`), the chunk is never written and everything on it vanishes at the next load.
+  Place vanilla sprites (named) or register runtime sprites with a fixed id **and** `setName`; never
+  `getSprite(name)` for unknown names.
 
 ## Files
 
