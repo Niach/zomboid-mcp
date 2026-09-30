@@ -223,6 +223,13 @@ stored ModData + files, replays a hello and asserts the same models / placements
   `ServerMap.setGridSquare` → `IsoChunk.setSquare`, which widens the chunk's `minLevel / maxLevel`
   (`setMinMaxLevel`); `IsoChunk.Save` writes those levels. A floor added there (`addFloor` or
   `IsoObject.new` + `transmitAddObjectToSquare`) survived the unload test; no `setModified` or extra call needed.
+- **Clearing a large area** (verified live 2026-09-30, YSNP `clear_radius = 40`): 4 845 squares around a player,
+  3 566 objects (trees, bushes, grass objects, boulders) removed with `transmitRemoveItemFromSquare` and one
+  `sq:addFloor` each, in 25 slices of 200 squares (one main-coroutine call per slice, a tick between slices): about
+  1.5 s, no errors, no chunk save NPE afterwards; the client then had exactly one floor on every square. Squares the
+  player has **never seen** (they were behind trees) stay black after the clearing (`sq:isSeen(0)` false, light 0,
+  `isCouldSee` true) until they enter the player's view cone: vanilla fog of war, not a render cache problem (a
+  chunk invalidate does not change it).
 
 ## Collision blockers for custom 3D models (ZOM-14, bytecode-verified 2026-09-30, live test pending)
 Custom models (`model_place` carriers, `entity3d_*` scene objects) have no collision. `collision_place` places

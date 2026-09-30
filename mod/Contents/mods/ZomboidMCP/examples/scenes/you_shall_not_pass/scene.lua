@@ -14,13 +14,18 @@
 -- title, the piers under the demon crack, the demon falls back into the deep, the wizard lowers the staff.
 --
 -- Start (after the eight model_upload calls, see README.md):
---   scene_start {name = "ysnp", persistent = true, code = <this file>, args = {x, y, z, length, cooldown, face, rails, level}}
+--   scene_start {name = "ysnp", persistent = true, code = <this file>, args = {x, y, z, length, cooldown, face, rails, level, clear_radius}}
 -- Signals: scene_signal {name = "ysnp", signal = "play"} runs the cutscene now; signal "teardown" removes
 -- everything and restores the area (the default is to keep it: scene_stop only stops the ambience).
 -- Args: x, y = the WEST end of the bridge deck (default: 10 tiles north of the first player), z = ground level (0),
 --   length = bridge length in tiles (14), cooldown = seconds between cutscenes (180), face = rotation of the flat
 --   models towards the camera in degrees (45), rails = invisible rails along the deck (true), level = 1 builds the
 --   bridge one floor up with stairs (default); level = 0 is the flat fallback (deck on the ground, chasm blocked).
+--   clear_radius = the arena (0 = off): every non-floor object (trees, bushes, grass, boulders, fences, wrecks...) on
+--   every square within that many tiles of the hall centre at level z goes and one uniform floor (arena_floor, sand by
+--   default) is laid, in slices of 200 squares per tick; the hall itself and the scene's own blockers and carriers are
+--   kept. The arena is PERMANENT (teardown does not bring the meadow back); state.arena_radius records it, so a
+--   restart does not redo it and a re-run with a bigger radius only does the new ring.
 local cfg = args or {}
 local L = math.max(6, math.floor(tonumber(cfg.length) or 14))
 local cooldown = tonumber(cfg.cooldown) or 180
@@ -30,6 +35,9 @@ local deckUp = not (cfg.level == 0 or cfg.level == "0")
 local margin = math.max(1, math.floor(tonumber(cfg.clear_margin) or 6))   -- tree-free ring around the hall (trees overhang the hall otherwise)
 local DECK_FLOOR = cfg.deck_floor or "floors_exterior_tilesandstone_01_0"
 local HALL_FLOOR = cfg.hall_floor or "floors_burnt_01_0"
+local ARENA_R = math.max(0, math.floor(tonumber(cfg.clear_radius) or 0))
+local ARENA_FLOOR = cfg.arena_floor or "blends_natural_01_0"            -- bright sand: reads apart from the burnt hall, the lava and the stone deck
+local ARENA_SLICE = 200                                                  -- squares per tick
 local STAIRS = { "fixtures_stairs_01_8", "fixtures_stairs_01_9", "fixtures_stairs_01_10" }   -- bottom, middle, top (up towards north)
 local MODELS = { "ysnp_pier", "ysnp_pier_broken", "ysnp_rock", "ysnp_stalagmite", "ysnp_lava", "ysnp_demon", "ysnp_wizard", "ysnp_wizard_up" }
 
@@ -99,6 +107,7 @@ local function place(model, pid, x, y, pz, opts)
     opts = opts or {}
     local a = { id = model, pid = pid, x = x, y = y, z = pz, ox = opts.ox or 0.5, oy = opts.oy or 0.5, oz = opts.oz or 0, collide = opts.collide or "false" }
     if opts.yrot then a.yrot = opts.yrot end
+    if ZMCP.visuals.store().placements[pid] then tool("model_remove", { pid = pid }) end   -- model_place with a known pid would leave the old carrier
     return tool("model_place", a)
 end
 
@@ -119,6 +128,72 @@ end
 for i = 1, 5 do
     local x = lava.x1 + math.floor((i - 0.5) * (lava.x2 - lava.x1) / 5)
     stals[#stals + 1] = { pid = "ysnp_stal_" .. i, x = x, y = (i % 2 == 0) and (y0 - 3) or (y0 + 3) }
+end
+
+-- the arena: one square cleared down to its floor and given the arena floor; the scene's own objects stay (the
+-- invisible blockers are zmcp_* sprites, the model carriers world items). Returns removed objects, floor laid.
+local function arenaSquare(sq)
+    local floorObj, objs, gone = sq:getFloor(), sq:getObjects(), {}
+    for i = 0, objs:size() - 1 do
+        local o = objs:get(i)
+        local sp = ZMCP.util.spriteName(o) or ""
+        if o ~= floorObj and not instanceof(o, "IsoWorldInventoryObject") and not sp:find("^zmcp_") then gone[#gone + 1] = o end
+    end
+    local removed = 0
+    for _, o in ipairs(gone) do
+        if pcall(function() sq:transmitRemoveItemFromSquare(o) end) then removed = removed + 1 end
+    end
+    if floorObj == nil or ZMCP.util.spriteName(floorObj) ~= ARENA_FLOOR then
+        sq:addFloor(ARENA_FLOOR)            -- removes the old floor and its grass overlays, sends itself (see floor())
+        return removed, true
+    end
+    if removed > 0 then pcall(function() sq:RecalcAllWithNeighbours(true) end) end
+    return removed, false
+end
+
+-- clear the ring r0 < d <= r1 around the hall centre (the hall rectangle keeps its own floor), slice by slice: each
+-- slice runs on the main coroutine (engine), the task yields a tick between slices. Squares that are not loaded are
+-- counted; the radius is only recorded when every square was done, so the next start finishes the job.
+local function arena()
+    if ARENA_R <= 0 then return end
+    local done = (state.arena_floor == ARENA_FLOOR) and (state.arena_radius or 0) or 0   -- another floor tile: lay it everywhere again
+    if done >= ARENA_R then return end
+    local ok, err = try(ZMCP.checkSprite, ARENA_FLOOR)
+    if not ok then log("build step arena failed: " .. tostring(err)); return end
+    local list, r0, r1 = {}, done * done, ARENA_R * ARENA_R
+    for x = math.floor(cx - ARENA_R), math.ceil(cx + ARENA_R) do
+        for y = math.floor(cy - ARENA_R), math.ceil(cy + ARENA_R) do
+            local d = (x + 0.5 - cx) ^ 2 + (y + 0.5 - cy) ^ 2
+            local inHall = x >= hall.x1 and x <= hall.x2 and y >= hall.y1 and y <= hall.y2
+            if d <= r1 and (done == 0 or d > r0) and not inHall then list[#list + 1] = { x, y } end
+        end
+    end
+    local removed, laid, missing = 0, 0, 0
+    for i = 1, #list, ARENA_SLICE do
+        local sok, r, l, m = try(function()
+            local rr, ll, mm = 0, 0, 0
+            local cell = getCell()
+            for j = i, math.min(i + ARENA_SLICE - 1, #list) do
+                local sq = cell:getGridSquare(list[j][1], list[j][2], z)
+                if sq then
+                    local a, b = arenaSquare(sq)
+                    rr = rr + a
+                    if b then ll = ll + 1 end
+                else
+                    mm = mm + 1
+                end
+            end
+            return rr, ll, mm
+        end)
+        if not sok then log("build step arena failed: " .. tostring(r)); return end
+        removed, laid, missing = removed + r, laid + l, missing + m
+        tick()
+    end
+    state.arena = true
+    if missing == 0 then state.arena_radius, state.arena_floor = ARENA_R, ARENA_FLOOR end
+    redraw(math.floor(cx - ARENA_R), math.floor(cy - ARENA_R), math.ceil(cx + ARENA_R), math.ceil(cy + ARENA_R), z, z)
+    log("built arena: radius " .. done .. ".." .. ARENA_R .. ", " .. #list .. " squares, " .. removed .. " objects removed, "
+        .. laid .. " floors laid (" .. ARENA_FLOOR .. ")" .. (missing > 0 and (", " .. missing .. " squares not loaded: the next start finishes them") or ""))
 end
 
 if not state.built then
@@ -146,6 +221,7 @@ if not state.built then
         end
         log("cleared " .. removed .. " objects")
     end)
+    arena()
     step("hall_floor", function()
         for x = hall.x1, hall.x2 do for y = hall.y1, hall.y2 do floor(x, y, z, HALL_FLOOR) end end
     end)
@@ -198,6 +274,7 @@ if not state.built then
     redraw(hall.x1 - margin, hall.y1 - margin, hall.x2 + margin, hall.y2 + margin, z, deckZ)
     log("hall built: bridge " .. xs .. ".." .. xe .. " at y " .. y0 .. " level " .. deckZ)
 end
+arena()                                   -- a restart with a bigger clear_radius extends the arena of a built hall
 
 ---------------------------------------------------------------- lights and the two figures (render state: every start)
 local glow = {}                       -- { x, y, z, h = light handle }: the lava glow, pulsed by the ambience
@@ -209,7 +286,7 @@ end
 light(wizX, y0, deckZ, 0.75, 0.85, 1, 4)     -- a cold light on the wizard
 
 local function entity(id, model, x, y, ez, h, extra)
-    try(tool, "entity3d_remove", { id = id })
+    if ZMCP.models.store()[id] then try(tool, "entity3d_remove", { id = id }) end   -- (an unknown id would log an engine error)
     local a = { id = id, model = model, x = x, y = y, z = ez, h = h, ry = face }
     for k, v in pairs(extra or {}) do a[k] = v end
     return tool("entity3d_spawn", a)

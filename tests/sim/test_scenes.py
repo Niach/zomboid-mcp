@@ -497,7 +497,19 @@ for mid in YSNP_MODELS:
 advance(1.0)
 X0, Y0 = PX + 4, PY - 8
 XE = X0 + 11
-r = tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": X0, "y": Y0, "z": 0, "length": 12, "cooldown": 5}})
+# the arena (clear_radius 12 around the hall centre X0 + 5.5, Y0 + 0.5): a meadow square with grass, a tree, a fence
+# and an apple on the ground inside the radius (beyond the hall's own clear margin), one tree outside it
+lua("SIM.tile('blends_natural_01_0', 1048576 + 101)")
+def seed(x, y):
+    lua('''local sq = SIM.square(%d, %d, 0); sq:addFloor('floors_exterior_natural_01_0')
+        for _, n in ipairs({'e_americanholly_1_0', 'fencing_01_0', 'blends_grassoverlays_01_3'}) do sq:transmitAddObjectToSquare(IsoObject.new(sq, n), -1) end
+        sq:AddWorldInventoryItem('Base.Apple', 0.5, 0.5, 0)''' % (x, y))
+def sprites(x, y):
+    return sorted(o["spriteName"] for o in (lua("return SIM.square(%d, %d, 0).objects" % (x, y)) or {}).values())
+seed(X0 + 5, Y0 + 11)
+seed(X0 + 5, Y0 + 13)
+seed(X0 + 5, Y0 + 16)
+r = tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": X0, "y": Y0, "z": 0, "length": 12, "cooldown": 5, "clear_radius": 12}})
 check(r["status"] == "running", "you_shall_not_pass starts (%s)" % r["error"])
 advance(2.0)
 s = scene("ysnp")
@@ -514,6 +526,12 @@ check(len(bl) > 60 and kinds == {"wall_n", "wall_w"} and any(b["z"] == 1 for b i
 check(lua("return SIM.square(%d, %d, 1).floor ~= nil and SIM.square(%d, %d, 1).floor.spriteName == 'floors_exterior_tilesandstone_01_0' and (SIM.square(%d, %d, 1).floorDuplicates or 0) == 0" % ((X0 + 5, Y0) * 3)), "the deck is a real floor one level up (addFloor, which syncs itself: no second transmit that would duplicate it on clients)")
 check(lua("local n = 0 for _, sq in pairs(SIM.squares) do n = n + (sq.floorDuplicates or 0) end return n") == 0, "no floor of the scene was transmitted twice")
 check(lua("return SIM.square(%d, %d, 0).floor.spriteName == 'floors_burnt_01_0'" % (X0 - 2, Y0 + 3)), "the hall floor was replaced")
+check(sprites(X0 + 5, Y0 + 11) == ["blends_natural_01_0"] and lua("return #SIM.square(%d, %d, 0).worldObjects" % (X0 + 5, Y0 + 11)) == 1,
+      "the arena cleared the meadow square down to one sand floor and kept the item on the ground (%s)" % sprites(X0 + 5, Y0 + 11))
+check("e_americanholly_1_0" in sprites(X0 + 5, Y0 + 13) and "e_americanholly_1_0" in sprites(X0 + 5, Y0 + 16), "squares beyond clear_radius keep their trees")
+check(lua("return SIM.square(%d, %d, 0).floor.spriteName" % (X0 + 5, Y0 - 11)) == "blends_natural_01_0" and lua("return SIM.square(%d, %d, 0).floor.spriteName" % (X0 + 5, Y0)) == "floors_burnt_01_0",
+      "the arena is a disc of sand around the hall, the hall keeps its burnt floor")
+check(s["state"]["arena"] is True and s["state"]["arena_radius"] == 12 and any(l.startswith("built arena") or "built arena" in l for l in logs("ysnp")), "state.arena records the radius (%s)" % s["state"]["arena_radius"])
 stairs = [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (X0, Y0 + 3)).values()]
 check("fixtures_stairs_01_8" in stairs and "fixtures_stairs_01_10" in [o["spriteName"] for o in lua("return SIM.square(%d, %d, 0).objects" % (XE, Y0 + 1)).values()], "stairs at both ends (bottom south, top next to the deck)")
 ents = {e["id"]: e for e in tool("entity3d_list").values()}
@@ -526,7 +544,7 @@ advance(1.5)
 check(any("cutscene #1" in l for l in logs("ysnp")), "stepping onto the deck triggers the cutscene")
 advance(5.5)
 ents = {e["id"]: e for e in tool("entity3d_list").values()}
-advance(6.5)
+advance(7.0)          # the staff strike comes 13 s into the cutscene; the trigger polls every 0.5 s
 ents = {e["id"]: e for e in tool("entity3d_list").values()}
 check("ysnp_demon" in ents and ents["ysnp_demon"]["z"] > 1 and abs(ents["ysnp_demon"]["x"] - (X0 + 4 + 3.5)) < 0.6, "the demon rose out of the lava and flew up to the wizard (z %.2f, x %.1f)" % (ents["ysnp_demon"]["z"], ents["ysnp_demon"]["x"]))
 check(ents["ysnp_wizard"]["model"] == "ysnp_wizard_up", "the wizard raised the staff")
@@ -555,6 +573,16 @@ s = scene("ysnp")
 check(s is not None and s["status"] == "running" and s["restored"] is True and s["state"]["built"] is True, "the installation restarts with the bridge and keeps its built state")
 check(len(g.SIM.lights) >= lights_before + 9 and not any("built " in l for l in logs("ysnp")), "lights re-created, nothing rebuilt")
 check(len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_")]) == len(pids), "placements untouched by the restart")
+# a re-run with a bigger clear_radius only clears the new ring; the hall, its blockers and carriers stay
+n_blockers = len(tool("collision_list")["blockers"])
+tool("scene_start", {"name": "ysnp", "persistent": True, "code": ysnp, "args": {"x": X0, "y": Y0, "z": 0, "length": 12, "cooldown": 5, "clear_radius": 14}})
+advance(2.0)
+s = scene("ysnp")
+ring = [l for l in logs("ysnp") if "built arena: radius 12..14" in l]
+check(s["status"] == "running" and s["state"]["arena_radius"] == 14 and len(ring) == 1 and sprites(X0 + 5, Y0 + 13) == ["blends_natural_01_0"] and "e_americanholly_1_0" in sprites(X0 + 5, Y0 + 16),
+      "a bigger clear_radius extends the arena by the new ring only (%s)" % ring)
+check(len(tool("collision_list")["blockers"]) == n_blockers and len([p for p in tool("visuals_list")["placements"].values() if p["pid"].startswith("ysnp_")]) == len(pids) and not any("built hall_floor" in l for l in logs("ysnp")[-5:]),
+      "the extension kept every blocker and carrier and rebuilt nothing")
 # teardown on request: models, blockers, deck, stairs go; the snapshot restores the area
 tool("scene_signal", {"name": "ysnp", "signal": "teardown"})
 advance(1.0)

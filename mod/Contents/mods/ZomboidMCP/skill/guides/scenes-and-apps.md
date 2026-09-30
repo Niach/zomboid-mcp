@@ -83,6 +83,8 @@ onStop(function(reason) log("closing:", reason) end)
 ## Budget, safety, etiquette
 
 - 8 ms per tick for all scenes together. Never loop without `wait`; check `scene_list` `stats.overBudget`.
+- Big world edits (clearing / flooring thousands of squares) go in slices: one `engine(fn)` per ~200 squares, then
+  `tick()`; only loaded squares exist, so count the missing ones and finish them on the next start (the YSNP arena).
 - `try(fn, ...)` for calls that may fail; never a plain `pcall` around `wait` or around SDK world calls
   (`placeTile`, `spawnActor`, `tool(...)`, `sound`, ...): they yield to the main coroutine like `wait` does.
 - Players see everything at once. Puppets stay `passive`, sounds are sparse, world changes are announced and undone

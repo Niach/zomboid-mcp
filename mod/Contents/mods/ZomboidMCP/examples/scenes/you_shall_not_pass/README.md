@@ -22,6 +22,16 @@ runtime 3D models.
   on the two landings, with invisible rails (`wall_n` / `wall_w` on the deck squares). `args.rails = false` leaves the
   edges open: falling lands you in the lava lake one floor down, which is walkable, so nobody gets stuck.
   `args.level = 0` is the flat fallback (deck on the ground, chasm squares `solidtrans`).
+- **The arena** (`clear_radius` > 0): every square within that many tiles of the hall centre (level `z`) is cleared
+  down to its floor (trees, bushes, grass, flowers, boulders, fences, wrecks, furniture: every non-floor object
+  except items on the ground and the scene's own blockers) and gets one uniform floor, `arena_floor` (default
+  `blends_natural_01_0`, bright sand: it reads apart from the burnt hall, the lava and the stone deck). It runs in
+  slices of 200 squares per tick (each slice on the main coroutine through `try`), so radius 40 (about 4 850
+  squares) takes about 25 ticks. Only loaded squares can be cleared: the owner (or anybody) must be near; squares
+  that were not loaded are counted in the log and the next start finishes them. The arena is **permanent**:
+  `restoreArea` never removes floors and a snapshot covers at most 900 squares, so the teardown leaves it (it only
+  brings the hall's own margin back from the snapshot). `state.arena_radius` / `state.arena_floor` record it: a
+  restart does nothing, a re-run with a bigger radius clears only the new ring, another `arena_floor` re-lays it.
 - **The figures**: `ysnp_wizard` and `ysnp_demon` are moving 3D entities (`entity3d_*`), so they can rise, fly and
   fall smoothly; they are re-spawned on every start and re-sent to every joining client by the mod.
 
@@ -39,11 +49,25 @@ runtime 3D models.
    `events_poll {kinds: ["client_model"]}` shows each client's registration.
 2. Pick an isolated, flat, uninhabited spot with the owner (the hall is 20×9 tiles plus a ring of pillars; the
    bridge runs west to east; `x, y` is the west end of the deck). Stand near it so the squares are loaded.
-3. `scene_start {name: "ysnp", persistent: true, code: <scene.lua>, args: {x, y, z: 0, length: 14, cooldown: 180}}`.
+3. `scene_start {name: "ysnp", persistent: true, code: <scene.lua>, args: {x, y, z: 0, length: 14, cooldown: 180, clear_radius: 40}}`.
    `scene_logs {name: "ysnp"}` lists every build step; `scene_list` shows `state.built`.
 4. Walk onto the bridge: the cutscene. `scene_signal {name: "ysnp", signal: "play"}` runs it on demand.
-5. Tuning: `args.face` rotates the flat figures towards the camera (default 45), `deck_floor` / `hall_floor` change
-   the tiles, `length` the span (6 and up).
+5. Tuning: the args below.
+
+| arg | default | what |
+|---|---|---|
+| `x`, `y` | 10 tiles north of the first player | the west end of the bridge deck |
+| `z` | 0 | ground level of the hall |
+| `length` | 14 | bridge length in tiles (6 and up); the hall is `length + 6` by 9 tiles |
+| `cooldown` | 180 | seconds between two cutscenes |
+| `face` | 45 | rotation of the flat models towards the camera, degrees |
+| `rails` | true | invisible rails along the deck (`false` leaves the edges open) |
+| `level` | 1 | 1: bridge one floor up with stairs; 0: flat fallback (deck on the ground, chasm blocked) |
+| `clear_margin` | 6 | vegetation-free ring around the hall (trees would overhang it) |
+| `clear_radius` | 0 (off) | the arena: clear and floor every square within this radius of the hall centre (permanent) |
+| `arena_floor` | `blends_natural_01_0` | the arena floor tile (sand; `floors_exterior_tilesandstone_01_48` or `blends_street_01_48` are light paving / concrete) |
+| `deck_floor` | `floors_exterior_tilesandstone_01_0` | the bridge deck tile |
+| `hall_floor` | `floors_burnt_01_0` | the hall floor tile |
 
 The installation is permanent: `scene_stop` only stops the ambience and the trigger (the world objects and the
 models stay; `scene_start` again picks the built state up). `scene_signal {signal: "teardown"}` removes the models,

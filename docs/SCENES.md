@@ -164,7 +164,8 @@ or a function). `ease.linear|inQuad|outQuad|inOutQuad|inCubic|outCubic|inOutCubi
    One-shot sequences (a supply drop) just run top to bottom and end.
 4. **Budget.** Everything that repeats goes through `every`/`ambient`/`trigger` with sensible periods (0.5 s and up).
    Use `near`/`ambient` so idle installations cost nothing when nobody is there. `scene_list` shows `stats.ms` and
-   `overBudget`.
+   `overBudget`. Big world edits (clearing or flooring thousands of squares) go in slices: one `engine(fn)` per
+   ~200 squares, then `tick()` (the YSNP arena, `examples/scenes/you_shall_not_pass/scene.lua`).
 5. **Errors.** Use `try(fn, ...)` (`local ok, r = try(spawnActor, {...})`) for calls that may fail, never a plain
    `pcall` around `wait` or around a world call: `placeTile`, `spawnActor`, `tool(...)`, `sound`, `lightning`,
    `restoreArea`, `actor:remove` and every other SDK call that changes the world hands the work to the main
