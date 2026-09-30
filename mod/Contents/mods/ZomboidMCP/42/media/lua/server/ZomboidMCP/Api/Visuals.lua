@@ -13,7 +13,7 @@
 --        model_remove, world_sprite, falling_items, overlay_draw, server_message, visuals_list, clear_visuals,
 --        plus the client side of script_install/list/remove (ZMCP.scriptSides.client).
 if isClient() then return end
-if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Visuals.lua") end
+if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("Bridge.lua must be loaded before Api/Visuals.lua") end
 
 local Z = ZMCP
 local J = ZMCPJson

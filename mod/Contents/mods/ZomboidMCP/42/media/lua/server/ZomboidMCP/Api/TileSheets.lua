@@ -2,7 +2,7 @@
 -- Sprite names are "<sheet>_<n>" with n in 0..count-1. Used by sprite_search as a fallback when the live sprite map
 -- is not readable, and to validate sprite names. Regenerate with tools/gen_tilesheets.sh.
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
-if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 ZMCP.tileSheets = {
     ["advertising_01"] = 128,
     ["advertising_01_on"] = 128,

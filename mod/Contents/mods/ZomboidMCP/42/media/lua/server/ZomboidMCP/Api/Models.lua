@@ -8,7 +8,7 @@
 -- Server only. Re-runnable (hot reload): handlers stored in ZMCP.models.handlers and removed before re-adding.
 if isClient() then return end
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
-if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 if not (ZMCP and ZMCP.util) then pcall(require, "ZomboidMCP/Api/Common") end
 if not (ZMCP and ZMCP.util and ZMCP.util.pos) then error("ZomboidMCP/Api/Common.lua must be loaded first") end
 

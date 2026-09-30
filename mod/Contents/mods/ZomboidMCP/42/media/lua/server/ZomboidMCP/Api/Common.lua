@@ -2,7 +2,7 @@
 -- item/object/player summaries and square scans. Server only. Re-runnable (hot reload).
 -- Tools register with ZMCP.tool(name, desc, fn); argument schemas live in the MCP catalogue (mcp/zmcp_catalog.py).
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
-if not (ZMCP and ZMCP.tool) then error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
+if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("ZomboidMCP/Bridge.lua must be loaded before Api/") end
 
 local Z = ZMCP
 Z.util = Z.util or {}

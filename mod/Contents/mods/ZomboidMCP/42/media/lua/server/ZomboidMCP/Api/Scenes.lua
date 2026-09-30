@@ -17,7 +17,7 @@
 -- Heap rules: no code or textures in ModData (files only), `state` is meant for a handful of numbers/flags.
 -- Tools: scene_start, scene_stop, scene_list, scene_logs, scene_signal, app_start, app_stop, app_list.
 if isClient() then return end
-if not ZMCP or not ZMCP.tool then error("Bridge.lua must be loaded before Api/Scenes.lua") end
+if not (ZMCP and ZMCP.tool) then if isClient and isClient() then return end error("Bridge.lua must be loaded before Api/Scenes.lua") end
 if not (ZMCP.visuals and ZMCP.visuals.enqueue) then error("Api/Visuals.lua must be loaded before Api/Scenes.lua") end
 
 local Z = ZMCP
