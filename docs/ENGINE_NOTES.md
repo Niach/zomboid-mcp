@@ -99,10 +99,87 @@ Tested live with the owner in single-player (see ZOM-11 for details):
   getScriptManager():addModelScript(ms)
   ```
   Leaving out `setModule` makes `addModelScript` throw an NPE.
-- **Display:** a carrier world item, e.g. `sq:AddWorldInventoryItem("Base.TirePiece", ox, oy, oz)`, then `item:setWorldStaticModel(name)`.
+- **Display:** a carrier world item, e.g. `sq:AddWorldInventoryItem("Base.TirePiece", ox, oy, oz)`, then `item:setWorldStaticModel(name)` (stored in the item's ModData, saved with the world; see "3D permanence").
 - **Model space is Y-up for world items.** An XY-plane disc stands upright, and `setWorldYRotation` rolls it like a wheel. The origin is at ground level, so lift it or put the mesh bottom at y=0.
 - **Static objects render perfectly. Animating them flickers:** B42 chunk FBO caching (`PerformanceSettings.fboRenderChunk`) plus the `WorldItemAtlas` get invalidated on every offset or rotation change. Moving 3D needs a dynamic carrier (ZOM-11).
 - **Not usable:** `ScriptManager.ParseScript` parses item scripts but doesn't finalize them ("Couldn't find item"), and `ScriptBucket` isn't exposed. Use vanilla carrier items plus `ModelScript`.
+
+## 3D permanence: what survives a restart and a rejoin (ZOM-14, bytecode-verified 2026-09-30, live test pending)
+Everything the runtime 3D system needs lives in three places that the engine brings back on its own:
+- **ModData `"ZomboidMCP"`** (saved with the world): `visuals.textures / models / cscripts / sprites / placements /
+  entities3d` and `collision` (registries, metadata only). Bridge.lua reads it on every load.
+- **Files in the Lua cache dir**: `zmcp_model_<id>.x.b64` / `.png.b64`, `zmcp_tex_<id>.b64`, `zmcp_cscript_*.lua.txt`
+  (the data; streamed to clients on demand, never held in the server heap).
+- **The chunk save**: carrier world items (`model_place`) and blocker objects (`collision_place`).
+Every client `hello` (join, reconnect) is answered with the whole state in dependency order: textures, models,
+client scripts, world sprites, **model placements**, **moving entities** (`V.sendAllTo` in Api/Visuals.lua calls
+`Api/Models.lua` last). `tests/sim/test_sim.py` ("server restart") wipes the Lua state, reloads the mod from the
+stored ModData + files, replays a hello and asserts the same models / placements / entities / blockers.
+- **World items keep their static model in the save.** `InventoryItem.setWorldStaticModel(name)` is
+  `setWorldStaticItem`: it writes `"worldStaticModel"` into the item's ModData table, and `InventoryItem.save`
+  writes that table (`KahluaTable.save`) plus `worldXRotation / worldYRotation / worldZRotation`
+  (`javap -c zombie.inventory.InventoryItem`). `getWorldStaticModel` reads the same key (with a `Flatpack`
+  special case). The item's ModData also travels with the item to clients. In MP `AddWorldInventoryItem` sends
+  the carrier before the name is set, so `model_place` calls `wo:transmitCompleteItemToClients()` afterwards
+  (`IsoObject`, re-sends the object with `InventoryItem.saveWithSize`; **unverified live**).
+- **Safety net:** `model_place` records `{square, carrier type + item id, model name, offsets, yrot}` in
+  `visuals.placements`; on every `LoadGridsquare` (fires on the server and on clients for each square a chunk
+  brings in) the carrier is looked up (by item id, then by type + model name) and the model re-applied if it is
+  missing (`model_place_restored` event, `restored` counter in `visuals_list`); a carrier that is gone (picked up)
+  is flagged `missing`. Clients do the same from the streamed `place` commands (ClientModels.lua).
+- **A placed model whose ModelScript is not registered yet** (fresh client, model files still streaming): the
+  engine draws the carrier item's flat sprite (a tire piece icon) instead. `ItemModelRenderer.renderMain` →
+  `itemHasModel` checks `ScriptManager.getModelScript(getWorldStaticItem())` **every frame** and returns
+  `RenderStatus.NoModel`, nothing is cached, so the 3D model appears on the first frame after the registration.
+  The B42 chunk FBO may hold the old picture; the client calls `square:invalidateRenderChunkLevel(16)`
+  (`FBORenderChunk.DIRTY_ITEM_MODIFY`) for every placement on that model after registering it. Hence the
+  hello order (models before placements and entities) and the client-side re-apply after `modelResult`.
+- **Moving entities** are pure client state driven by the `e3d` stream: nothing to save on clients; the server
+  registry (`entities3d`) plus the hello resend (with `elapsed`) is the persistence.
+
+## Collision blockers for custom 3D models (ZOM-14, bytecode-verified 2026-09-30, live test pending)
+Custom models (`model_place` carriers, `entity3d_*` scene objects) have no collision. `collision_place` places
+invisible tile objects that carry the vanilla flags; the engine then treats them as walls / solid objects.
+- **How collision works in 42.21** (all from `javap -c`): `IsoGridSquare.RecalcProperties` clears the square's
+  `PropertyContainer` and `AddProperties` of every object's `IsoObject.getProperties()` (= its **sprite's**
+  properties; there are no per-object properties). `isSolid()` = `has(solid)`, `isSolidTrans()` =
+  `has(solidtrans)`. `CalculateCollide` (movement, `collideMatrix`) reads `collideN / collideW`, `HoppableN/W`,
+  `solid`, `solidtrans`, `trans`, `water`, `windowN/W`, `canPathN/W`; `CalculateVisionBlocked` reads
+  `blocksight`, `collideN / collideW`, `doorN/W`, `solid`, `solidfloor`, `trans`, `transparentN/W`,
+  `transparentFloor`. `IsoWorld.LoadTileDefinitions` derives the flags from the tile properties: `WallN` ⇒
+  `collideN + cutN`, `WallW` ⇒ `collideW + cutW`, `WallNW` ⇒ both, `WallNTrans` adds `transparentN`,
+  `HoppableN` ⇒ `collideN + canPathN + transparentN`, `WindowN` ⇒ `canPathN + collideN + cutN + transparentN`.
+  `AddTileObject` / `RemoveTileObject` call `RecalcAllWithNeighbours` and `PolygonalMap2.squareChanged`, so
+  zombie pathing follows a transmitted object at once (`setSquareChanged` also notifies `IsoRegions`).
+- **Invisible:** `IsoFlagType.invisible` on the sprite makes `IsoObject.isSpriteInvisible()` true, and
+  `render / renderFloorTile / renderWallTile* / renderAttachedAndOverlaySprites` skip it. Vanilla uses it for
+  the tent footprints (`camping_04_*`: `invisible + solidtrans`, also `IsMoveAble`, so players could pick them
+  up); no vanilla tile is `invisible + solid` or an invisible wall.
+- **Sprite properties from Lua:** `IsoSpriteManager.instance:getSprite(name):getProperties():set(IsoFlagType.x)`
+  / `unset` / `has`, exactly what vanilla `shared/Util/CustomTileProps.lua` does on `OnGameStart` and
+  `OnServerStarted`. `PropertyContainer.CreateKeySet()` only rebuilds the key list (no derived flags).
+- **Our sprites** (`shared/ZomboidMCP/CollisionSprites.lua`, loaded by the server and by every client):
+  `zmcp_collision_solid {invisible, solid}`, `_solidtrans {invisible, solidtrans}`, `_wall_n {invisible, WallN,
+  collideN, cutN}`, `_wall_w {…W}`, `_wall_nw {both}`. `IsoObject.save` writes only the **numeric sprite id**
+  (`sprite.id`, -1 without a sprite) and `load` resolves it through `IsoSpriteManager.getSprite(int)` (after
+  `WorldConverter.tilesetConversions`), so the sprites are created with **fixed ids** via `AddSprite(name, id)`:
+  `2097676288 + kind` = `IsoWorld.getSpriteID(8000, 1, k)` = `1048576 + (8000 - 2) * 262144 + k`; vanilla tile
+  ids end near 121 million (tileset 460), `IsoChunk.Fix2x` only remaps ids below ~250 000. `AddSprite(name)`
+  without an id (what `getSprite(name)` does for unknown names) would leave id -1 and the object would lose its
+  sprite on reload. `AddSprite(name, id)` on a name that already exists **replaces** the sprite object in both maps but keeps the
+  old id, so the registration reuses an existing named sprite and only re-sets its flags. It runs at file load,
+  `OnLoadedTileDefinitions` (each world init, before chunks load), `OnGameStart` and `OnServerStarted`;
+  `collision_place` also calls it lazily.
+- **Trade-offs:** (a) vanilla invisible tiles: only `solidtrans` exists, they are moveable (pick-up-able) and
+  carry tent metadata; (b) flags on an existing visible sprite would change every instance of that tile on the map;
+  (c) own sprites (chosen): nothing drawn, exact flags, persistent by id, but the client must run the same
+  registration (it does: the Workshop mod is required on clients) and a texture-less sprite must never be drawn
+  (`invisible` guarantees that; the sprite has no `IsoObjectType`, so it is not thumpable: zombies cannot break it).
+- **Not verified live yet:** that a client's `loadFromRemoteBuffer` / chunk load resolves the id before
+  `OnLoadedTileDefinitions` ran on that client (it runs at world init, chunks come later; a client that joins
+  without the mod cannot see the blocker), player collision on the client for `wall_n/w` (movement is
+  client-authoritative), zombie pathing around a fresh blocker, and the FBO redraw after a late model
+  registration. Verify with the owner: a player and a zombie blocked by `solid`, walking along a bridge of blocks.
 
 ## Moving 3D entities: UI3DScene layer (ZOM-11, bytecode-verified 2026-09-30, live test pending)
 Carrier evaluation for a smoothly moving, rotating custom model (all from `javap` of 42.21 + vanilla Lua; nothing

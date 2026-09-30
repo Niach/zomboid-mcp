@@ -6,6 +6,12 @@
 --       ms:Load(name, "{ mesh = <abs .x under media/>, texture = <abs .png>, scale = N, }"); addModelScript(ms)
 --   The model name is "zmcp_<id>_<gen>" (a new upload = new files + new name; the loader caches by path).
 --   ZMCPClient.models.name(id) gives the current model name for item:setWorldStaticModel(name).
+--   "place" {pid, x, y, z, model, name, gen, item, itemId, ox, oy, oz, yrot}   a model_place placement: kept in
+--       ZMCPClient.models.placements; when its square is loaded (LoadGridsquare) or its model registers, the
+--       carrier world item gets the model re-applied if it lost it and the chunk is marked for a redraw.
+--       Until the ModelScript is registered the engine draws the carrier item's flat sprite instead
+--       (ItemModelRenderer: NoModel, re-evaluated every frame, nothing is cached).
+--   "placeRemove" {pid?}   forget one placement or all.
 --   "e3d" {id, model, x, y, z, h, scale, rx, ry, rz, spin, roll, face, path, speed, loop, tox, toy, toz, dur,
 --          ease, elapsed}      create/replace a moving 3D entity (ZMCPClient.e3d, below)
 --   "e3dMove" {id, ...motion}, "e3dRotate" {id, rx, ry, rz, spin, roll, face}, "e3dRemove" {id?}
@@ -20,6 +26,12 @@ C.models = C.models or {}
 local M = C.models
 M.list = M.list or {}           -- id -> { name, gen, mesh, texture, scale, ok, err }
 M.waiting = M.waiting or {}     -- id -> model args waiting for files
+M.placements = M.placements or {}   -- pid -> place args (model_place registry as streamed by the server)
+M.handlers = M.handlers or {}
+M.stats = M.stats or { reapplied = 0, redraws = 0 }
+M.DIRTY_ITEM_MODIFY = 16        -- FBORenderChunk.DIRTY_ITEM_MODIFY: redraw the cached chunk level (world items live in it)
+for ev, fn in pairs(M.handlers) do if Events[ev] then Events[ev].Remove(fn) end end
+M.handlers = {}
 
 local function log(msg) if C.log then C.log(msg) else print("[ZomboidMCP] " .. tostring(msg)) end end
 
@@ -76,6 +88,7 @@ local function register(a)
     if ok then log("model " .. id .. " registered as " .. name)
     else log("model " .. id .. " failed: " .. tostring(err)) end
     C.send("modelResult", { id = id, gen = gen, name = name, ok = ok, err = ok and nil or tostring(err) })
+    if ok then M.refreshPlacements(name) end
 end
 
 -- "model" command: register now if both files are here, otherwise when their "file" pushes finish
@@ -107,6 +120,85 @@ function M.info()
     table.sort(out)
     return out
 end
+
+---------------------------------------------------------------- static placements (model_place)
+local function try(fn, ...) local ok, v = pcall(fn, ...); if ok then return v end return nil end
+
+-- the carrier world item of a placement on a loaded square: IsoWorldInventoryObject, InventoryItem
+function M.findCarrier(sq, p)
+    local list = sq:getWorldObjects()
+    if not list then return nil end
+    local best, bestWo
+    for i = 0, list:size() - 1 do
+        local wo = list:get(i)
+        local item = wo and wo:getItem()
+        if item then
+            if p.itemId and try(function() return item:getID() end) == tonumber(p.itemId) then return wo, item end
+            if try(function() return item:getFullType() end) == p.item then
+                local model = try(function() return item:getWorldStaticModel() end)
+                if model == p.name then return wo, item end
+                local ours = type(model) == "string" and string.sub(model, 1, 5) == "zmcp_"   -- another runtime model: not ours
+                if not ours and not best then best, bestWo = item, wo end
+            end
+        end
+    end
+    return bestWo, best
+end
+
+-- re-apply one placement if its square is loaded: "ok" | "restored" | "missing" | nil (square not loaded)
+function M.applyPlacement(p)
+    if not getCell then return nil end
+    local sq = getCell():getGridSquare(math.floor(tonumber(p.x) or 0), math.floor(tonumber(p.y) or 0), math.floor(tonumber(p.z) or 0))
+    if not sq then return nil end
+    local wo, item = M.findCarrier(sq, p)
+    if not item then return "missing" end
+    local result = "ok"
+    if try(function() return item:getWorldStaticModel() end) ~= p.name then
+        item:setWorldStaticModel(p.name)
+        if p.yrot then pcall(function() item:setWorldYRotation(tonumber(p.yrot)) end) end
+        M.stats.reapplied = M.stats.reapplied + 1
+        result = "restored"
+    end
+    -- the chunk FBO may still hold the flat fallback sprite: ask for a redraw of that level
+    if pcall(function() sq:invalidateRenderChunkLevel(M.DIRTY_ITEM_MODIFY) end) then M.stats.redraws = M.stats.redraws + 1 end
+    return result
+end
+
+function M.onPlace(a)
+    local pid = tostring(a.pid or "")
+    if pid == "" then return end
+    M.placements[pid] = a
+    M.applyPlacement(a)
+end
+
+function M.onPlaceRemove(a)
+    if a.pid then M.placements[tostring(a.pid)] = nil else M.placements = {} end
+end
+
+-- after a model registered: every placement using it on a loaded square gets a redraw / re-apply
+function M.refreshPlacements(modelName)
+    for _, p in pairs(M.placements) do
+        if not modelName or p.name == modelName then pcall(M.applyPlacement, p) end
+    end
+end
+
+function M.placementsAt(x, y, z)
+    local out = {}
+    for _, p in pairs(M.placements) do
+        if math.floor(tonumber(p.x) or -1) == x and math.floor(tonumber(p.y) or -1) == y and math.floor(tonumber(p.z) or -1) == z then out[#out + 1] = p end
+    end
+    return out
+end
+
+-- a square came in (chunk load / late join): placements on it get their model back if needed
+M.handlers.LoadGridsquare = function(sq)
+    if C.isEmpty and C.isEmpty(M.placements) then return end
+    local ok, err = pcall(function()
+        for _, p in ipairs(M.placementsAt(sq:getX(), sq:getY(), sq:getZ())) do M.applyPlacement(p) end
+    end)
+    if not ok then log("placement reapply failed: " .. tostring(err)) end
+end
+for ev, fn in pairs(M.handlers) do if Events[ev] then Events[ev].Add(fn) end end
 
 ---------------------------------------------------------------- moving 3D entities: UI3DScene layer
 -- Why a UI3DScene: world items live in cached chunk FBOs (animating them flickers), zombies/vehicles cannot be
@@ -463,6 +555,8 @@ end
 
 -- command table entries (Client.lua keeps C.commands across its own load)
 C.commands = C.commands or {}
+C.commands.place = function(a) M.onPlace(a) end
+C.commands.placeRemove = function(a) M.onPlaceRemove(a) end
 C.commands.e3d = function(a) E.set(a) end
 C.commands.e3dMove = function(a) E.move(a) end
 C.commands.e3dRotate = function(a) E.rotate(a) end

@@ -39,6 +39,18 @@ Vanilla models work without an upload: `entity3d_spawn {model: RadioBlue_Ground,
   XY plane), then `ry` (heading), then `rx`.
 - Scale = ModelScript scale (`model_upload`) × entity `scale`.
 
+## Persistence and collision
+- Entities are **permanent until removed**: the server keeps the registry (`entity3d_list`) in ModData, which is saved
+  with the world, and every client `hello` (join, reconnect, after a server restart) re-streams every entity **after**
+  the models it needs (order: textures, models, client scripts, sprites, `model_place` placements, entities), with the
+  motion's elapsed time so loops stay in phase. Nothing is stored on clients. `clear_visuals` (`all`) or
+  `entity3d_remove {all: true}` forgets them for good.
+- Entities have **no collision** and no world presence: a rolling star passes through players and zombies and does
+  not block anything. Where a moving model must be solid (a raised bridge, a gate), put invisible blockers on the
+  squares it occupies with `collision_place` and remove them (`collision_clear`, or `collision_place {kind: "remove"}`)
+  when it moves on; `collision_list` shows what is there. Static models: `model_place {collide}` does it in one call
+  (`3d-static-models.md`).
+
 ## Etiquette and limits
 - Entities are visible to everyone immediately; remove what you no longer need (`entity3d_remove {all: true}`).
 - One frame update per entity per client is cheap; dozens are fine, hundreds are not.

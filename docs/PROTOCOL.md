@@ -256,7 +256,7 @@ Workshop mod runs the client.
 
 | command | args | when |
 |---|---|---|
-| `hello` | `{version}` | `OnGameStart`. The server answers with every registered texture, model, client script and world sprite (late join / reconnect). Event `client_hello`. |
+| `hello` | `{version}` | `OnGameStart`. The server answers with every registered texture, model, client script, world sprite, model placement and moving 3D entity, in that order (late join / reconnect / after a server restart). Event `client_hello` (with the counts). |
 | `execResult` | `{id, ok, res, ms, module?}` | after every `exec` chunk set ran (`res` = the return value, tables JSON-encoded, or the error; ≤ 4000 chars). Event `client_exec_result`; `client_results {id}` shows `{to, results, pending, done}` and the MCP's `run_lua_client` waits for it. |
 | `texResult` | `{id, gen, ok, w?, h?, bytes?, err?}` | after a texture was written and loaded (or failed). Event `client_texture`. |
 | `fileResult` | `{id, gen, path, ok, bytes?, err?}` | after a `file` push was written. Event `client_file`. |
@@ -272,6 +272,8 @@ Workshop mod runs the client.
 | `scriptRemove` | `{name}` | forget a client script and drop every hook registered under `name` (`ZMCPClient.off(name)`). |
 | `file` | `{id, gen, part, total, data, path}` | base64 chunks of any file → `~/Zomboid/Lua/<path>` (parent dirs are created; `..` refused). Reply `fileResult`. |
 | `model` | `{id, gen, mesh, texture, scale}` | runtime 3D model: once both files (`mesh` = `media/….x`, `texture` = `media/….png`, relative to the Lua dir) are present, `ModelScript.new()` + `setModule(Base)` + `InitLoadPP` + `Load` + `addModelScript` under the name `zmcp_<id>_<gen>`; `ZMCPClient.models.name(id)` returns it. Reply `modelResult`. |
+| `place` | `{pid, x, y, z, model, name, gen, item, itemId, ox, oy, oz, yrot}` | a `model_place` placement (`ZMCPClient.models.placements`): if the square is loaded, the carrier world item (by `itemId`, else by `item` type) gets `setWorldStaticModel(name)` back when it lost it, and the chunk level is marked dirty (`invalidateRenderChunkLevel(16)`); repeated on `LoadGridsquare` and after the model registers. |
+| `placeRemove` | `{pid?}` | forget one placement, or all. |
 | `e3d`, `e3dMove`, `e3dRotate`, `e3dRemove` | see the `e3d` section below | moving 3D entities on the transparent `UI3DScene` layer (`ZMCPClient.e3d`): create/replace, motion (path or tween), rotation/spin/roll, remove. Reply `e3dResult`. |
 | `capture` | `{on}` | screen apps: the overlay consumes mouse events and is brought to the top (`on`), or is released (click-through, `backMost`). |
 | `tex` | `{id, gen, part, total, data}` | base64 PNG chunk. Complete → decoded (pure Lua, arithmetic only) into `~/Zomboid/Lua/zmcp_tex_<id>_<gen>.png` via `getFileOutput`, loaded with `getTexture(absolutePath)`. New generation = new file name because textures are cached by path. Reply `texResult`. |
@@ -347,11 +349,17 @@ event `client_entity3d`). A model that is not registered yet is retried every 0.
 ## Server-side registry (Api/Visuals.lua)
 
 `ModData "ZomboidMCP".visuals = { textures = {id → {file, gen, chars} | {pixel = json}}, models = {id → {meshSrc,
-texSrc, gen, scale, mesh, texture}}, sprites = {id → args}, cscripts = {name → {file}} }`. Only metadata is stored;
+texSrc, gen, scale, mesh, texture}}, sprites = {id → args}, cscripts = {name → {file}}, placements = {pid → {x, y, z,
+model, name, gen, item, itemId, ox, oy, oz, yrot, collide?, missing?, restored?}} }`. Only metadata is stored;
 the data lives in files in the Lua cache dir (`zmcp_tex_<id>.b64`, `zmcp_model_<id>.x.b64` / `.png.b64`,
 `zmcp_cscript_<name>.lua.txt`), read and streamed on demand (server heap). Late joiners get, in order, textures,
-models, client scripts, sprites; `Api/Models.lua` keeps `visuals.entities3d = {id → {model, x, y, z, h, scale, rx, ry, rz,
-spin, roll, face, motion}}` in the same table and resends it as `e3d` on `hello` (with `elapsed`).
+models, client scripts, sprites, placements (`place`), then the moving entities: `Api/Models.lua` keeps
+`visuals.entities3d = {id → {model, x, y, z, h, scale, rx, ry, rz, spin, roll, face, motion}}` in the same table and
+`V.sendAllTo` calls its resend last (`e3d` with `elapsed`). ModData and the files survive a server restart, so a
+fresh client after one receives the identical stream (`tests/sim/test_sim.py`, "server restart"). Collision
+blockers (`collision_place`) are ordinary world objects in the chunk save; their registry is
+`ModData "ZomboidMCP".collision["x,y,z:kind"] = {x, y, z, kind, name, t}` and needs no client stream (the sprites
+are registered by the shared `CollisionSprites.lua` on both sides).
 
 Upload flow through the MCP: `texture_upload {id, png_path}` (or `png_base64`) and `model_upload {id, mesh_path,
 png_path, scale}`; the MCP base64-encodes local files, the game copies the base64 into its own file and streams

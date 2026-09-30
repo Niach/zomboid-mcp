@@ -36,8 +36,9 @@ you write Lua and run it live; nothing needs a restart or a Workshop update.
   chosen by argument count, `tostring()` without an argument throws, `require` of new files fails at runtime.
 - Curated tools cover the common operations with validated arguments: `status`, `players_list`, `player_info`,
   `world_query`, `spawn_item`, `give_item`, `spawn_vehicle`, `vehicle_fix`, `spawn_zombies`, `kill_zombies_area`,
-  `place_object`, `remove_object`, `build_structure`, `set_weather`, `set_time`, `teleport`, `texture_upload`,
-  `texture_pixel`, `model_upload`, `model_place`, `entity3d_spawn/move/rotate/remove/list`, `world_sprite`,
+  `place_object`, `remove_object`, `build_structure`, `collision_place/list/clear`, `set_weather`, `set_time`,
+  `teleport`, `texture_upload`, `texture_pixel`, `model_upload`, `model_place`, `model_remove`,
+  `entity3d_spawn/move/rotate/remove/list`, `world_sprite`,
   `falling_items`, `overlay_draw`, `server_message`, `capture_input`, `visuals_list`, `clear_visuals`,
   `server_console`. Everything else is a script.
 - Authority: the server owns zombies, items, world objects, vehicles, weather, time, XP, traits and god mode; code
@@ -398,6 +399,50 @@ without a map reset. Returns what was removed and the remaining objects.
     "force": _b("Allow removing the floor tile.", default=False),
 }, ["x", "y"]), game="remove_object")
 
+COLLISION_KIND = _s("What the blocker does: 'solid' = the whole square blocks walking, zombie pathing and line of "
+                    "sight; 'solidtrans' = blocks walking and pathing but not sight (rails, edges); 'wall_n' / 'wall_w' "
+                    "= an invisible wall on the square's north / west edge (blocks crossing that edge and sight "
+                    "through it, like a vanilla wall); 'wall_nw' = both edges (a corner); 'remove' = take every "
+                    "blocker off the rectangle.", enum=["solid", "solidtrans", "wall_n", "wall_w", "wall_nw", "remove"])
+
+tool("collision_place", """
+Give custom 3D models (model_place, entity3d_*) real collision: place invisible blocking objects on a rectangle of
+squares (x..x+w-1, y..y+h-1 at level z), or remove them (kind = remove). Each blocker is a plain world object
+(IsoObject named 'ZMCP_collision', sprite 'zmcp_collision_<kind>') whose sprite carries the vanilla movement and
+sight flags (solid / solidtrans / WallN+collideN+cutN / WallW+collideW+cutW), so players cannot walk through,
+zombies path around it (the path map is updated at once) and line of sight respects it; nothing is drawn. It is
+server-authoritative, saved in the chunk like any placed tile and synced to every client (the mod registers the
+sprites on both sides). One blocker per kind per square; placing again is a no-op. Squares that are not loaded are
+skipped and listed. world_query shows blockers by sprite/name, collision_list lists the registry, remove_object
+works on them too. Returns {placed, existing, removed, unloaded, squares, sprite}.
+""", _obj({
+    "x": X, "y": Y, "z": Z,
+    "w": _i("Rectangle width in tiles (east).", default=1, minimum=1, maximum=50),
+    "h": _i("Rectangle height in tiles (south).", default=1, minimum=1, maximum=50),
+    "kind": COLLISION_KIND,
+    "name": _s("Label kept in the registry (collision_list), e.g. 'bridge-north-rail'."),
+}, ["x", "y", "kind"]), game="collision_place")
+
+tool("collision_list", """
+List the invisible collision blockers placed by collision_place / model_place {collide}: all of them, or those
+within `radius` tiles of x,y,z: [{x, y, z, kind, name, sprite, loaded, present}] plus the blocker sprite table
+(kind, sprite name, numeric id, flags, registered). Read-only and self-healing: an entry whose square is loaded but
+has no blocker any more (removed with remove_object, or the chunk was reset) is dropped and counted in `stale`.
+""", _obj({
+    "x": X, "y": Y, "z": Z,
+    "radius": _i("Radius in tiles around x,y (omit x,y for everything).", default=10, minimum=0, maximum=200),
+}), game="collision_list")
+
+tool("collision_clear", """
+Remove collision blockers: every registered one (all = true) or those within `radius` of x,y,z. Only loaded
+squares can be cleared; blockers on unloaded squares stay in the world and in the registry (`unloaded` counts
+them, run it again when someone is near). Server-authoritative and synced. Returns {removed, unloaded, remaining}.
+""", _obj({
+    "all": _b("Clear every blocker.", default=False),
+    "x": X, "y": Y, "z": Z,
+    "radius": _i("Radius in tiles around x,y.", default=10, minimum=0, maximum=200),
+}), game="collision_clear")
+
 tool("build_structure", """
 Place many tile sprites in one call (batched place_object): a wall ring, a hut, a decorated square. Up to 500
 objects; each entry is {x, y, z?, sprite, name?}. Per-entry errors (unloaded square, unknown sprite) are collected
@@ -486,10 +531,15 @@ docs/ENGINE_NOTES.md 'Runtime 3D models' and art/3d/ for a verified example mesh
 tool("model_place", """
 Place an uploaded 3D model in the world as a STATIC object: the server spawns a carrier world item on the square
 (default Base.TirePiece) and sets its world model to the registered ModelScript, so it renders in 3D with proper
-occlusion and no flicker. Server-authoritative in single-player (verified); in multiplayer the carrier item syncs
-but the model assignment is unverified. Offsets are fractions of the tile, oz lifts the model. Remove it like any
-ground item (world_query then run_lua_server). Moving 3D objects are entity3d_spawn / entity3d_move (a transparent 3D
-layer, smooth but no occlusion). Returns {placed, x, y, z, item}.
+occlusion and no flicker. Server-authoritative and PERMANENT: the model name lives in the carrier item's ModData,
+which is saved with the world and sent to clients with the item; the placement is also recorded (visuals_list
+'placements') and re-sent to every joining client, and whenever the square loads the model is re-applied if the
+item lost it. A client that has not registered the ModelScript yet (files still streaming after a join) shows the
+carrier item's flat sprite until the registration lands, then the 3D model. The model itself has NO collision:
+`collide` puts an invisible blocker on the same square in one call (true = solid; or a collision_place kind such
+as solidtrans). Offsets are fractions of the tile, oz lifts the model. Returns {pid, placed, x, y, z, item, itemId,
+collide}; model_remove {pid} takes it away. Moving 3D objects are entity3d_spawn / entity3d_move (a transparent
+3D layer, smooth but no occlusion).
 """, _obj({
     "id": _s("Model id from model_upload."),
     "x": X, "y": Y, "z": Z,
@@ -498,7 +548,23 @@ layer, smooth but no occlusion). Returns {placed, x, y, z, item}.
     "oy": _n("Offset within the tile, y.", default=0.5, minimum=-5, maximum=5),
     "oz": _n("Height offset.", default=0, minimum=-5, maximum=10),
     "yrot": _n("Rotation around the vertical axis in degrees.", minimum=-360, maximum=360),
+    "collide": _s("Collision under the model: 'true' / 'solid' (blocks walking, zombies and sight), 'solidtrans' "
+                  "(blocks walking, see-through), 'wall_n' / 'wall_w' / 'wall_nw' (invisible wall on those edges), "
+                  "'false' (default: none).", enum=["false", "true", "solid", "solidtrans", "wall_n", "wall_w", "wall_nw"],
+                  default="false"),
+    "pid": _s("Placement id (letters, digits, _ . -); default generated (p1, p2, ...).", pattern="^[A-Za-z0-9_.-]+$"),
 }, ["id", "x", "y"]), game="model_place")
+
+tool("model_remove", """
+Remove a static model placed with model_place: the carrier world item, the collision blocker placed with it (if
+`collide` was set) and the placement record, on the server and on every client. Server-authoritative. One
+placement (`pid` from model_place / visuals_list) or every placement (`all`). Squares that are not loaded cannot be
+touched: their world item stays until someone visits, the record is dropped anyway (`unloaded` counts them).
+Returns {removed, unloaded, missing, blockers, pids}.
+""", _obj({
+    "pid": _s("Placement id from model_place.", pattern="^[A-Za-z0-9_.-]+$"),
+    "all": _b("Remove every placement.", default=False),
+}), game="model_remove")
 
 ENTITY_ID = _s("Entity id (letters, digits, _ . -).", pattern="^[A-Za-z0-9_.-]+$")
 WX = _n("World x in tiles (fractions allowed; east).")
@@ -677,9 +743,12 @@ ZMCPClient.capture(true) themselves; clear_visuals {what: 'hooks'} releases it. 
 
 tool("visuals_list", """
 Everything the visual subsystem knows: uploaded textures [{id, gen, chars|pixel}], registered 3D models [{id, name,
-gen, scale}], persistent world sprites, client scripts [{name, file}], connected clients with their mod version and
-what they loaded, the outgoing queue length and pending item landings. Read-only, server-side; also pings the
-clients so their entries refresh for the next call.
+gen, scale}], static model placements [{pid, model, name, x, y, z, item, itemId, collide, missing, restored}]
+(model_place; `missing` = the carrier item is gone from its square, `restored` = how often the model had to be
+re-applied), persistent world sprites, client scripts [{name, file}], connected clients with their mod version and
+what they loaded, the outgoing queue length and pending item landings. All of it persists across server restarts
+(ModData + files) and is re-streamed to every joining client. Read-only, server-side; also pings the clients so
+their entries refresh for the next call.
 """, _obj({}), game="visuals_list")
 
 tool("clear_visuals", """

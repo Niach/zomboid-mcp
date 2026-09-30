@@ -27,12 +27,13 @@ DEST=$ZMCP_SSH:$MOUNT/ZomboidMCP/
 RSYNC_OPTS=(-rlptv --delete --chmod=D755,F644 --exclude '*.orig' --exclude '*.tmp')
 [ "${1:-}" = "--dry-run" ] && RSYNC_OPTS+=(--dry-run)
 
-# Json.lua lives in shared/ in the mod; the mount only covers server/ZomboidMCP, so ship a copy alongside
-# (Bridge.lua's guarded require finds either).
+# Json.lua and CollisionSprites.lua live in shared/ in the mod; the mount only covers server/ZomboidMCP, so ship
+# copies alongside (the guarded requires find either).
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 cp -r "$SRC"/. "$STAGE"/
 cp "$LUA/shared/ZomboidMCP/Json.lua" "$STAGE/Json.lua"
+cp "$LUA/shared/ZomboidMCP/CollisionSprites.lua" "$STAGE/CollisionSprites.lua"
 
 ssh -o BatchMode=yes "$ZMCP_SSH" "mkdir -p $MOUNT/ZomboidMCP"
 rsync "${RSYNC_OPTS[@]}" "$STAGE"/ "$DEST"

@@ -28,6 +28,8 @@ Conventions:
 | [place_object](place_object.md) | `place_object` | server |
 | [remove_object](remove_object.md) | `remove_object` | server |
 | [build_structure](build_structure.md) | `build_structure` | server |
+| [collision_place](collision_place.md) | `collision_place` / `collision_list` / `collision_clear` | server |
+| [model_place](model_place.md) | `model_place` / `model_remove` (+ `model_upload`) | server |
 | [entity3d](entity3d.md) | `entity3d_spawn/move/rotate/remove/list` (+ `model_upload`) | client |
 | [set_weather](set_weather.md) | `set_weather` | server |
 | [set_time](set_time.md) | `set_time` | server |

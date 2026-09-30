@@ -62,8 +62,9 @@ case "$1" in
   load)
     need_env
     # upload every server file as zmcp_src_<name>.lua plus a loader, then run the loader on the live server
-    files=("$MOD/shared/ZomboidMCP/Json.lua" "$MOD/server/ZomboidMCP/Bridge.lua")
-    for f in "$MOD"/server/ZomboidMCP/Api/*.lua; do [ -f "$f" ] && files+=("$f"); done
+    files=("$MOD/shared/ZomboidMCP/Json.lua" "$MOD/shared/ZomboidMCP/CollisionSprites.lua"
+           "$MOD/server/ZomboidMCP/Bridge.lua" "$MOD/server/ZomboidMCP/Api/Common.lua")
+    for f in "$MOD"/server/ZomboidMCP/Api/*.lua; do [ -f "$f" ] && [ "$(basename "$f")" != Common.lua ] && files+=("$f"); done
     names=()
     for f in "${files[@]}"; do
       n="zmcp_src_$(basename "$f")"; names+=("$n")

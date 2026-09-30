@@ -3,6 +3,8 @@
 -- registry (small: id -> spawn args + last motion, in ModData "ZomboidMCP".visuals.entities3d) and streams it to
 -- clients through the visuals queue, so late joiners get every entity on "hello" with the motion's elapsed time.
 -- Tools: entity3d_spawn, entity3d_move, entity3d_rotate, entity3d_remove, entity3d_list. Protocol: docs/PROTOCOL.md (e3d, e3dMove, e3dRotate, e3dRemove; reply e3dResult).
+-- Persistence: the registry is ModData (saved with the world); entities come back after a server restart because
+-- the hello path (Api/Visuals.lua V.sendAllTo) re-streams them, after the models they depend on, to every client.
 -- Server only. Re-runnable (hot reload): handlers stored in ZMCP.models.handlers and removed before re-adding.
 if isClient() then return end
 if not ZMCP then pcall(require, "ZomboidMCP/Bridge") end            -- no-op when loaded via loadstring (tools/pz load)
@@ -209,13 +211,12 @@ local function userOf(player)
     return ok and u or "?"
 end
 
+-- "hello" is answered by Api/Visuals.lua (V.sendAllTo), which calls M.sendAllTo LAST so that a late joiner has every
+-- model registered (and every placement) before its entities arrive; only the client replies are handled here.
 M.handlers.OnClientCommand = function(module, command, player, args)
     if module ~= "zmcp" then return end
     args = args or {}
-    if command == "hello" then
-        local ok, n = pcall(M.sendAllTo, player)
-        if not ok then print("[ZomboidMCP] entity3d resend failed: " .. tostring(n)) end
-    elseif command == "e3dResult" then
+    if command == "e3dResult" then
         local user = userOf(player)
         M.clients[user] = M.clients[user] or {}
         M.clients[user][tostring(args.id)] = { ok = args.ok, model = args.model, err = args.err, t = Z.now() }
