@@ -1,5 +1,13 @@
 # Zomboid MCP protocol
 
+The MCP process never opens a network port into the game: it talks to the server-side bridge (`Bridge.lua`) through
+numbered JSON files in the game's Lua cache directory, one request file per tool call answered on the next server
+tick, plus a heartbeat file and an append-only event log (part 1). The bridge in turn talks to the client mod of
+every player through `sendServerCommand("zmcp", ...)` messages of about 3 kB, chunking code, textures and models,
+and the clients answer with `sendClientCommand` (part 2). Related: the tool catalogue in [TOOLS.md](TOOLS.md), the
+engine facts in [ENGINE_NOTES.md](ENGINE_NOTES.md), the scene SDK in [SCENES.md](SCENES.md), deployment in
+[DEPLOY.md](DEPLOY.md).
+
 Part 1: MCP ⇄ server (files in the Lua cache dir). Part 2: server ⇄ client mod (`sendServerCommand`).
 
 # Part 1: MCP ⇄ server bridge

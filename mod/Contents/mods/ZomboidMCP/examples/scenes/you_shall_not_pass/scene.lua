@@ -119,6 +119,26 @@ end
 
 if not state.built then
     step("snapshot", function() state.snapshot = snapshotArea(hall.x1 - 1, hall.y1 - 1, hall.x2 + 1, hall.y2 + 1, z) end)
+    step("clear", function()          -- the hall takes over the area: trees, bushes, fences, walls, furniture go (the snapshot brings them back)
+        local removed = 0
+        for x = hall.x1 - 1, hall.x2 + 1 do
+            for y = hall.y1 - 1, hall.y2 + 1 do
+                local sq = getCell():getGridSquare(x, y, z)
+                if sq then
+                    local floorObj, objs, gone = sq:getFloor(), sq:getObjects(), {}
+                    for i = 0, objs:size() - 1 do
+                        local o = objs:get(i)
+                        if o ~= floorObj and not instanceof(o, "IsoWorldInventoryObject") then gone[#gone + 1] = o end
+                    end
+                    for _, o in ipairs(gone) do
+                        if pcall(function() sq:transmitRemoveItemFromSquare(o) end) then removed = removed + 1 end
+                    end
+                    if #gone > 0 then pcall(function() sq:RecalcAllWithNeighbours(true) end) end
+                end
+            end
+        end
+        log("cleared " .. removed .. " objects")
+    end)
     step("hall_floor", function()
         for x = hall.x1, hall.x2 do for y = hall.y1, hall.y2 do floor(x, y, z, HALL_FLOOR) end end
     end)

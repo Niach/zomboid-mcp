@@ -70,6 +70,35 @@ Everything below was verified live on our dedicated server or in the 42.21 clien
 - **Single-player Lua state:** `math.random` is nil (use `ZombRand` / `ZombRandFloat`); the UI manager can drop a full-screen `ISUIElement` after a hot reload (`isRemoved()` stays true even after re-adding; check `UIManager.getUI():contains(el.javaObject)` and `addToUIManager()` again); the debug console hides with `UIManager.getDebugConsole():setVisible(false)`.
 - **Passive actors:** `addZombiesInOutfit(x, y, z, 1, outfit, 50)` then `z:setUseless(true)`; `pathToLocation(x, y, z)` walks a useless zombie (verified: Farmer, Chef, Doctor outfits wandering), and `zombiesNear` tools can skip them via `isUseless()`. Three traps (verified in single player, `IsoGameCharacter.pathToAux` disassembled): when the straight line to the target is clear (`PolygonalMap2.lineClearCollide`) the engine sets `bMoving` without `bPathfind`, a "walk straight" mode that a useless zombie in `ZombieIdleState` never executes (`movex/movey` are zeroed), so it stays idle; call `pathToLocation(x, y, z)` and then `setVariable("bPathfind", true)` + `setMoving(false)` to force `PathFindState`, which walks the real path (scene `walkTo` / `follow` do). A path onto the tile a **player stands on** fails too, so aim at a neighbouring tile. And a zombie's `Say(text)` line is **not drawn** in single player (the player's is), so scenes draw their own bubble on the client. Kahlua: `tostring(z:pathToLocation(...))` fails with "Not enough arguments" because a void Java method returns no value.
 
+## Scenes on the dedicated server: coroutines and pcall (verified 2026-09-30)
+- A world change made from inside a scene coroutine (`placeTile` → `transmitAddObjectToSquare`, which fires Lua
+  events) leaves Kahlua in a state where the **next `pcall` on that coroutine dies with "Internal Kahlua error -
+  coroutine changed in pcall"** and the tool call that resumed the scene reports "call stack depth changed"
+  (`spawnItem` and `playServerSound` did not trigger it, `placeTile` did, reproducibly). `Api/Scenes.lua` therefore
+  hands every world-changing SDK call to the scheduler (`onMain`: the task yields `{call}`, the bridge tick runs
+  it on the main coroutine and resumes the task with the results in the same tick); `try(fn, ...)` and
+  `engine(fn)` are the scene-side helpers. A yield cannot cross a `pcall`, so a plain `pcall` around such a call
+  fails too: scenes use `try`.
+- A client running with the **Lua debugger's "Break On Error"** freezes the whole game on any Lua error, even one
+  caught by `pcall` (the `cure` command calling the non-existent `BodyDamage:setInfectionLevel` froze the owner's
+  client mid-session). Client code only calls methods the API index lists; `BodyDamage` has `setInfected`,
+  `setIsFakeInfected`, `setInfectionTime`, `setInfectionMortalityDuration` but no `setInfectionLevel` / `setWetness`.
+- `IsoObject:getSpriteName()` answers for every object on the live server (vanilla and placed); `world_query`
+  lists all of them with `sprite` and `name` (2026-09-30, 69 objects around a placed wall ring, none without a name).
+- `IsoPlayer:teleportTo(x, y, z)` on the client works for an admin in multiplayer once the client mod is alive
+  (a frozen debugger client silently drops every command).
+
+- **Coroutines and pcall (dedicated server, verified 2026-09-30):** an engine call that fires Lua events
+  (`transmitAddObjectToSquare` → `OnObjectAdded`, ...) made from inside a coroutine runs the handlers on the main
+  Kahlua coroutine; the next `pcall` on the calling coroutine then throws `Internal Kahlua error - coroutine changed
+  in pcall`. `spawnItem` (`AddWorldInventoryItem`) and `addZombiesInOutfit` did not trigger it, `IsoObject.new` +
+  `transmitAddObjectToSquare` did. The scene SDK therefore hands every world-changing call to the scheduler on the
+  main coroutine (`docs/SCENES.md`, "World calls run on the main coroutine"); any other coroutine code must do the same.
+- **A client running the Lua debugger with "Break On Error"** freezes the whole game on any Lua error, including one
+  that a `pcall` catches (PZ dumps the stack trace of caught errors too and the debugger breaks on it). The client
+  mod must therefore never call a method that may not exist in 42.21 as a feature test (`BodyDamage:setInfectionLevel`
+  and `setWetness` were such calls; removed). Pressing the continue arrow and unticking "Break On Error" resumes.
+
 ## Live server rules for sessions
 - **Allowed:**
   - Read-only inspection

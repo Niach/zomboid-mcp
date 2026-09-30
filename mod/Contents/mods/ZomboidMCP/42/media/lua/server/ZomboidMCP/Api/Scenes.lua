@@ -169,6 +169,14 @@ local function onMain(fn, ...)
     return unpack(results, 1, results.n)
 end
 S.onMain = onMain
+-- try(fn, ...): like pcall(fn, ...) for functions that make world calls (a world call yields, and a yield cannot
+-- cross a pcall): runs fn on the main coroutine under pcall there; returns ok, ... without raising.
+local function tryMain(fn, ...)
+    if not S.current then return pcall(fn, ...) end
+    local ok, results = coroutine.yield({ call = fn, args = pack(...) })
+    if not ok then return false, results[1] end
+    return true, unpack(results, 1, results.n)
+end
 -- run a {call} request on the main coroutine: returns ok plus the packed results for the task's resume
 local function serveCall(req)
     local args = req.args or { n = 0 }
@@ -475,10 +483,7 @@ local function buildEnv(scene)
     E.engine = onMain
     -- try(fn, ...): pcall that is safe around world calls (a plain pcall around placeTile / spawnActor / tool(...)
     -- fails, because those yield to the main coroutine and a yield inside pcall is not allowed). Returns ok, ...
-    E.try = function(fn, ...)
-        local a = pack(...)
-        return onMain(function() return pcall(fn, unpack(a, 1, a.n)) end)
-    end
+    E.try = tryMain
     E.message = function(text, mode, player, opts)
         opts = opts or {}
         return callTool("server_message", { text = tostring(text), mode = mode or "notify", player = player and userOf(player) or nil,
