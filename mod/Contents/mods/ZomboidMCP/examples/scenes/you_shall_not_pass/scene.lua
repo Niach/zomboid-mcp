@@ -5,10 +5,10 @@
 -- lights). A narrow stone bridge crosses it one level up: real floor tiles at z+1 on stone piers, reached by stairs
 -- at both ends, with invisible rails so nobody falls (args.rails = false leaves the edges open: a fall lands in the
 -- lava lake one level down, which is walkable, so nobody gets stuck). The grey wizard stands guard on the bridge;
--- the fire demon waits in the lava lake in front of the far end (both are real low-poly 3D models on the
--- moving 3D layer, half turned towards each other). Every world change is a saved, transmitted object
--- (floors, stairs, blockers, carrier items of the models); models, lights and the entities come back on every
--- start and every join through the mod's persistence.
+-- the fire demon waits in the lava lake in front of the far end (both are real low-poly 3D models on carrier
+-- world items like the piers: anchored in the world, depth-sorted, lit, saved; half turned towards each other).
+-- Every world change is a saved, transmitted object (floors, stairs, blockers, carrier items of the models);
+-- models and lights come back on every start and every join through the mod's persistence.
 --
 -- The cutscene (whenever a player steps onto the bridge, at most every args.cooldown seconds): letterbox bars,
 -- thunder, the demon rises out of the lava and flies at the wizard, the wizard raises the staff, a flash, the
@@ -19,8 +19,8 @@
 -- Signals: scene_signal {name = "ysnp", signal = "play"} runs the cutscene now; signal "teardown" removes
 -- everything and restores the area (the default is to keep it: scene_stop only stops the ambience).
 -- Args: x, y = the WEST end of the bridge deck (default: 10 tiles north of the first player), z = ground level (0),
---   length = bridge length in tiles (14), cooldown = seconds between cutscenes (180), face = the camera-facing rotation
---   of the figures in degrees (45; the wizard turns 30 degrees east of it, the demon 30 west), rails = invisible rails along the deck (true), level = 1 builds the
+--   length = bridge length in tiles (14), cooldown = seconds between cutscenes (180), face = the camera-facing yaw
+--   of the figures in degrees (180 on a world item; the wizard turns 30 degrees east of it, the demon 30 west), rails = invisible rails along the deck (true), level = 1 builds the
 --   bridge one floor up with stairs (default); level = 0 is the flat fallback (deck on the ground, chasm blocked).
 --   clear_radius = the arena (0 = off): every non-floor object (trees, bushes, grass, boulders, fences, wrecks...) on
 --   every square within that many tiles of the hall centre at level z goes and one uniform floor (arena_floor, sand by
@@ -30,7 +30,7 @@
 local cfg = args or {}
 local L = math.max(6, math.floor(tonumber(cfg.length) or 14))
 local cooldown = tonumber(cfg.cooldown) or 180
-local face = tonumber(cfg.face) or 45
+local face = tonumber(cfg.face) or 180                 -- world item yaw (worldZRotation) that shows a figure's front to the camera
 local rails = cfg.rails ~= false and cfg.rails ~= "false"
 local deckUp = not (cfg.level == 0 or cfg.level == "0")
 local margin = math.max(1, math.floor(tonumber(cfg.clear_margin) or 6))   -- tree-free ring around the hall (trees overhang the hall otherwise)
@@ -43,7 +43,8 @@ local STAIRS = { "fixtures_stairs_01_8", "fixtures_stairs_01_9", "fixtures_stair
 local MODELS = { "ysnp_pier", "ysnp_pier_broken", "ysnp_rock", "ysnp_stalagmite", "ysnp_lava", "ysnp_demon", "ysnp_wizard", "ysnp_wizard_up" }
 -- model_upload scale per model (default 1). A world item draws a model unit larger than the tile grid suggests: one z
 -- level is about 1.65 units (measured live 2026-09-30), so the 3.0-unit piers go up at 0.55 to carry the deck at z+1
-local SCALE = { ysnp_pier = 0.55, ysnp_pier_broken = 0.55 }
+-- the figures at 0.6: the wizard (2.17 units) about 1.2 players, the demon (4.57 units) a bit over two floors with wings
+local SCALE = { ysnp_pier = 0.55, ysnp_pier_broken = 0.55, ysnp_wizard = 0.6, ysnp_wizard_up = 0.6, ysnp_demon = 0.6 }
 
 waitUntil(function() return #players() > 0 end)
 local xs, y0, z = cfg.x, cfg.y, math.floor(tonumber(cfg.z) or 0)
@@ -293,22 +294,32 @@ for i = 0, 3 do
 end
 light(wizX, y0, deckZ, 0.75, 0.85, 1, 4)     -- a cold light on the wizard
 
-local function entity(id, model, x, y, ez, h, extra)
-    if ZMCP.models.store()[id] then try(tool, "entity3d_remove", { id = id }) end   -- (an unknown id would log an engine error)
-    local a = { id = id, model = model, x = x, y = y, z = ez, h = h, ry = face }
-    for k, v in pairs(extra or {}) do a[k] = v end
-    return tool("entity3d_spawn", a)
+-- The figures are real 3D meshes (make_art.py: front +Z, feet at 0) on carrier world items (model_place), like the
+-- piers: anchored in the world, depth-sorted against the piers and pillars, lit, saved with the chunk. They are
+-- placed once and kept (restarts and joins bring them back); every start only puts them back into their idle pose.
+-- The cutscene moves them with model_move (every client glides the carrier; the server sets the final pose) and
+-- model_swap (the raised staff on the same carrier). The demon stands ON the lava two tiles south of the bridge.
+-- yaw: face (180) shows the front to the camera, a smaller yaw turns it east (+x), so the two half-turn towards each other.
+local DEMON_X, DEMON_Y = xe - 1.5, cy + 2
+local WIZ_YAW, DEMON_YAW = face - 30, face + 30
+local function figure(pid, model, x, y, fz, yaw)
+    if ZMCP.models and ZMCP.models.store()[pid] then try(tool, "entity3d_remove", { id = pid }) end   -- an older version drew them on the 3D layer
+    local p = ZMCP.visuals.store().placements[pid]
+    if p and (p.x ~= math.floor(x) or p.y ~= math.floor(y) or p.z ~= fz) then tool("model_remove", { pid = pid }); p = nil end
+    if not p then
+        return tool("model_place", { id = model, pid = pid, x = math.floor(x), y = math.floor(y), z = fz, ox = x - math.floor(x), oy = y - math.floor(y), yaw = yaw })
+    end
+    if p.model ~= model or p.gen ~= ZMCP.visuals.store().models[model].gen then tool("model_swap", { pid = pid, id = model }) end
+    return tool("model_move", { pid = pid, x = x, y = y, z = fz, yaw = yaw, duration = 0 })
 end
--- The figures are real 3D meshes (make_art.py: front +Z, feet at 0; wizard 2.17 tiles tall = about 1.2 players,
--- demon 4.57 tall with a 6.4 wingspan). The 3D layer draws on top of the world (no depth against the piers or the
--- lava), so a figure half sunk in the lava just looks like it floats in front of the bridge: the demon stands ON the
--- lava two tiles south of the bridge (the camera side, so drawing it over the piers is the right depth order).
--- ry: face (45) looks at the camera, a larger ry turns the front east (+x), so the two half-turn towards each other.
-local DEMON_X, DEMON_Y, DEMON_H = xe - 1.5, cy + 2, 0
-local WIZ_RY, DEMON_RY = face + 30, face - 30
-local function demonIdle() entity("ysnp_demon", "ysnp_demon", DEMON_X, DEMON_Y, z, DEMON_H, { ry = DEMON_RY }) end
-local function wizard(raised) entity("ysnp_wizard", raised and "ysnp_wizard_up" or "ysnp_wizard", wizX + 0.5, cy, deckZ, 0, { ry = WIZ_RY }) end
-wizard(false)
+local function demonIdle() figure("ysnp_demon", "ysnp_demon", DEMON_X, DEMON_Y, z, DEMON_YAW) end
+local function wizard(raised) tool("model_swap", { pid = "ysnp_wizard", id = raised and "ysnp_wizard_up" or "ysnp_wizard" }) end
+local function demonMove(x, y, fz, dur, ease) return tool("model_move", { pid = "ysnp_demon", x = x, y = y, z = fz, duration = dur, ease = ease }) end
+local function demonAt()      -- where the demon is right now (follows a running model_move)
+    local p = ZMCP.visuals.store().placements.ysnp_demon
+    if p then return ZMCP.visuals.poseOf(p) end
+end
+figure("ysnp_wizard", "ysnp_wizard", wizX + 0.5, cy, deckZ, WIZ_YAW)
 demonIdle()
 
 local ember = texture("ysnp_ember", { palette = { o = { 255, 170, 40, 230 }, y = { 255, 240, 140, 255 } }, rows = { ".o.", "oyo", ".o." } })
@@ -346,16 +357,16 @@ local function cutscene(player)
     lightning(DEMON_X, cy, { strike = false })
     local deep = light(DEMON_X, cy, z, 1, 0.2, 0, 12)
     wait(1.5)
-    -- the demon rises out of the lava onto the bridge line (its feet end up a little above the deck, z in levels
-    -- with DEMON_H = 0) and flies at the wizard
-    local hover = (deckUp and 1.05 or 0.05) - DEMON_H / 2.45
-    tool("entity3d_move", { id = "ysnp_demon", x = DEMON_X, y = cy, z = z + hover, duration = 5, ease = true })
+    -- the demon rises out of the lava onto the bridge line (its feet end up a little above the deck: z is a
+    -- fractional level) and flies at the wizard
+    local hover = z + (deckUp and 1.05 or 0.05)
+    demonMove(DEMON_X, cy, hover, 5, true)
     local burst = every(0.4, function()
-        local ex = tool("entity3d_list")
-        for _, e in ipairs(ex) do if e.id == "ysnp_demon" then embers(3, e.x, e.y, math.floor(e.z), 1.2) end end
+        local ex, ey, ez = demonAt()
+        if ex then embers(3, ex, ey, math.floor(ez), 1.2) end
     end)
     wait(5)
-    tool("entity3d_move", { id = "ysnp_demon", x = wizX + 3.5, y = cy, z = z + hover, duration = 6 })
+    demonMove(wizX + 3.5, cy, hover, 6)
     draw{ kind = "text", anchor = "world", x = wizX + 0.5, y = cy, z = deckZ + 0.9, text = "You cannot pass.", font = "large", r = 0.9, g = 0.95, b = 1, ttl = 4 }
     wait(6.5)
     burst.stop()
@@ -384,12 +395,12 @@ local function cutscene(player)
     embers(8, wizX + 3.5, cy, deckZ, 1.5)
     wait(1)
     -- the demon falls into the deep
-    tool("entity3d_move", { id = "ysnp_demon", x = wizX + 3.5, y = cy, z = z, duration = 2.2 })
+    demonMove(wizX + 3.5, cy, z, 2.2)
     wait(1.2)
     embers(10, wizX + 3.5, cy, z, 2)
     lightning(wizX + 3, cy, { strike = false, light = true })
     wait(1.0)
-    try(tool, "entity3d_remove", { id = "ysnp_demon" })
+    try(tool, "model_remove", { pid = "ysnp_demon" })
     local pit = light(wizX + 3, y0, z, 1, 0.1, 0, 14)
     sound("Thunder", wizX + 3, cy, z)
     wait(3)
@@ -419,8 +430,10 @@ onSignal("play", function() cutscene(nil) end)
 ---------------------------------------------------------------- teardown (only on request; the installation is permanent)
 onSignal("teardown", function()
     log("teardown requested")
-    try(tool, "entity3d_remove", { id = "ysnp_demon" })
-    try(tool, "entity3d_remove", { id = "ysnp_wizard" })
+    for _, pid in ipairs({ "ysnp_demon", "ysnp_wizard" }) do
+        if ZMCP.visuals.store().placements[pid] then try(tool, "model_remove", { pid = pid }) end
+        if ZMCP.models and ZMCP.models.store()[pid] then try(tool, "entity3d_remove", { id = pid }) end
+    end
     for _, list in ipairs({ piers, slabs, rocks, stals }) do
         for _, p in ipairs(list) do try(tool, "model_remove", { pid = p.pid }) end
     end
