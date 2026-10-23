@@ -9,7 +9,12 @@ files being present:
 | `mod/Contents/mods/ZomboidMCP/mcp/api_index.json.gz` | every Java class the PZ Lua VM can reach, with public fields, constructors, methods, inheritance and the global functions | 2.7 MB JSON, 0.35 MB gz |
 | `mod/Contents/mods/ZomboidMCP/mcp/lua_examples.json.gz` | function definitions and call-site snippets from vanilla `media/lua` | 2.2 MB JSON, 0.5 MB gz |
 
-Both are produced by `tools/build_api_index.py` from a local Project Zomboid
+A third output is the **Markdown engine reference** for the "Zomboid engine
+handbook" skill: `mod/Contents/mods/ZomboidMCP/skill/reference/*.md` (about
+3.5 MB in 34 files, none above 150 KB), rendered by `tools/api_reference_md.py`
+from the same data. See [Markdown reference](#markdown-reference) below.
+
+All three are produced by `tools/build_api_index.py` from a local Project Zomboid
 install. Regenerate after a game update with:
 
 ```sh
@@ -73,6 +78,7 @@ Type names are shortened to the Lua-visible simple name everywhere
   "stats": {"classes": 1044, "exposed_classes": 999, "unexposed_superclasses": 45,
             "methods": 22728, "fields": 16233, "ctors": 991, "globals": 759},
   "name_collisions": ["Clothing", "Radio", ...],   // exposed classes sharing a simple name
+  "events": ["OnGameBoot", "OnTick", ...],         // registered by LuaEventManager.AddEvent (262)
   "globals": [                                       // sorted by name
     {"n": "getTexture", "p": ["String"], "pn": ["filename"], "r": "Texture"},
     {"n": "instanceof", "java": "instof", "p": ["Object", "String"], "pn": ["obj", "name"], "r": "boolean"}
@@ -113,6 +119,9 @@ Enum constants are static final fields of the enum class.
   "stats": {"lua_files": 1395, "lua_lines": 443695, "call_keys": 5776, "def_keys": 17520, "events": 184, ...},
   "files": ["client/ISUI/ISButton.lua", ...],     // referenced by index below
   "events": ["EveryOneMinute", "OnTick", ...],     // every Events.<Name>.Add seen in vanilla
+  "event_args": {"OnClientCommand": ["module, command, player, args", 7],   // most common handler params, handler count
+                 "OnTick": ["", 22],                // "" = vanilla handlers take no parameters
+                 "OnFoo": [null, 1]},               // null = handler could not be resolved
   "defs": {                                       // Lua function definitions
     "ISCutHair:perform": [[fileIdx, line, "params"]],
     "luautils.round": [[fileIdx, line, "num, idp"]]
@@ -155,7 +164,8 @@ is the shape the MCP tools should return.
 
 **lua_examples(symbol)**
 1. `calls[symbol]` (exact, then case-insensitive). `Class.new` and
-   `Events.Name` are valid symbols.
+   `Events.Name` are valid symbols; for `Events.Name` also return
+   `event_args[Name]` as `event_args`.
 2. `defs` entries whose key equals the symbol, ends with `:symbol` / `.symbol`,
    or starts with `symbol:` / `symbol.` (so a table name lists its methods).
 3. `curated[symbol]`.
@@ -172,6 +182,33 @@ ok  addZombiesInOutfit           sigs= 6 examples=4 curated=1  ArrayList<IsoZomb
 ok  getTexture                   sigs=19 examples=4 curated=1  Texture getTexture(String filename)
 ok  setHairModel                 sigs= 1 examples=4 curated=1  void HumanVisual:setHairModel(String model)
 ```
+
+## Markdown reference
+
+`tools/api_reference_md.py` turns the index into skimmable files under
+`mod/Contents/mods/ZomboidMCP/skill/reference/` so the skill can link to them:
+
+| File | Content |
+|------|---------|
+| `README.md` | file table plus an alphabetical class → file index |
+| `globals.md` (+ `_2`) | all global functions grouped by topic (networking, players, world, items, …) |
+| `events.md` | every engine event (`LuaEventManager.AddEvent`) plus Lua-defined ones, with handler args from vanilla usage, handler count and one example |
+| `networking.md` | network classes, the sync/network globals, and a cross-reference of every `transmit*` / `sync*` / `send*` method by class |
+| `player.md`, `zombies.md`, `animals.md`, `vehicles.md`, `weather_time_climate.md`, `items_inventory.md`, `entities_crafting_fluids.md`, `world_squares_objects.md`, `randomized_world.md`, `ui_drawing_textures.md`, `models_scripts.md`, `sound.md`, `radio_media.md`, `core_game.md`, `java_types.md` | classes grouped by topic (`CATEGORIES` in `api_reference_md.py`: name overrides, then package prefix, then name regex) |
+
+Per class: fqn, kind, inheritance chain with links, constructors as
+`Class.new(...)`, static fields / enum constants, instance fields, then methods
+as `receiver:method(Type name, …)` → `Return` (statics as `Class.method`).
+Classes with more than 60 instance methods are split into `get / is / has`,
+`set / add / remove / actions` and `other` sections. One vanilla example line is
+attached to the first overload of each method name, chosen by receiver shape
+(`:name(` for instance methods, `Class.name(` for statics, bare `name(` for
+globals); commented-out lines are never used.
+
+Files are split at `--md-max-kb` (default 140 KB) on class or section
+boundaries into `stem.md`, `stem_2.md`, …; each part links to its siblings and
+lists its classes at the top. Cross-file links use the part that finally holds
+the class, so they stay valid after a split.
 
 ## Caveats
 

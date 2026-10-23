@@ -42,6 +42,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PZ_DIR = os.path.expanduser(
     "~/.steam/steam/steamapps/common/ProjectZomboid/projectzomboid")
 DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "mod", "Contents", "mods", "ZomboidMCP", "mcp")
+DEFAULT_MD_DIR = os.path.join(REPO_ROOT, "mod", "Contents", "mods", "ZomboidMCP", "skill", "reference")
 CURATED_FILE = os.path.join(REPO_ROOT, "tools", "curated_examples.json")
 API_INDEX_NAME = "api_index.json.gz"
 LUA_EXAMPLES_NAME = "lua_examples.json.gz"
@@ -202,6 +203,25 @@ def read_exposed_classes(jar: str) -> list[str]:
                 classes.append(pending)
             pending = None
     return classes
+
+
+def read_engine_events(jar: str) -> list[str]:
+    """Event names registered by LuaEventManager.AddEvent("...")."""
+    text = run_javap(jar, ["-c", "-p"], ["zombie.Lua.LuaEventManager"])
+    events, pending, seen = [], None, set()
+    for line in text.splitlines():
+        m = re.search(r"ldc(?:_w)?\s+#\d+\s+// String (\S+)$", line)
+        if m:
+            pending = m.group(1)
+            continue
+        if "Method AddEvent:(Ljava/lang/String;)" in line and pending:
+            if pending not in seen:
+                seen.add(pending)
+                events.append(pending)
+            pending = None
+        elif line.strip().startswith(("invoke", "putstatic", "return")):
+            pending = None
+    return events
 
 
 # --------------------------------------------------------------------------- jar: javap parsing
@@ -430,6 +450,7 @@ DEF_RE = re.compile(r"^\s*(local\s+)?function\s+([A-Za-z_][\w.:]*)\s*\(([^)]*)\)
 ASSIGN_DEF_RE = re.compile(r"^\s*(local\s+)?([A-Za-z_][\w.]*)\s*=\s*function\s*\(([^)]*)\)")
 CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 EVENT_RE = re.compile(r"Events\.([A-Za-z_]\w*)\.Add\s*\(")
+HANDLER_RE = re.compile(r"\s*(?:function\s*\(([^)]*)\)|([A-Za-z_][\w.:]*))")
 LEADING_RECV_RE = re.compile(r"([A-Za-z_]\w*)\s*$")
 
 
@@ -493,6 +514,7 @@ def build_lua_examples(lua_root: str, engine_symbols: set[str], class_names: set
     defs: dict[str, list] = collections.defaultdict(list)
     calls: dict[str, Bucket] = {}
     events: set[str] = set()
+    handlers: dict[str, list] = collections.defaultdict(list)   # event -> [params | handler name]
     cap = max(40, max_examples * 10)
     n_lines = n_matches = 0
 
@@ -523,6 +545,10 @@ def build_lua_examples(lua_root: str, engine_symbols: set[str], class_names: set
             is_comment = stripped.startswith("--")
             for em in EVENT_RE.finditer(line):
                 events.add(em.group(1))
+                hm = HANDLER_RE.match(line, em.end())
+                if hm:
+                    handlers[em.group(1)].append(("params", hm.group(1)) if hm.group(1) is not None
+                                                 else ("name", hm.group(2)))
                 key = "Events." + em.group(1)
                 snippet = make_snippet(lines, i)
                 calls.setdefault(key, Bucket(cap)).add(
@@ -553,9 +579,26 @@ def build_lua_examples(lua_root: str, engine_symbols: set[str], class_names: set
                 n_matches += 1
 
     out_calls = {k: [list(item) for item in b.best(max_examples)] for k, b in sorted(calls.items())}
+    event_args = {}
+    for ev, hs in handlers.items():
+        counter: collections.Counter = collections.Counter()
+        for kind, val in hs:
+            params = None
+            if kind == "params":
+                params = val
+            else:
+                for key in (val, val.replace(".", ":"), val.replace(":", ".")):
+                    if key in defs:
+                        params = defs[key][0][2]
+                        break
+            if params is not None:
+                counter[re.sub(r"\s+", " ", params.strip())] += 1
+        best = max(counter.items(), key=lambda kv: (kv[1], len(kv[0])))[0] if counter else None
+        event_args[ev] = [best, len(hs)]   # best is None when no handler could be resolved
     return {
         "files": files,
         "events": sorted(events),
+        "event_args": dict(sorted(event_args.items())),
         "defs": dict(sorted(defs.items())),
         "calls": out_calls,
         "stats": {"lua_files": len(files), "lua_lines": n_lines, "call_sites_seen": n_matches,
@@ -594,6 +637,8 @@ def build(args) -> int:
     log("reading global functions from LuaManager$GlobalObject …")
     globals_ = read_globals(jar)
     log(f"  {len(globals_)} global functions")
+    engine_events = read_engine_events(jar)
+    log(f"  {len(engine_events)} engine events")
 
     dup_names = collections.Counter(c["name"] for c in classes.values() if c["exposed"])
     collisions = sorted(n for n, k in dup_names.items() if k > 1)
@@ -613,6 +658,7 @@ def build(args) -> int:
                   "unexposed_superclasses": n_unexposed, "methods": n_methods,
                   "fields": n_fields, "ctors": n_ctors, "globals": len(globals_)},
         "name_collisions": collisions,
+        "events": engine_events,
         "globals": globals_,
         "classes": {fqn: classes[fqn] for fqn in sorted(classes)},
     }
@@ -639,6 +685,7 @@ def build(args) -> int:
         "stats": ex["stats"],
         "files": ex["files"],
         "events": ex["events"],
+        "event_args": ex["event_args"],
         "defs": ex["defs"],
         "calls": ex["calls"],
         "curated": curated,
@@ -650,6 +697,14 @@ def build(args) -> int:
         with gzip.GzipFile(path, "wb", compresslevel=9, mtime=0) as gz:
             gz.write(raw)
         log(f"wrote {path}: {len(raw) / 1e6:.2f} MB json, {os.path.getsize(path) / 1e6:.2f} MB gz")
+    if not args.no_md:
+        log("writing markdown reference …")
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from api_reference_md import write_reference
+        sizes = write_reference(api_index, lua_examples, args.md_dir, args.md_max_kb)
+        total = sum(sizes.values())
+        biggest = max(sizes.items(), key=lambda kv: kv[1])
+        log(f"  {len(sizes)} files, {total / 1e6:.2f} MB total, largest {biggest[0]} {biggest[1] / 1024:.0f} KB -> {args.md_dir}")
     if collisions:
         log(f"  note: {len(collisions)} exposed classes share a simple name (Lua sees the last one "
             f"registered): {', '.join(collisions[:12])}{' …' if len(collisions) > 12 else ''}")
@@ -804,6 +859,8 @@ def lua_examples(ex: dict, symbol: str, limit: int = 8) -> dict:
                     break
         if len(out["defs"]) >= limit:
             break
+    if sym.startswith("Events.") and sym[7:] in ex.get("event_args", {}):
+        out["event_args"] = ex["event_args"][sym[7:]][0]   # "" = no args, None = unknown
     for k, entries in ex.get("curated", {}).items():
         if k.lower() == sl or k.lower().endswith("." + sl) or k.lower().endswith(":" + sl):
             out["curated"].extend(entries)
@@ -876,6 +933,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="where the .json.gz files go")
     ap.add_argument("--max-examples", type=int, default=4, help="call-site examples kept per symbol")
     ap.add_argument("--max-defs", type=int, default=6, help="definitions kept per Lua function name")
+    ap.add_argument("--md-dir", default=DEFAULT_MD_DIR, help="where the markdown reference goes")
+    ap.add_argument("--md-max-kb", type=int, default=140, help="split reference files above this size")
+    ap.add_argument("--no-md", action="store_true", help="skip the markdown reference")
     ap.add_argument("--search", metavar="QUERY", help="query the built index (api_search reference)")
     ap.add_argument("--kind", choices=["class", "method", "field", "ctor", "global"])
     ap.add_argument("--examples", metavar="SYMBOL", help="show vanilla examples (lua_examples reference)")
